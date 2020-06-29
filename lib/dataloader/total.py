@@ -1,13 +1,12 @@
 from __future__ import print_function, division
 import os
-import torch
 from skimage import io, transform
 import numpy as np
-import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from torchvision import transforms, utils
+from base import BaseDataset
 
-class Total(Dataset):
+class Total(BaseDataset):
     """
     Total dataset, reference below:
         @article{CK2019,
@@ -27,43 +26,40 @@ class Total(Dataset):
         Column 3-4 = Y-coordinate
         Column 5 = Text
         Column 6 = Orientation (c=curve; h=horizontal; m=multi-oriented; #=dont care)
+    Args:
+        'box_format': string in ['yxyx','xyxy','xywh','cxywh']
+            'yxyx': box_cord = [y1,x1,y2,x2]
+            'xyxy': box_cord = [x1,y1,x2,y2]
+            'xywh': box_cord = [x,y,w,h]
+            'cxywh': box_cord = [cx,cy,w,h]
+        normalized: True to normalize coordinate
     """
+    def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format=None,
+        gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
+        out_box_format='cxywh', normalized=True, transform=None):
 
-    def __init__(self, root_dir, gt_format='mask', transform=None):
-        self.gt_format = 'mask' if(gt_format.lower() == 'mask')else 'gtbox'
-        self.imgdir = os.path.join(root_dir, 'Images')
-        self.ypdir = os.path.join(root_dir, 'gt_pixel')
-        self.ytdir = os.path.join(root_dir, 'gt_txt')
+        super(Total,self).__init__(img_dir=img_dir, gt_mask_dir=gt_mask_dir, gt_txt_dir=gt_txt_dir, in_box_format=in_box_format,
+        gt_mask_name_lambda=gt_mask_name_lambda, gt_txt_name_lambda=gt_txt_name_lambda, 
+        out_box_format=out_box_format, normalized=normalized, transform=transform)
 
-        self.train_img_names = []
-        for root, dirs, files in os.walk(os.path.join(self.imgdir, 'Train')):
-            self.train_img_names += [os.path.join('Train', name) for name in files if (os.path.splitext(name)[-1] == ".jpg" or
-                                                                                       os.path.splitext(name)[-1] == ".png" or
-                                                                                       os.path.splitext(name)[-1] == ".bmp")]
-        self.test_img_names = []
-        for root, dirs, files in os.walk(os.path.join(self.imgdir, 'Test')):
-            self.test_img_names += [os.path.join('Test', name) for name in files if (os.path.splitext(name)[-1] == ".jpg" or
-                                                                                     os.path.splitext(name)[-1] == ".png" or
-                                                                                     os.path.splitext(name)[-1] == ".bmp")]
-
-        self.all_img_dir = [name for name in self.train_img_names] +\
-            [name for name in self.test_img_names]
-        
-        self.transform=transform
-        
-    def __len__(self):
-        return len(self.all_img_dir)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        ytdirs = os.path.join(self.ytdir,self.all_img_dir[idx])
-        ximgs = io.imread(os.path.join(self.imgdir,self.all_img_dir[idx])) 
-        ypimgs = io.imread(os.path.join(self.ypdir,self.all_img_dir[idx]))
-
-        sample = {'image': ximgs, 'gtmask': ypimgs, }
-        sample = self.transform(sample)
-
-        return sample
-        
+    def read_boxs(self,fname:str):
+        """
+        x: [[ x1 x2 ...]], y: [[y1 y2 ...]], ornt: [u't'], transcriptions: [u'texts']
+        """
+        f = open(fname,'r')
+        lines = f.readlines()
+        boxs = []
+        txts = []
+        while i < len(lines):
+            line = lines[i].strip()
+            while not line.endswith(']'):
+                i = i + 1
+                line = line + ' ' + lines[i].strip()
+            i += 1
+            parts = line.split(',')
+            xs = [int(o) for o in parts[0].split('[[')[-1].split(']]')[0].split()]
+            ys = [int(o) for o in parts[1].split('[[')[-1].split(']]')[0].split()]
+            txt = parts[3].split()[-1][3:-2]
+            boxs.append([int(1), min(ys), min(xs),max(ys), max(xs)])
+            txts.append(txt)
+        return np.array(boxs),txts
