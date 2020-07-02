@@ -2,9 +2,10 @@ from __future__ import print_function, division
 import os
 from skimage import io, transform
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
-from lib.utils.img_hlp import np_box_transfrom,np_box_nor
+from utils.img_hlp import np_box_transfrom,np_box_nor
 
 class BaseDataset(Dataset):
     """
@@ -57,6 +58,7 @@ class BaseDataset(Dataset):
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
+<<<<<<< HEAD
 
         sample = {'image': io.imread(os.path.join(self.imgdir,self.img_names[idx]))}
         if(self.gt_txt_dir!=None):
@@ -65,6 +67,17 @@ class BaseDataset(Dataset):
             boxs, texts = self.read_boxs(ytdir)
             boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
             if(self.normalize): boxs = np_box_nor(boxs,samplep['image'].shape[-3:-1],self.out_box_format)
+=======
+        
+        sample = {'image': io.imread(os.path.join(self.imgdir,self.img_names[idx]))}
+        if(self.gt_txt_dir!=None):
+            assert(self.in_box_format!=None)
+            img_nm = self.img_names[idx].split('.')[0]
+            ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
+            boxs, texts = self.read_boxs(ytdir)
+            boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
+            if(self.normalize): boxs = np_box_nor(boxs,sample['image'].shape[-3:-1],self.out_box_format)
+>>>>>>> 2e4ce94... Adding dataloder
             sample['box']=boxs
             sample['box_format']=self.out_box_format
             sample['text']=texts
@@ -72,16 +85,29 @@ class BaseDataset(Dataset):
         if(self.gt_mask_dir):
             ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(self.img_names[idx])) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,self.img_names[idx])
             ypimg = io.imread(ypdir)
+<<<<<<< HEAD
             if(len(ypimg.shape)==2):ypimg = ypimg.reshape(list(ypimg)+[1])
             sample['gtmask'] = ypimg
 
         sample = self.transform(sample)
+=======
+            if(len(ypimg.shape)==2):ypimg = ypimg.reshape(list(ypimg.shape)+[1])
+            sample['gtmask'] = ypimg
+
+        if(self.transform!=None):
+            sample = self.transform(sample)
+>>>>>>> 2e4ce94... Adding dataloder
 
         return sample
 
     def get_name(self, index):
         return self.img_names[index]
 
+<<<<<<< HEAD
     @abstractmethod
     def read_boxs(self,fname:str):
         pass
+=======
+    def read_boxs(self,fname:str):
+        raise NotImplementedError
+>>>>>>> 2e4ce94... Adding dataloder
