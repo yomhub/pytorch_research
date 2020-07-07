@@ -34,18 +34,12 @@ class Total(BaseDataset):
             'cxywh': box_cord = [cx,cy,w,h]
         normalized: True to normalize coordinate
     """
-<<<<<<< HEAD
-    def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format=None,
-        gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
-        out_box_format='cxywh', normalized=True, transform=None):
-
-=======
     def __init__(self, img_dir, gt_mask_dir, gt_txt_dir,
         out_box_format='cxywh', normalized=True, transform=None):
         in_box_format = 'yxyx'
         gt_txt_name_lambda = lambda x: "poly_gt_%s.txt"%x
         gt_mask_name_lambda = None
->>>>>>> 2e4ce94... Adding dataloder
+
         super(Total,self).__init__(img_dir=img_dir, gt_mask_dir=gt_mask_dir, gt_txt_dir=gt_txt_dir, in_box_format=in_box_format,
         gt_mask_name_lambda=gt_mask_name_lambda, gt_txt_name_lambda=gt_txt_name_lambda, 
         out_box_format=out_box_format, normalized=normalized, transform=transform)
@@ -58,10 +52,9 @@ class Total(BaseDataset):
         lines = f.readlines()
         boxs = []
         txts = []
-<<<<<<< HEAD
-=======
+
         i = 0
->>>>>>> 2e4ce94... Adding dataloder
+
         while i < len(lines):
             line = lines[i].strip()
             while not line.endswith(']'):

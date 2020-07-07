@@ -1,4 +1,6 @@
 import os
+import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 def str2time(instr):
@@ -7,3 +9,9 @@ def str2time(instr):
 
 def str2num(instr):
     return [int(s) for s in instr.split() if s.isdigit()]
+
+def plt_heatmap2d(arr: np.ndarray,cmap:str='viridis'):
+    if(cmap not in ['viridis',]):cmap = 'viridis'
+    plt.imshow(arr, cmap=cmap)
+    plt.colorbar()
+    plt.show()

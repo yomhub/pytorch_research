@@ -11,11 +11,10 @@ __DEF_PROJ_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 class Trainer():
     def __init__(self,  
-        work_dir = __DEF_PROJ_PATH,
-        model_floder = 'save_model',
-        log_floder = 'log',
-        task_name = None,
-        isdebug = False,
+        work_dir = __DEF_PROJ_PATH, model_floder = 'save_model',
+        log_floder = 'log', task_name = None,
+        isdebug = False, use_cuda = True,
+        net = None, loss = None, opt = None,
     ):
         self.isdebug = bool(isdebug)
         self.logs_path = os.path.join(work_dir,log_floder)
@@ -39,3 +38,19 @@ class Trainer():
         self.opt = None
         self.eva_step = 0
         self.task_name = task_name
+
+        self.net = net
+        self.opt = opt
+        self.loss = loss
+
+        self.use_cuda = bool(use_cuda)
+
+    def set_trainer(self,net=None,opt=None,loss=None):
+        if(net!=None):self.net = net
+        if(opt!=None):self.opt = opt
+        if(loss!=None):self.loss = loss
+
+    def test(self,datas):
+        if(self.net==None):return
+        
+    

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-
-from model.vgg16 import VGG16
+import torch.nn.functional as F
+from model.vgg16 import VGG16, init_weights
 
 class double_conv(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
@@ -18,16 +18,14 @@ class double_conv(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         return x
-
+        
 class CRAFT(nn.Module):
-    def __init__(self, pretrained=True, freeze=False):
+    def __init__(self, pretrained=False, freeze=False):
         super(CRAFT, self).__init__()
 
         """ Base network """
-        # self.net = VGG16(pretrained, freeze)
-        # self.net.load_state_dict(copyStateDict(torch.load('vgg16_bn-6c64b313.pth')))
-        # self.basenet = self.net
-        self.basenet = VGG16(pretrained, freeze)
+        self.basenet = vgg16_bn(pretrained, freeze)
+
         """ U network """
         self.upconv1 = double_conv(1024, 512, 256)
         self.upconv2 = double_conv(512, 256, 128)
@@ -48,7 +46,7 @@ class CRAFT(nn.Module):
         init_weights(self.upconv3.modules())
         init_weights(self.upconv4.modules())
         init_weights(self.conv_cls.modules())
-
+        
     def forward(self, x):
         """ Base network """
         sources = self.basenet(x)
