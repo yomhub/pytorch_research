@@ -253,8 +253,8 @@ class RandomScale(object):
             fmt = sample['box_format'].lower()
             box = sample['box']
             if(isinstance(box,list)):
-                sample['box'] = [np_box_rescale(o,rate,fmt) if(if(box[:,-4:].max()<=1.0))else o for o in box]
-            else:
+                sample['box'] = [np_box_rescale(o,rate,fmt) if(o[:,-4:].max()>1.0)else o for o in box]
+            elif(box[:,-4:].max()>1.0):
                 sample['box'] = np_box_rescale(box,rate,fmt)
         if('gtmask' in sample):
             sample['gtmask'] = sample['gtmask'].resize(s_shape)

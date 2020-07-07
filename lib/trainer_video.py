@@ -30,13 +30,23 @@ class CRAFTTrainer(Trainer):
     def load_weight(self,pth_file):
         if(self.net!=None):
             if(self.use_cuda):
-                net.load_state_dict(copyStateDict(torch.load(pth_file)))
+                self.net.load_state_dict(copyStateDict(torch.load(pth_file)))
             else:
-                net.load_state_dict(copyStateDict(torch.load(pth_file, map_location='cpu')))
+                self.net.load_state_dict(copyStateDict(torch.load(pth_file, map_location='cpu')))
             
 
     def test(self, vdo, max_frame = None):
-        
+        mp1 = None
+        mp2 = None
+        while(vdo.isOpened()):
+            ret, frame = vdo.read()
+            if(ret==False):
+                break
+            if(len(frame)==3): frame = frame.reshape([1]+list(frame.shape))
+            maps, feature = net(frame)
+            maps[:,:,:,0]
+            maps[:,:,:,1]
+        vdo.release()
 
     def test_step(self,o):
         if(self.net==None):return

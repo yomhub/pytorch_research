@@ -40,11 +40,12 @@ class BaseDataset(Dataset):
     def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format=None,
         gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
         out_box_format='cxywh', normalized=True, transform=None):
-        self.out_box_format = out_box_format.lower() if(out_box_format.lower() in ['yxyx','xyxy','xywh','cxywh'])else 'cxywh'
+
         if(in_box_format!=None):
             self.in_box_format = in_box_format.lower() if(in_box_format.lower() in ['yxyx','xyxy','xywh','cxywh'])else 'cxywh'
         else:
             self.in_box_format = None
+
         self.normalize = bool(normalized)
         self.imgdir = img_dir
         self.gt_mask_dir = gt_mask_dir
@@ -52,7 +53,7 @@ class BaseDataset(Dataset):
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
         self.img_type = ['jpg','png','bmp']
-        self.vdo_type = ['mp4']
+        self.vdo_type = ['mp4','avi']
         self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
         self.transform=transform
         
