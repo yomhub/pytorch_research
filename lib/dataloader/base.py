@@ -3,6 +3,8 @@ import os
 from skimage import io, transform
 import numpy as np
 import torch
+import torchvision
+import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
 from utils.img_hlp import np_box_transfrom,np_box_nor
@@ -19,6 +21,7 @@ class BaseDataset(Dataset):
     Outs:
         {
             'image': (h,w,1 or 3) np array.
+            'video': cv <VideoCapture object>
 
             If have gt_txt_dir,
             'box': (k,4 or 5) np array, where 4 or 5 is (1 or 0)+(box_cord,4)
@@ -48,8 +51,9 @@ class BaseDataset(Dataset):
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
-        img_type = ['jpg','png','bmp']
-        self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in img_type]
+        self.img_type = ['jpg','png','bmp']
+        self.vdo_type = ['mp4']
+        self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
         self.transform=transform
         
     def __len__(self):
@@ -59,7 +63,12 @@ class BaseDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         
-        sample = {'image': io.imread(os.path.join(self.imgdir,self.img_names[idx]))}
+        if(self.img_names[idx].split('.')[-1] in self.img_type):
+            sample = {'image': io.imread(os.path.join(self.imgdir,self.img_names[idx]))}
+        elif(self.img_names[idx].split('.')[-1] in self.vdo_type):
+            vfile = cv2.VideoCapture(os.path.join(self.imgdir,self.img_names[idx]))
+            sample = {'video': vfile}
+        
         if(self.gt_txt_dir!=None):
             assert(self.in_box_format!=None)
             img_nm = self.img_names[idx].split('.')[0]
