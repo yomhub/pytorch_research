@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision import transforms
+from utils.net_hlp import init_weights
 
 class PixelMask(nn.Module):
     def __init__(self):
