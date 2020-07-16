@@ -65,7 +65,7 @@ class InvertedResidual(nn.Module):
 
 
 class MobileNetV2(nn.Module):
-    def __init__(self, n_class=1000, input_size=224, width_mult=1., have_fc=False):
+    def __init__(self, width_mult=1., have_fc=False, n_class=1000):
         super(MobileNetV2, self).__init__()
         block = InvertedResidual
         input_channel = 32
@@ -81,8 +81,6 @@ class MobileNetV2(nn.Module):
             [6, 320, 1, 1],
         ]
 
-        # building first layer
-        assert input_size % 32 == 0
         # input_channel = make_divisible(input_channel * width_mult)  # first channel is always 32!
         self._last_channel = make_divisible(last_channel * width_mult) if width_mult > 1.0 else last_channel
         self.features = [conv_bn(3, input_channel, 2)]
