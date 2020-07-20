@@ -44,6 +44,7 @@ class CRAFTTrainer(Trainer):
                 break
             if(len(frame)==3): frame = frame.reshape([1]+list(frame.shape))
             maps, feature = net(frame)
+
             maps[:,:,:,0]
             maps[:,:,:,1]
         vdo.release()

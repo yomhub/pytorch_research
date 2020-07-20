@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.vgg16 import VGG16, init_weights
+from model.vgg16 import VGG16
+from utils.net_hlp import init_weights
 
 class double_conv(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
