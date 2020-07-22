@@ -1,5 +1,5 @@
 import torch
-from torchvision import transform
+from torchvision import transforms
 
 class Rescale(object):
     """Rescale the image in a sample to a given size.

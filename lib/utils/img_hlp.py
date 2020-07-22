@@ -167,6 +167,22 @@ def np_box_to_points(boxes:np.ndarray,img_size=None,box_format:str):
             ret.append([(o[0],o[3]),(o[2],o[3]),(o[0],o[1]),(o[2],o[1])])
     return np.array(ret,dtype=boxes.dtype)
 
+def np_corp_points(points:np.ndarray,ret_cod_len:int=4):
+    """
+    Corp 4 points to rectangle box
+    Args:
+        points: (N,4,2) numpy with (x,y) coordinate
+    Return:
+        boxes: (N,4,2) numpy with (x,y) with ret_cod_len=2
+        boxes: (N,4) numpy with (x1,y1,x2,y2) with ret_cod_len=4
+    """
+    points = points.copy()
+    minx = np.min(points[:,:,0],keepdims=0)
+    miny = np.min(points[:,:,1],keepdims=0)
+    maxx = np.max(points[:,:,0],keepdims=0)
+    maxy = np.max(points[:,:,1],keepdims=0)
+    return np.array([minx,miny,maxx,maxy]) if(ret_cod_len==4)else
+        np.array([[minx,miny],[maxx,miny],[maxx,maxy],[minx,maxy]])
 
 def np_img_resize(img:np.ndarray,new_size=None,base_divisor=None):
     """
