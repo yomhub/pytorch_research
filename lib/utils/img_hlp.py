@@ -16,6 +16,14 @@ The single sample of dataset should include:
             'cxywh': box_cord = [cx,cy,w,h]
         'gtmask': (h,w,1 or 3) or (N,h,w,1 or 3) np array.
     }
+    CV format 4 points: (x,y) in 
+    +------------> x
+    | 
+    | p2------p3
+    | |        |
+    | |        |
+    | p0------p1
+    y
 """
 
 # default is __DEF_FORMATS[0]
@@ -130,6 +138,36 @@ def np_box_nor(box:np.ndarray,image_size:tuple,box_format:str)->np.ndarray:
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
+def np_box_to_points(boxes:np.ndarray,img_size=None,box_format:str):
+    """
+    Convert box to 4 points.
+    Args:
+        boxes: (N,4) np.ndarray
+        img_size: tuple, (y,x) or int for both yx, 
+            if img_size==None AND boxes is normalized,
+            return points coordinate in normalized.
+        box_format in ['yxyx','xyxy','xywh','cxywh']
+    Return:
+        (N,4,2) np.ndarray
+    """
+    if(img_size!=None and not(isinstance(img_size,list) or isinstance(img_size,tuple))):
+        img_size = (img_size,img_size)
+    if(box_format not in __DEF_FORMATS):box_format = __DEF_FORMATS[0]
+    boxes = np_box_transfrom(boxes,box_format,'xyxy')
+    ret = []
+    if(img_size!=None and boxes.max()<=1.0):
+        for o in boxes:
+            x1=o[0]*img_size[1]
+            y1=o[1]*img_size[0]
+            x2=o[2]*img_size[1]
+            y2=o[3]*img_size[0]
+            ret.append([(x1,y2),(x2,y2),(x1,y1),(x2,y1)])
+    else:
+        for o in boxes:
+            ret.append([(o[0],o[3]),(o[2],o[3]),(o[0],o[1]),(o[2],o[1])])
+    return np.array(ret,dtype=boxes.dtype)
+
+
 def np_img_resize(img:np.ndarray,new_size=None,base_divisor=None):
     """
     Resize and crop image
@@ -150,10 +188,55 @@ def np_img_resize(img:np.ndarray,new_size=None,base_divisor=None):
     if(new_size[0]!=img.shape[-3] or new_size[1]!=img.shape[-2]): img = np.resize(img,s_shape)
     return img
 
+def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.0,mu:float=0.0):
+    """
+    Generate gaussian distribution.
+    Args: 
+        x_range/y_range: tuple, (a,b) or float for (-a,a), 
+        sigma/mu: float
+        img_size: tuple, (y,x) or int for both yx, 
+    Return 2d gaussian distribution in numpy.
+    """
+    if(not(isinstance(img_size,list) or isinstance(img_size,tuple))):
+        img_size = (img_size,img_size)
+    if(not(isinstance(x_range,list) or isinstance(x_range,tuple))):
+        x_range = (-x_range,x_range)
+    if(not(isinstance(y_range,list) or isinstance(y_range,tuple))):
+        y_range = (-y_range,y_range)
+    dx, dy = np.meshgrid(
+        np.linspace(x_range[0],x_range[1],img_size[1]), 
+        np.linspace(y_range[0],y_range[1],img_size[0]))
+
+    d = np.sqrt(dx**2+dy**2)
+    g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
+    return g
+
+def np_gen_gaussian_in_img(img_size,boxes:np.ndarray,threshold=None):
+    """
+    Generate gaussian distribution in image by box.
+    Args: 
+        img_size: tuple, (y,x) or int for both yx, 
+        boxes: (N,4) np.ndarray in (cx,cy,w,h)
+    Return 2d gaussian distribution in numpy.
+    """
+    if(not(isinstance(img_size,list) or isinstance(img_size,tuple))):
+        img_size = (img_size,img_size)
+    if(boxes.max()>1.0):
+        boxes = np_box_nor(boxes,img_size,'cxywh')
+    gaussian_size = (int(boxes[:,-1].max()*img_size[0]),int(boxes[:,-2].max()*img_size[1]))
+    gaussian_map = np_2d_gaussian(gaussian_size)
+    if(threshold!=None):
+        gaussian_map = np.where(gaussian_map>=float(threshold),gaussian_map,0.0)
+    img = np.zeros(img_size)
+    for box in boxes:
+        box[]
+
+    return img
+
 def cv_score2boxs(score:np.ndarray,threshold=None):
     """
     Convert score 2 box
-
+    ???
     """
     if(len(score.shape)>2):
         score = np.clip(score.reshape(score.shape[-3:-1]),0,1)
