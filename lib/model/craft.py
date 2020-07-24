@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from model.vgg16 import VGG16
-from utils.net_hlp import init_weights
+from lib.model.vgg16 import VGG16
+from lib.utils.net_hlp import init_weights
 
 class double_conv(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
@@ -25,7 +25,7 @@ class CRAFT(nn.Module):
         super(CRAFT, self).__init__()
 
         """ Base network """
-        self.basenet = vgg16_bn(pretrained, freeze)
+        self.basenet = VGG16(pretrained, freeze)
 
         """ U network """
         self.upconv1 = double_conv(1024, 512, 256)

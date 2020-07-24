@@ -9,9 +9,13 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # =================Local=======================
 from lib.model.craft import CRAFT
+from lib.model.mobilenet_v2 import CRAFT_MOB
+from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
+from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import RandomScale
+from lib.trainer_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
 
@@ -21,6 +25,7 @@ __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
+__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -45,6 +50,7 @@ if __name__ == "__main__":
     time_start = datetime.now()
     isdebug = args.debug
     lr = args.learnrate
+    use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Running with: \n\t Use proposal: {},\n\t Is debug: {}.\n".format(args.proposal,args.debug)+\
@@ -58,6 +64,22 @@ if __name__ == "__main__":
         "\t Load network: {}.\n".format('Yes' if(args.load)else 'No')
     print(summarize)
 
-    net = CRAFT()
+    net = CRAFT_MOB()
     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
+    dataset = SynthText(__DEF_SYN_DIR, target_size = 512)
+    dataloader = DataLoader(train_dataset, 4, shuffle=True, num_workers=4, collate_fn=transutils.random_resize_collate)
+    loss = ohem.MSE_OHEM_Loss()
+    loss = loss.to("cuda")
+    trainer = CRAFTTrainer
+    trainer = trainer(__DEF_LOCAL_DIR,
+        task_name=args.name if(args.name!=None)else net.__class__.__name__,
+        isdebug = isdebug, use_cuda = use_cuda,
+        net = net, loss = loss, opt = opt,
+        log_step_size = tcfg['LOGSTP'],
+        custom_x_input_function=dataset.x_input_function,
+        custom_y_input_function=dataset.y_input_function,
+        )
+
+    trainer.loader_train(dataloader,100)
+    print('finish')
     pass

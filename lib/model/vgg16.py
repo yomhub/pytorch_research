@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from torchvision import models
 from torchvision.models.vgg import model_urls
-from utils.net_hlp import init_weights
+from lib.utils.net_hlp import init_weights
 
 
 class VGG16(torch.nn.Module):

@@ -1,6 +1,15 @@
 import torch.nn as nn
 import math
 
+def double_conv(in_ch, mid_ch, out_ch):
+    return nn.Sequential(
+        nn.Conv2d(in_ch, mid_ch, kernel_size=1),
+        nn.BatchNorm2d(mid_ch),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU(inplace=True)
+    )
 
 def conv_bn(inp, oup, stride):
     return nn.Sequential(
@@ -147,3 +156,94 @@ def mobilenet_v2(input_size,width_mult,pretrained=True,have_fc=False):
             state_dict.pop('classifier.weight')
         model.load_state_dict(state_dict)
     return model
+
+class CRAFT_MOB(nn.Module):
+    def __init__(self, width_mult=1.,):
+        super(CRAFT_MOB, self).__init__()
+        block = InvertedResidual
+        input_channel = 32
+        interverted_residual_setting = [
+            # t, c, n, s
+            [1, 16, 1, 1], # block_0
+            # 1/2
+            [6, 24, 2, 2], # block_1
+            # 1/4
+            [6, 32, 3, 2], # block_2
+            # 1/8
+            [6, 64, 4, 2], # block_3
+            [6, 96, 3, 1], # block_4
+            # 1/16
+            [6, 160, 3, 2], # block_5
+            [6, 320, 1, 1], # block_6
+        ]
+        
+        self.features = [conv_bn(3, input_channel, 1)]
+        # building inverted residual blocks
+        out_chs = []
+        for t, c, n, s in interverted_residual_setting[:-2]:
+            output_channel = make_divisible(c * width_mult) if t > 1 else c
+            for i in range(n):
+                if i == 0:
+                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t))
+                else:
+                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t))
+                input_channel = output_channel
+            out_chs.append(output_channel)
+
+        self.features2 = []
+        for t, c, n, s in interverted_residual_setting[-2:]:
+            output_channel = make_divisible(c * width_mult) if t > 1 else c
+            for i in range(n):
+                if i == 0:
+                    self.features2.append(block(input_channel, output_channel, s, expand_ratio=t))
+                else:
+                    self.features2.append(block(input_channel, output_channel, 1, expand_ratio=t))
+                input_channel = output_channel
+            out_chs.append(output_channel)
+
+        # make it nn.Sequential
+        self.features = nn.Sequential(*self.features)
+        self.features2 = nn.Sequential(*self.features2)
+
+        # 6->4 (320->80)*k
+        input_channel = interverted_residual_setting[-1][1]
+        self._upc1 = double_conv(input_channel,int(input_channel/2),int(input_channel/4))
+        # 4->2 (80+96->160)*k
+        input_channel = interverted_residual_setting[-3][1]+int(interverted_residual_setting[-1][1]/4)
+        self._upc2 = double_conv(input_channel,int(input_channel/2),int(input_channel/2))
+
+        self._final_predict = nn.Sequential(
+            nn.Conv2d(int(input_channel/2), 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        )
+
+        self._initialize_weights()
+
+    def forward(self, x):
+        x = self.features(x)
+        x1 = self.features2(x)
+
+        x1 = self._upc1(x1)
+        x1 = F.interpolate(x1, size=x.size()[2:], mode='bilinear', align_corners=False)
+        x = self._upc2(torch.cat((x1,x),dim=1))
+        
+        y = self._final_predict(x)
+
+        return y.permute(0, 2, 3, 1),x
+        
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                m.weight.data.normal_(0, math.sqrt(2. / n))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                n = m.weight.size(1)
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()

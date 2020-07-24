@@ -4,9 +4,9 @@ from skimage import io, transform
 import numpy as np
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
-from dataloader.base import BaseDataset
+from . import base
 
-class Total(BaseDataset):
+class Total(base.BaseDataset):
     """
     Total dataset, reference below:
         @article{CK2019,

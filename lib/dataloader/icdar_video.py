@@ -1,4 +1,4 @@
-from dataloader.base import BaseDataset
+from lib.dataloader.base import BaseDataset
 
 class ICDARV(BaseDataset):
     def __init__(self, vdo_dir, gt_txt_dir=None, out_box_format='cxywh', normalized=True, transform=None):

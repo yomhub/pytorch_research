@@ -55,3 +55,44 @@ class Maploss(nn.Module):
         char_loss = self.single_image_loss(loss_g, gh_label)
         affi_loss = self.single_image_loss(loss_a, gah_label)
         return char_loss/loss_g.shape[0] + affi_loss/loss_a.shape[0]
+
+class MSE_OHEM_Loss(nn.Module):
+    def __init__(self,positive_mult = 3):
+        super(MSE_OHEM_Loss, self).__init__()
+        self.mse_loss = nn.MSELoss(reduction="none")
+        self._positive_mult = float(positive_mult)
+    
+    def mse_loss_single(self,img,target):
+        img = img[i].view(1, -1)
+        target = target[i].view(1, -1)
+        positive_mask = (target > 0).float()
+        sample_loss = self.mse_loss(img, target)
+
+        num_positive = int(positive_mask.sum().data.cpu().item())
+
+        k = int(num_positive * self._positive_mult)
+        num_all = img.shape[1]
+        if k + num_positive > num_all:
+            k = int(num_all - num_positive)
+        if k < 10:
+            avg_sample_loss = sample_loss.mean()
+        else:
+            positive_loss = torch.masked_select(sample_loss, positive_mask.byte())
+            negative_loss = torch.masked_select(sample_loss, 1 - positive_mask.byte())
+            negative_loss_topk, _ = torch.topk(negative_loss, k)
+            avg_sample_loss = positive_loss.mean() + negative_loss_topk.mean()
+
+        return avg_sample_loss
+
+    def forward(self, output_imgs, char_target, aff_target):
+        loss_every_sample = []
+        batch_size = output_imgs.size(0)
+        predict_r = output_imgs[:,0,:,:]
+        predict_a = output_imgs[:,1,:,:]
+
+        for i in range(batch_size):
+            char_loss = self.mse_loss_single(predict_r[i],char_target[i])
+            aff_loss = self.mse_loss_single(predict_a[i],aff_target[i])
+            loss_every_sample.append(char_loss+aff_loss)
+            
+        return torch.stack(loss_every_sample, 0).mean()
