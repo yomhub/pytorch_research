@@ -1,17 +1,17 @@
 import os
 from datetime import datetime
-import tqdm
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 # =================
-from utils.log_hlp import str2time
+from lib.utils.log_hlp import str2time
 
-__DEF_PROJ_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DEF_PROJ_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 class Trainer():
     def __init__(self,  
-        work_dir = __DEF_PROJ_PATH, model_floder = 'saved_model',
+        work_dir = DEF_PROJ_PATH, model_floder = 'saved_model',
         log_floder = 'log', task_name = None,
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
@@ -23,12 +23,12 @@ class Trainer():
         if(task_name!=None): self._logs_path = os.path.join(self._logs_path,task_name)
         if(self._isdebug): self._logs_path = os.path.join(self._logs_path,'debug')
         self._logs_path = os.path.join(self._logs_path,datetime.now().strftime("%Y%m%d-%H%M%S"))
-        self._f_train_loger = open(od.path.join(self._logs_path,'train.txt'),'w',encoding='utf8')
         self._model_path = os.path.join(work_dir,model_floder)
         self._task_name = task_name
 
         if(not(os.path.exists(self._logs_path))):
             os.makedirs(self._logs_path,exist_ok=True)
+        self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8')
 
         self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(self._isdebug)else None
         self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
@@ -45,8 +45,8 @@ class Trainer():
         self._custom_x_input_function=custom_x_input_function
         self._custom_y_input_function=custom_x_input_function
         self._net = net.to(self._device) if(net!=None)else None
-        self._opt = opt.to(self._device) if(opt!=None)else None
         self._loss = loss.to(self._device) if(loss!=None)else None
+        self._opt = opt
 
     def set_trainer(self,net=None,opt=None,loss=None,cmd=None,custom_x_input_function=None,custom_y_input_function=None):
         if(net!=None):self._net = net.to(self._device)
@@ -109,7 +109,7 @@ class Trainer():
             print("Trainer log err: custom_input_function is None")
             return -1
         
-        batch_size = loader.batch_size()
+        batch_size = loader.batch_size
 
         self._f_train_loger.write("Step {}, batch size = {}, device = {}.\n".format(self._current_step,batch_size,self._device))
 

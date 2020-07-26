@@ -20,7 +20,7 @@ from lib.config.train_default import cfg as tcfg
 
 
 __DEF_LOCAL_DIR = os.path.split(__file__)[0]
-__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'mydataset')
+__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
@@ -53,31 +53,34 @@ if __name__ == "__main__":
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
-        "Running with: \n\t Use proposal: {},\n\t Is debug: {}.\n".format(args.proposal,args.debug)+\
+        "Running with: \n"+\
         "\t Step size: {},\n\t Batch size: {}.\n".format(args.step,args.batch)+\
         "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
         "\t Optimizer: {}.\n".format(args.opt)+\
         "\t Init learning rate: {}.\n".format(lr)+\
         "\t Taks name: {}.\n".format(args.name)+\
-        "\t Use GPU: {}.\n".format('Yes' if(args.gpu>=0)else 'No')+\
+        "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
         "\t Save network: {}.\n".format('Yes' if(args.save)else 'No')+\
-        "\t Load network: {}.\n".format('Yes' if(args.load)else 'No')
+        "\t Load network: {}.\n".format('Yes' if(args.load)else 'No')+\
+        "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
+        ""
     print(summarize)
 
     net = CRAFT_MOB()
     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
-    dataset = SynthText(__DEF_SYN_DIR, target_size = 512)
-    dataloader = DataLoader(train_dataset, 4, shuffle=True, num_workers=4, collate_fn=transutils.random_resize_collate)
-    loss = ohem.MSE_OHEM_Loss()
-    loss = loss.to("cuda")
+    train_dataset = SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
+    dataloader = DataLoader(train_dataset, args.batch, shuffle=True, num_workers=4)
+    loss = MSE_OHEM_Loss()
     trainer = CRAFTTrainer
-    trainer = trainer(__DEF_LOCAL_DIR,
+    
+    trainer = trainer(
+        work_dir = __DEF_LOCAL_DIR,
         task_name=args.name if(args.name!=None)else net.__class__.__name__,
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss, opt = opt,
         log_step_size = tcfg['LOGSTP'],
-        custom_x_input_function=dataset.x_input_function,
-        custom_y_input_function=dataset.y_input_function,
+        custom_x_input_function=train_dataset.x_input_function,
+        custom_y_input_function=train_dataset.y_input_function,
         )
 
     trainer.loader_train(dataloader,100)

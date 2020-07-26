@@ -5,7 +5,7 @@ class CRAFTTrainer(Trainer):
     def __init__(self,  
         **params
     ):
-        super.__init__(CRAFTTrainer,**params)
+        Trainer.__init__(self,**params)
     
     def _logger(self,pred,loss,step,batch_size):
         if(self._file_writer!=None):

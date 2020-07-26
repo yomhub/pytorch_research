@@ -15,7 +15,7 @@ cfg['IMG_SIZE'] = [
   ][1]
 
 cfg['STEP'] = [100*10,100*5,50*5,1*5][0]
-cfg['BATCH'] = 5
+cfg['BATCH'] = 4
 cfg['LOGSTP'] = 10
 
 cfg['OPT'] = ['sgd'][0]

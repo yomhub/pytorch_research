@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 # from skimage import io
+from skimage import transform as TR
 from PIL import Image
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -9,11 +10,11 @@ from torchvision import transforms
 from lib.utils.img_hlp import np_corp_points
 # =========================
 try:
-    import datautils
-    import transutils
+    import lib.dataloader.datautils as datautils
+    # import lib.dataloader.transutils
 except:
     from . import datautils
-    from . import transutils
+    # from . import transutils
 
 RD_ONLY_MT_MEM = None
 
@@ -31,23 +32,23 @@ class SynthText(Dataset):
         # check data path
         global RD_ONLY_MT_MEM
         data_file_name = "gt.mat" if (data_file_name==None or not isinstance(data_file_name,str))else data_file_name
-        self._data_dir_path = data_dir_path
+        self.data_dir_path = data_dir_path
 
-        if(RD_ONLY_MT_MEM==None):_rd_mat(os.path.join(self._data_dir_path,data_file_name))
+        if(RD_ONLY_MT_MEM==None):_rd_mat(os.path.join(self.data_dir_path,data_file_name))
 
 
-        self._istrain = bool(istrain)
-        self._gt = {}
+        self.istrain = bool(istrain)
+        self.gt = {}
         if istrain:
-            self._gt["txt"] = RD_ONLY_MT_MEM["txt"][0][:-1][:-10000]
-            self._gt["imnames"] = RD_ONLY_MT_MEM["imnames"][0][:-10000]
-            self._gt["charBB"] = RD_ONLY_MT_MEM["charBB"][0][:-10000]
-            self._gt["wordBB"] = RD_ONLY_MT_MEM["wordBB"][0][:-10000]
+            self.gt["txt"] = RD_ONLY_MT_MEM["txt"][0][:-1][:-10000]
+            self.gt["imnames"] = RD_ONLY_MT_MEM["imnames"][0][:-10000]
+            self.gt["charBB"] = RD_ONLY_MT_MEM["charBB"][0][:-10000]
+            self.gt["wordBB"] = RD_ONLY_MT_MEM["wordBB"][0][:-10000]
         else:
-            self._gt["txt"] = RD_ONLY_MT_MEM["txt"][0][-10000:]
-            self._gt["imnames"] = RD_ONLY_MT_MEM["imnames"][0][-10000:]
-            self._gt["charBB"] = RD_ONLY_MT_MEM["charBB"][0][-10000:]
-            self._gt["wordBB"] = RD_ONLY_MT_MEM["wordBB"][0][-10000:]
+            self.gt["txt"] = RD_ONLY_MT_MEM["txt"][0][-10000:]
+            self.gt["imnames"] = RD_ONLY_MT_MEM["imnames"][0][-10000:]
+            self.gt["charBB"] = RD_ONLY_MT_MEM["charBB"][0][-10000:]
+            self.gt["wordBB"] = RD_ONLY_MT_MEM["wordBB"][0][-10000:]
 
         # (x,y)
         self.image_size = image_size if(isinstance(image_size,tuple) or isinstance(image_size,list))else (3,image_size,image_size)
@@ -57,7 +58,7 @@ class SynthText(Dataset):
         self.x_input_function = x_input_function
         self.y_input_function = y_input_function
     def __len__(self):
-        return self._gt["txt"].shape[0]
+        return self.gt["txt"].shape[0]
 
     def resize(self, image, char_label, word_laebl):
         w, h = image.size
@@ -109,12 +110,6 @@ class SynthText(Dataset):
         if self.random_rote_rate:
             angel = random.randint(0-self.random_rote_rate, self.random_rote_rate)
             img, M = datautils.rotate(angel, img)
-
-        # char_label = char_label / self.down_rate
-        # word_laebl = word_laebl / self.down_rate
-
-        # char_gt = np.zeros((int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
-        # aff_gt = np.zeros((int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
 
         char_gt = np.zeros((int(self.image_size[1]), int(self.image_size[2])))
         aff_gt = np.zeros((int(self.image_size[1]), int(self.image_size[2])))
@@ -220,7 +215,7 @@ class SynthText(Dataset):
         return sample
 
 def x_input_function(sample,th_device): 
-    return sample['image'].to(th_device)
+    return sample['image'].type(torch.DoubleTensor).to(th_device)
 
 def y_input_function(sample,th_device): 
-    return sample['char_gt'].to(th_device),sample['aff_gt'].to(th_device)
+    return sample['char_gt'].type(torch.DoubleTensor).to(th_device),sample['aff_gt'].type(torch.DoubleTensor).to(th_device)
