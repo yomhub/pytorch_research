@@ -215,7 +215,19 @@ class SynthText(Dataset):
         return sample
 
 def x_input_function(sample,th_device): 
-    return sample['image'].type(torch.DoubleTensor).to(th_device)
+    if(len(sample['image'].shape)==4):
+        return torch.from_numpy(sample['image']).type(torch.FloatTensor).to(th_device)
+    elif(len(sample['image'].shape)==3):
+        return torch.from_numpy(sample['image'].reshape([1]+list(sample['image'].shape))).type(torch.FloatTensor).to(th_device)
+    else:
+        return torch.from_numpy(sample['image'].reshape((1,1,sample['image'].shape[0],sample['image'].shape[1]))).type(torch.FloatTensor).to(th_device)
 
 def y_input_function(sample,th_device): 
-    return sample['char_gt'].type(torch.DoubleTensor).to(th_device),sample['aff_gt'].type(torch.DoubleTensor).to(th_device)
+    if(len(sample['char_gt'].shape)==4):
+        return torch.from_numpy(sample['char_gt']).type(torch.FloatTensor).to(th_device),torch.from_numpy(sample['aff_gt']).type(torch.FloatTensor).to(th_device)
+    elif(len(sample['char_gt'].shape)==3):
+        return torch.from_numpy(sample['char_gt'].reshape([1]+list(sample['char_gt'].shape))).type(torch.FloatTensor).to(th_device),\
+            torch.from_numpy(sample['aff_gt'].reshape([1]+list(sample['aff_gt'].shape))).type(torch.FloatTensor).to(th_device)
+    else:
+        return torch.from_numpy(sample['char_gt'].reshape((1,1,sample['char_gt'].shape[0],sample['char_gt'].shape[1]))).type(torch.FloatTensor).to(th_device),\
+            torch.from_numpy(sample['aff_gt'].reshape((1,1,sample['aff_gt'].shape[0],sample['aff_gt'].shape[1]))).type(torch.FloatTensor).to(th_device)

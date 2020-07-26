@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 
 class Maploss(nn.Module):
     def __init__(self, use_gpu = True):
@@ -63,8 +63,8 @@ class MSE_OHEM_Loss(nn.Module):
         self._positive_mult = float(positive_mult)
     
     def mse_loss_single(self,img,target):
-        img = img[i].view(1, -1)
-        target = target[i].view(1, -1)
+        img = img.view(1, -1)
+        target = target.view(1, -1)
         positive_mask = (target > 0).float()
         sample_loss = self.mse_loss(img, target)
 
@@ -84,11 +84,15 @@ class MSE_OHEM_Loss(nn.Module):
 
         return avg_sample_loss
 
-    def forward(self, output_imgs, char_target, aff_target):
+    def forward(self, x, y):
+        char_target, aff_target = y
         loss_every_sample = []
-        batch_size = output_imgs.size(0)
-        predict_r = output_imgs[:,0,:,:]
-        predict_a = output_imgs[:,1,:,:]
+        batch_size = x.size(0)
+        # x = x.permute(0,2,3,1)
+        predict_r = x[:,0,:,:]
+        predict_a = x[:,1,:,:]
+        char_target = F.interpolate(char_target,size=predict_r.shape[1:], mode='bilinear', align_corners=False)
+        aff_target = F.interpolate(aff_target,size=predict_a.shape[1:], mode='bilinear', align_corners=False)
 
         for i in range(batch_size):
             char_loss = self.mse_loss_single(predict_r[i],char_target[i])

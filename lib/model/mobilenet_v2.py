@@ -1,4 +1,6 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 def double_conv(in_ch, mid_ch, out_ch):
@@ -231,7 +233,7 @@ class CRAFT_MOB(nn.Module):
         
         y = self._final_predict(x)
 
-        return y.permute(0, 2, 3, 1),x
+        return y,x
         
     def _initialize_weights(self):
         for m in self.modules():
