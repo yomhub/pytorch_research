@@ -1,5 +1,6 @@
 import os
 import sys
+import platform
 import torch
 import argparse
 from datetime import datetime
@@ -25,7 +26,7 @@ __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
-__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
+__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText') if(platform.system().lower()[:7]!='windows')else "D:\\development\\SynthText"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -42,13 +43,14 @@ if __name__ == "__main__":
     parser.add_argument('--step', type=int, help='Step size.',default=tcfg['STEP'])
     parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
-    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
+    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=-1)
     parser.add_argument('--savestep', type=int, help='Batch size.',default=20)
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
 
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
+    isdebug = True
     lr = args.learnrate
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
 
@@ -69,7 +71,8 @@ if __name__ == "__main__":
     net = CRAFT_MOB()
     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
     train_dataset = SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
-    dataloader = DataLoader(train_dataset, args.batch, shuffle=True, num_workers=4)
+    dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
+        num_workers=4 if(platform.system().lower()[:7]!='windows')else 0)
     loss = MSE_OHEM_Loss()
     trainer = CRAFTTrainer
     
@@ -83,6 +86,6 @@ if __name__ == "__main__":
         custom_y_input_function=train_dataset.y_input_function,
         )
 
-    trainer.loader_train(dataloader,100)
+    trainer.loader_train(dataloader,1)
     print('finish')
     pass

@@ -65,7 +65,7 @@ class MSE_OHEM_Loss(nn.Module):
     def mse_loss_single(self,img,target):
         img = img.view(1, -1)
         target = target.view(1, -1)
-        positive_mask = (target > 0).float()
+        positive_mask = target > 0
         sample_loss = self.mse_loss(img, target)
 
         num_positive = int(positive_mask.sum().data.cpu().item())
@@ -77,8 +77,8 @@ class MSE_OHEM_Loss(nn.Module):
         if k < 10:
             avg_sample_loss = sample_loss.mean()
         else:
-            positive_loss = torch.masked_select(sample_loss, positive_mask.byte())
-            negative_loss = torch.masked_select(sample_loss, 1 - positive_mask.byte())
+            positive_loss = torch.masked_select(sample_loss, positive_mask)
+            negative_loss = torch.masked_select(sample_loss, target <= 0.0)
             negative_loss_topk, _ = torch.topk(negative_loss, k)
             avg_sample_loss = positive_loss.mean() + negative_loss_topk.mean()
 
@@ -86,8 +86,9 @@ class MSE_OHEM_Loss(nn.Module):
 
     def forward(self, x, y):
         char_target, aff_target = y
+        x = x[0]
         loss_every_sample = []
-        batch_size = x.size(0)
+        batch_size = x.shape[0]
         # x = x.permute(0,2,3,1)
         predict_r = x[:,0,:,:]
         predict_a = x[:,1,:,:]

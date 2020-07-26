@@ -215,19 +215,28 @@ class SynthText(Dataset):
         return sample
 
 def x_input_function(sample,th_device): 
-    if(len(sample['image'].shape)==4):
-        return torch.from_numpy(sample['image']).type(torch.FloatTensor).to(th_device)
+    if(isinstance(sample['image'],np.ndarray)):
+        sample['image'] = torch.from_numpy(sample['image'])
+    if(len(sample['image'].shape)==2):
+        sample['image'] = torch.reshape(sample['image'],(1,1,sample['image'].shape[0],sample['image'].shape[1]))
     elif(len(sample['image'].shape)==3):
-        return torch.from_numpy(sample['image'].reshape([1]+list(sample['image'].shape))).type(torch.FloatTensor).to(th_device)
-    else:
-        return torch.from_numpy(sample['image'].reshape((1,1,sample['image'].shape[0],sample['image'].shape[1]))).type(torch.FloatTensor).to(th_device)
+        sample['image'] = torch.reshape(sample['image'],tuple([1]+list(sample['image'].shape)))
+
+    return sample['image'].type(torch.FloatTensor).to(th_device)
 
 def y_input_function(sample,th_device): 
-    if(len(sample['char_gt'].shape)==4):
-        return torch.from_numpy(sample['char_gt']).type(torch.FloatTensor).to(th_device),torch.from_numpy(sample['aff_gt']).type(torch.FloatTensor).to(th_device)
+    if(isinstance(sample['char_gt'],np.ndarray)):
+        sample['char_gt'] = torch.from_numpy(sample['char_gt'])
+    if(len(sample['char_gt'].shape)==2):
+        sample['char_gt'] = torch.reshape(sample['char_gt'],(1,1,sample['char_gt'].shape[0],sample['char_gt'].shape[1]))
     elif(len(sample['char_gt'].shape)==3):
-        return torch.from_numpy(sample['char_gt'].reshape([1]+list(sample['char_gt'].shape))).type(torch.FloatTensor).to(th_device),\
-            torch.from_numpy(sample['aff_gt'].reshape([1]+list(sample['aff_gt'].shape))).type(torch.FloatTensor).to(th_device)
-    else:
-        return torch.from_numpy(sample['char_gt'].reshape((1,1,sample['char_gt'].shape[0],sample['char_gt'].shape[1]))).type(torch.FloatTensor).to(th_device),\
-            torch.from_numpy(sample['aff_gt'].reshape((1,1,sample['aff_gt'].shape[0],sample['aff_gt'].shape[1]))).type(torch.FloatTensor).to(th_device)
+        sample['char_gt'] = torch.reshape(sample['char_gt'],(sample['char_gt'].shape[0],1,sample['char_gt'].shape[1],sample['char_gt'].shape[2]))
+
+    if(isinstance(sample['aff_gt'],np.ndarray)):
+        sample['aff_gt'] = torch.from_numpy(sample['aff_gt'])
+    if(len(sample['aff_gt'].shape)==2):
+        sample['aff_gt'] = torch.reshape(sample['aff_gt'],(1,1,sample['aff_gt'].shape[0],sample['aff_gt'].shape[1]))
+    elif(len(sample['aff_gt'].shape)==3):
+        sample['aff_gt'] = torch.reshape(sample['aff_gt'],(sample['aff_gt'].shape[0],1,sample['aff_gt'].shape[1],sample['aff_gt'].shape[2]))
+
+    return sample['char_gt'].type(torch.FloatTensor).to(th_device),sample['aff_gt'].type(torch.FloatTensor).to(th_device)

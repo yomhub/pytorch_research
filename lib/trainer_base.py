@@ -30,7 +30,7 @@ class Trainer():
             os.makedirs(self._logs_path,exist_ok=True)
         self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8')
 
-        self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(self._isdebug)else None
+        self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(not self._isdebug)else None
         self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
         self._device = torch.device("cuda:0" if self._use_cuda else "cpu")
 
@@ -43,7 +43,7 @@ class Trainer():
         self._task_name = task_name
         self._log_step_size = log_step_size
         self._custom_x_input_function=custom_x_input_function
-        self._custom_y_input_function=custom_x_input_function
+        self._custom_y_input_function=custom_y_input_function
         self._net = net.to(self._device) if(net!=None)else None
         self._loss = loss.to(self._device) if(loss!=None)else None
         self._opt = opt
@@ -114,26 +114,25 @@ class Trainer():
         self._f_train_loger.write("Step {}, batch size = {}, device = {}.\n".format(self._current_step,batch_size,self._device))
 
         with torch.autograd.profiler.profile() as prof:
-            for i in tqdm(range(train_size)):
-                c_loss = 0.0
-                for j, batch_data in enumerate(loader):
-                    x=self._custom_x_input_function(batch_data,self._device)
-                    y=self._custom_y_input_function(batch_data,self._device)
-                    self._opt.zero_grad()
+            with tqdm(total=train_size) as pbar:
+                i=0
+                for j,sample in enumerate(loader):
+                    if(i>=train_size):break
+                    x=self._custom_x_input_function(sample,self._device)
+                    y=self._custom_y_input_function(sample,self._device)
                     pred = self._net(x)
+                    self._opt.zero_grad()
                     loss = self._loss(pred,y)
                     loss.backward()
                     self._opt.step()
-                    c_loss += loss.item()
+                    self._current_step += 1
+                    if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
+                        self._logger(pred,loss.item(),self._current_step,batch_size)
+                    self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
+                    pbar.update()
+                    i+=1
 
-                c_loss /= float(len(xs))
-                self._current_step += 1
-                if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
-                    self._logger(pred,c_loss,self._current_step,batch_size)
-        
-                self._f_train_loger.write("Avg loss:{}.\n".format(c_loss))
-
-        self._f_train_loger.write(prof)
+        self._f_train_loger.write(str(prof))
         self._f_train_loger.flush()
         return 0
 
