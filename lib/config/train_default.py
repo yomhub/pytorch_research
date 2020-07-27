@@ -14,9 +14,9 @@ cfg['IMG_SIZE'] = [
   [640, 640]
   ][1]
 
-cfg['STEP'] = [100*10,100*5,50*5,1*5][0]
+cfg['STEP'] = [1000*5,100*5,50*5,1*5][1]
 cfg['BATCH'] = 4
-cfg['LOGSTP'] = 10
+cfg['LOGSTP'] = 100
 
 cfg['OPT'] = ['sgd'][0]
 # learning rate
@@ -24,9 +24,9 @@ cfg['LR'] = 0.001
 # momentum
 cfg['MMT'] = 0.8
 # learning rate decrease step, 0 to disable
-cfg['LR_DEC_STP'] = 200
-# learning rate decrease rate: current LR*(1-rt)
-cfg['LR_DEC_RT'] = 0.1
+cfg['LR_DEC_STP'] = 1000
+# learning rate decrease rate: current LR*rt
+cfg['LR_DEC_RT'] = 0.9
 
 
 cfg['DATASET'] = ["ttt","ctw","svt"][0]

@@ -15,7 +15,8 @@ class Trainer():
         log_floder = 'log', task_name = None,
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
-        log_step_size = None,
+        log_step_size = None, save_step_size = None, 
+        lr_decay_step_size = None, lr_decay_multi = None,
         custom_x_input_function=None,custom_y_input_function=None,
     ):
         self._isdebug = bool(isdebug)
@@ -42,14 +43,17 @@ class Trainer():
         self._eva_step = 0
         self._task_name = task_name
         self._log_step_size = log_step_size
+        self._save_step_size = save_step_size
+        self._lr_decay_step_size = lr_decay_step_size
+        self._lr_decay_multi = lr_decay_multi
         self._custom_x_input_function=custom_x_input_function
         self._custom_y_input_function=custom_y_input_function
-        self._net = net.to(self._device) if(net!=None)else None
+        self._net = net.float().to(self._device) if(net!=None)else None
         self._loss = loss.to(self._device) if(loss!=None)else None
         self._opt = opt
 
     def set_trainer(self,net=None,opt=None,loss=None,cmd=None,custom_x_input_function=None,custom_y_input_function=None):
-        if(net!=None):self._net = net.to(self._device)
+        if(net!=None):self._net = net.float().to(self._device)
         if(opt!=None):self._opt = opt.to(self._device)
         if(loss!=None):self._loss = loss.to(self._device)
         if(custom_x_input_function!=None):self._custom_x_input_function = custom_x_input_function
@@ -126,8 +130,19 @@ class Trainer():
                     loss.backward()
                     self._opt.step()
                     self._current_step += 1
+
+                    if(self._save_step_size!=None and self._current_step%self._save_step_size==0):
+                        self.save()
+
+                    if(self._lr_decay_step_size!=None and self._lr_decay_multi!=None and self._current_step%self._lr_decay_step_size==0):
+                        self._f_train_loger.write("Change learning rate form {} to {}.\n".format(
+                            self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*self._lr_decay_multi))
+                        for param_group in self._opt.param_groups:
+                            param_group['lr'] *= self._lr_decay_multi
+                    
                     if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
-                        self._logger(pred,loss.item(),self._current_step,batch_size)
+                        self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
+
                     self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
                     pbar.update()
                     i+=1
@@ -136,7 +151,7 @@ class Trainer():
         self._f_train_loger.flush()
         return 0
 
-    def _logger(self,pred,loss,step,batch_size):
+    def _logger(self,x,y,pred,loss,step,batch_size):
         return None
 
     def get_net_size(self):
@@ -162,8 +177,8 @@ class Trainer():
                 "{}+{}".format(now_time,os.path.split(save_dir)[1]))
             
         if(not os.path.exists(os.path.dirname(save_dir))):
-            os.makedirs(save_dir,exist_ok=True)
-        self._net.save(save_dir)
+            os.makedirs(os.path.dirname(save_dir),exist_ok=True)
+        torch.save(self._net,save_dir)
         return 
         
     def load(self,load_dir=None):
@@ -172,11 +187,11 @@ class Trainer():
             None or '/xxx/' for newest file
             '/xxx/***.pkl' for specific file
         """
-        if(self._net==None):return
         if(load_dir==None):load_dir = self._model_path
         if(len(load_dir.split('.'))>1):
             if(os.path.exists(load_dir)):
-                self._net.load(load_dir)
+                self._net=torch.load(load_dir)
+                self._net=self._net.float().to(self._device)
                 return
             else:
                 load_dir = os.path.dirname(load_dir.split('.')[0])
@@ -189,6 +204,12 @@ class Trainer():
         for i,o in enumerate(tsk_list):
             cur_time = str2time(o.split('+')[0])
             if(cur_time>last_time):cur_i=i
-        self._net.load(os.path.join(load_dir,tsk_list[cur_i]))
+        print("Load at {}.".format(os.path.join(load_dir,tsk_list[cur_i])))
+        self._net=torch.load(os.path.join(load_dir,tsk_list[cur_i]))
+        self._net=self._net.float().to(self._device)
         return 
 
+    def log_info(self,info):
+        if(self._f_train_loger!=None):
+            self._f_train_loger.write(info)
+            self._f_train_loger.flush()

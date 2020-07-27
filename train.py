@@ -20,13 +20,15 @@ from lib.trainer_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
 
-__DEF_LOCAL_DIR = os.path.split(__file__)[0]
+__DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
 __DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
-__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText') if(platform.system().lower()[:7]!='windows')else "D:\\development\\SynthText"
+if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
+elif(os.path.exists("/BACKUP/SynthText")):__DEF_SYN_DIR = "/BACKUP/SynthText"
+else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -43,20 +45,22 @@ if __name__ == "__main__":
     parser.add_argument('--step', type=int, help='Step size.',default=tcfg['STEP'])
     parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
-    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=-1)
+    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
     parser.add_argument('--savestep', type=int, help='Batch size.',default=20)
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
 
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
-    isdebug = True
+    # isdebug = True
     lr = args.learnrate
+    max_step = args.step if(not isdebug)else 1
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
+        "Working DIR: {}\n".format(__DEF_LOCAL_DIR)+\
         "Running with: \n"+\
-        "\t Step size: {},\n\t Batch size: {}.\n".format(args.step,args.batch)+\
+        "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,args.batch)+\
         "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
         "\t Optimizer: {}.\n".format(args.opt)+\
         "\t Init learning rate: {}.\n".format(lr)+\
@@ -69,7 +73,10 @@ if __name__ == "__main__":
     print(summarize)
 
     net = CRAFT_MOB()
-    opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
+    if(args.opt.lower()=='adam'):
+        opt = optim.Adam(net.parameters(), lr=lr)
+    else:
+        opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
     train_dataset = SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
     dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
         num_workers=4 if(platform.system().lower()[:7]!='windows')else 0)
@@ -82,10 +89,18 @@ if __name__ == "__main__":
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss, opt = opt,
         log_step_size = tcfg['LOGSTP'],
+        save_step_size = tcfg['LOGSTP'],
+        lr_decay_step_size = tcfg['LR_DEC_STP'], lr_decay_multi = tcfg['LR_DEC_RT'],
         custom_x_input_function=train_dataset.x_input_function,
         custom_y_input_function=train_dataset.y_input_function,
         )
 
-    trainer.loader_train(dataloader,1)
-    print('finish')
+    trainer.log_info(summarize)
+    trainer.load()
+    trainer.loader_train(dataloader,max_step)
+    trainer.save()
+    time_usage = datetime.now()
+    print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
+    time_usage = time_usage - time_start
+    print("Time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
     pass
