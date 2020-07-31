@@ -124,8 +124,8 @@ class Trainer():
                     if(i>=train_size):break
                     x=self._custom_x_input_function(sample,self._device)
                     y=self._custom_y_input_function(sample,self._device)
-                    pred = self._net(x)
                     self._opt.zero_grad()
+                    pred = self._net(x)
                     loss = self._loss(pred,y)
                     loss.backward()
                     self._opt.step()

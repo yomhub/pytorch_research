@@ -87,6 +87,8 @@ class MSE_OHEM_Loss(nn.Module):
     def forward(self, x, y):
         char_target, aff_target = y
         x = x[0]
+        if(len(x.shape)==3):
+            x=torch.reshape(x,(1,x.shape[0],x.shape[1],x.shape[2]))
         loss_every_sample = []
         batch_size = x.shape[0]
         # x = x.permute(0,2,3,1)
