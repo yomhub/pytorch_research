@@ -145,6 +145,7 @@ class Trainer():
                         self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
 
                     self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
+                    self._f_train_loger.flush()
 
                     if(train_size<=100 or i%int(train_size/100)==0):
                         pbar.update()

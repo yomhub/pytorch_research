@@ -76,9 +76,9 @@ if __name__ == "__main__":
 
     net = CRAFT_MOB()
     if(args.opt.lower()=='adam'):
-        opt = optim.Adam(net.parameters(), lr=lr)
+        opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     else:
-        opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'])
+        opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     train_dataset = SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
     dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
         num_workers=4 if(platform.system().lower()[:7]!='windows')else 0)
