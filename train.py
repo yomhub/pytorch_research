@@ -56,6 +56,8 @@ if __name__ == "__main__":
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 1
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
+    lr_decay_step_size = tcfg['LR_DEC_STP']
+    lr_decay_step_size = None
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(__DEF_LOCAL_DIR)+\
@@ -89,15 +91,15 @@ if __name__ == "__main__":
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss, opt = opt,
         log_step_size = tcfg['LOGSTP'],
-        save_step_size = tcfg['LOGSTP'],
-        lr_decay_step_size = tcfg['LR_DEC_STP'], lr_decay_multi = tcfg['LR_DEC_RT'],
+        save_step_size = tcfg['SAVESTP'],
+        lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
         custom_x_input_function=train_dataset.x_input_function,
         custom_y_input_function=train_dataset.y_input_function,
         )
 
     trainer.log_info(summarize)
     trainer.load()
-    trainer.loader_train(dataloader,max_step)
+    trainer.loader_train(dataloader,int(len(train_dataset)/4))
     trainer.save()
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))

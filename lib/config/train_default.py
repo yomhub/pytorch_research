@@ -14,17 +14,20 @@ cfg['IMG_SIZE'] = [
   [640, 640]
   ][1]
 
-cfg['STEP'] = [1000*5,100*5,50*5,1*5][1]
+cfg['STEP'] = [1000*5,100*5,50*5,1*5][0]
 cfg['BATCH'] = 4
+# Step size for log
 cfg['LOGSTP'] = 100
+# Step size for save model
+cfg['SAVESTP'] = 5000
 
-cfg['OPT'] = ['sgd'][0]
+cfg['OPT'] = ['sgd','adam'][1]
 # learning rate
 cfg['LR'] = 0.001
 # momentum
 cfg['MMT'] = 0.8
 # learning rate decrease step, 0 to disable
-cfg['LR_DEC_STP'] = 1000
+cfg['LR_DEC_STP'] = 500
 # learning rate decrease rate: current LR*rt
 cfg['LR_DEC_RT'] = 0.9
 

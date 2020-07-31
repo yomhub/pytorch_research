@@ -98,7 +98,7 @@ class Trainer():
         c_loss /= float(len(xs))
         self._current_step += 1
         if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
-            self._logger(pred,c_loss,self._current_step,batch_size)
+            self._logger(x,y,pred,c_loss,self._current_step,batch_size)
         
         self._f_train_loger.write("Avg loss:{}.\n".format(c_loss))
         self._f_train_loger.write(prof)
@@ -118,7 +118,7 @@ class Trainer():
         self._f_train_loger.write("Step {}, batch size = {}, device = {}.\n".format(self._current_step,batch_size,self._device))
 
         with torch.autograd.profiler.profile() as prof:
-            with tqdm(total=train_size) as pbar:
+            with tqdm(total=min(train_size,100)) as pbar:
                 i=0
                 for j,sample in enumerate(loader):
                     if(i>=train_size):break
@@ -135,8 +135,9 @@ class Trainer():
                         self.save()
 
                     if(self._lr_decay_step_size!=None and self._lr_decay_multi!=None and self._current_step%self._lr_decay_step_size==0):
-                        self._f_train_loger.write("Change learning rate form {} to {}.\n".format(
-                            self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*self._lr_decay_multi))
+                        self._f_train_loger.write(
+                            "Change learning rate form {} to {}.\n".format(
+                                self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*self._lr_decay_multi))
                         for param_group in self._opt.param_groups:
                             param_group['lr'] *= self._lr_decay_multi
                     
@@ -144,7 +145,9 @@ class Trainer():
                         self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
 
                     self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
-                    pbar.update()
+
+                    if(train_size<=100 or i%int(train_size/100)==0):
+                        pbar.update()
                     i+=1
 
         self._f_train_loger.write(str(prof))
