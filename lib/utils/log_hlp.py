@@ -15,3 +15,4 @@ def plt_heatmap2d(arr: np.ndarray,cmap:str='viridis'):
     plt.imshow(arr, cmap=cmap)
     plt.colorbar()
     plt.show()
+

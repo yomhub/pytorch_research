@@ -57,7 +57,7 @@ if __name__ == "__main__":
     max_step = args.step if(not isdebug)else 1
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
     lr_decay_step_size = tcfg['LR_DEC_STP']
-    lr_decay_step_size = None
+    # lr_decay_step_size = None
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(__DEF_LOCAL_DIR)+\
@@ -98,9 +98,12 @@ if __name__ == "__main__":
         )
 
     trainer.log_info(summarize)
-    trainer.load()
-    trainer.loader_train(dataloader,int(len(train_dataset)/4))
-    trainer.save()
+    if(args.load):
+        print("Loading model...")
+        trainer.load()
+    trainer.loader_train(dataloader,int(len(train_dataset)/args.batch) if(max_step<0)else max_step)
+    if(args.save):
+        trainer.save()
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
     time_usage = time_usage - time_start

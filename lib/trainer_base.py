@@ -1,6 +1,8 @@
 import os
+import heapq
 from datetime import datetime
 from tqdm import tqdm
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
@@ -16,7 +18,7 @@ class Trainer():
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
         log_step_size = None, save_step_size = None, 
-        lr_decay_step_size = None, lr_decay_multi = None,
+        lr_decay_step_size = None, lr_decay_multi = None, auto_decay = False,
         custom_x_input_function=None,custom_y_input_function=None,
     ):
         self._isdebug = bool(isdebug)
@@ -45,7 +47,8 @@ class Trainer():
         self._log_step_size = log_step_size
         self._save_step_size = save_step_size
         self._lr_decay_step_size = lr_decay_step_size
-        self._lr_decay_multi = lr_decay_multi
+        self._lr_decay_rate = lr_decay_multi
+        self._auto_decay = bool(auto_decay)
         self._custom_x_input_function=custom_x_input_function
         self._custom_y_input_function=custom_y_input_function
         self._net = net.float().to(self._device) if(net!=None)else None
@@ -94,6 +97,7 @@ class Trainer():
                 loss.backward()
                 self._opt.step()
                 c_loss += loss.item()
+                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
         
         c_loss /= float(len(xs))
         self._current_step += 1
@@ -120,6 +124,8 @@ class Trainer():
         with torch.autograd.profiler.profile() as prof:
             with tqdm(total=min(train_size,100)) as pbar:
                 i=0
+                loss_avg_10=0.0
+                loss_10=[]
                 for j,sample in enumerate(loader):
                     if(i>=train_size):break
                     x=self._custom_x_input_function(sample,self._device)
@@ -130,22 +136,28 @@ class Trainer():
                     loss.backward()
                     self._opt.step()
                     self._current_step += 1
+                    self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
 
-                    if(self._save_step_size!=None and self._current_step%self._save_step_size==0):
+                    if(self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
                         self.save()
-
-                    if(self._lr_decay_step_size!=None and self._lr_decay_multi!=None and self._current_step%self._lr_decay_step_size==0):
-                        self._f_train_loger.write(
-                            "Change learning rate form {} to {}.\n".format(
-                                self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*self._lr_decay_multi))
-                        for param_group in self._opt.param_groups:
-                            param_group['lr'] *= self._lr_decay_multi
                     
-                    if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
+                    if(self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
                         self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
+
+                    if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
+                        self.opt_decay()
 
                     self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
                     self._f_train_loger.flush()
+
+                    if(self._auto_decay):
+                        loss_10.append(loss.item())
+                        if(len(loss_10)>=10):
+                            tmp = np.mean(loss_10)
+                            if(abs(loss_avg_10-tmp)<max(loss_10)*0.1):
+                                self.opt_decay()
+                            loss_avg_10=tmp
+                            loss_10=[]
 
                     if(train_size<=100 or i%int(train_size/100)==0):
                         pbar.update()
@@ -157,12 +169,14 @@ class Trainer():
 
     def _logger(self,x,y,pred,loss,step,batch_size):
         return None
+    def _step_callback(self,x,y,pred,loss,step,batch_size):
+        return None
 
     def get_net_size(self):
         if(self._net==None):return 0
         return sum(param.numel() for param in self._net.parameters())
 
-    def save(self,save_dir=None):
+    def save(self,save_dir=None,max_save=3):
         """
         save_dir:
             None or
@@ -182,6 +196,18 @@ class Trainer():
             
         if(not os.path.exists(os.path.dirname(save_dir))):
             os.makedirs(os.path.dirname(save_dir),exist_ok=True)
+
+        if(max_save!=None and max_save>0):
+            tsk_list = [o for o in os.listdir(os.path.dirname(save_dir)) if o[-4:]=='.pkl']
+            if(len(tsk_list)>max_save):
+                cur_time = []
+                sub_name = tsk_list[0].split('+')[1]
+                base_dir = os.path.dirname(save_dir)
+                for o in tsk_list:
+                    heapq.heappush(cur_time,str2time(o.split('+')[0]))
+                for o in cur_time[:1-max_save]:
+                    os.remove(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))
+                    
         torch.save(self._net,save_dir)
         return 
         
@@ -217,3 +243,16 @@ class Trainer():
         if(self._f_train_loger!=None):
             self._f_train_loger.write(info)
             self._f_train_loger.flush()
+
+    def opt_decay(self,decay_rate=None):
+        if(self._opt==None):return
+        decay_rate = decay_rate if(decay_rate!=None)else self._lr_decay_rate
+        decay_rate = decay_rate if(decay_rate!=None)else 0.5
+
+        if(self._f_train_loger!=None):
+            self._f_train_loger.write(
+                "Change learning rate form {} to {}.\n".format(
+                    self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*(1.0-decay_rate)))
+        for param_group in self._opt.param_groups:
+            param_group['lr'] *= (1.0-decay_rate)
+        return
