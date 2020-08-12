@@ -121,49 +121,54 @@ class Trainer():
 
         self._f_train_loger.write("Step {}, batch size = {}, device = {}.\n".format(self._current_step,batch_size,self._device))
 
-        with torch.autograd.profiler.profile() as prof:
-            with tqdm(total=min(train_size,100)) as pbar:
-                i=0
-                loss_avg_10=0.0
-                loss_10=[]
-                for j,sample in enumerate(loader):
-                    if(i>=train_size):break
-                    x=self._custom_x_input_function(sample,self._device)
-                    y=self._custom_y_input_function(sample,self._device)
-                    self._opt.zero_grad()
-                    pred = self._net(x)
-                    loss = self._loss(pred,y)
-                    loss.backward()
-                    self._opt.step()
-                    self._current_step += 1
-                    self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+        # with torch.autograd.profiler.profile() as prof:
+        with tqdm(total=min(train_size,100)) as pbar:
+            i=0
+            loss_avg_10=0.0
+            loss_10=[]
+            for j,sample in enumerate(loader):
+                if(i>=train_size):break
+                x=self._custom_x_input_function(sample,self._device)
+                y=self._custom_y_input_function(sample,self._device)
+                self._opt.zero_grad()
+                pred = self._net(x)
+                loss = self._loss(pred,y)
+                loss.backward()
+                self._opt.step()
+                self._current_step += 1
+                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
 
-                    if(self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
-                        self.save()
-                    
-                    if(self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                        self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
+                if(self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
+                    self.save()
+                
+                if(self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
+                    self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
 
-                    if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
-                        self.opt_decay()
+                if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
+                    self.opt_decay()
 
-                    self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
-                    self._f_train_loger.flush()
+                self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
+                self._f_train_loger.flush()
 
-                    if(self._auto_decay):
-                        loss_10.append(loss.item())
-                        if(len(loss_10)>=10):
-                            tmp = np.mean(loss_10)
-                            if(abs(loss_avg_10-tmp)<max(loss_10)*0.1):
-                                self.opt_decay()
-                            loss_avg_10=tmp
-                            loss_10=[]
+                # del 
+                del sample
+                del x
+                del y
 
-                    if(train_size<=100 or i%int(train_size/100)==0):
-                        pbar.update()
-                    i+=1
+                if(self._auto_decay):
+                    loss_10.append(loss.item())
+                    if(len(loss_10)>=10):
+                        tmp = np.mean(loss_10)
+                        if(abs(loss_avg_10-tmp)<max(loss_10)*0.1):
+                            self.opt_decay()
+                        loss_avg_10=tmp
+                        loss_10=[]
 
-        self._f_train_loger.write(str(prof))
+                if(train_size<=100 or i%int(train_size/100)==0):
+                    pbar.update()
+                i+=1
+
+        # self._f_train_loger.write(str(prof))
         self._f_train_loger.flush()
         return 0
 

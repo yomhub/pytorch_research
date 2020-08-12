@@ -14,7 +14,7 @@ from lib.model.mobilenet_v2 import CRAFT_MOB
 from lib.loss.mseloss import MSE_OHEM_Loss, MSELoss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
-from lib.dataloader.synthtext import SynthText
+import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
 from lib.trainer_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
@@ -67,7 +67,7 @@ if __name__ == "__main__":
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    train_dataset = SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
+    train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
         transform=transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -88,8 +88,8 @@ if __name__ == "__main__":
         log_step_size = tcfg['LOGSTP'],
         save_step_size = tcfg['SAVESTP'],
         lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
-        custom_x_input_function=train_dataset.x_input_function,
-        custom_y_input_function=train_dataset.y_input_function,
+        custom_x_input_function=syn80k.x_input_function,
+        custom_y_input_function=syn80k.y_input_function,
         )
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
