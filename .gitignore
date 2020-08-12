@@ -15,6 +15,7 @@ dataset.lnk
 *.out
 *.txt
 *.jetson
+*.sh
 .vscode
 lab.py
 run.sh

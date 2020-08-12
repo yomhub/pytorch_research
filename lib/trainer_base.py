@@ -26,7 +26,7 @@ class Trainer():
         if(task_name!=None): self._logs_path = os.path.join(self._logs_path,task_name)
         if(self._isdebug): self._logs_path = os.path.join(self._logs_path,'debug')
         self._logs_path = os.path.join(self._logs_path,datetime.now().strftime("%Y%m%d-%H%M%S"))
-        self._model_path = os.path.join(work_dir,model_floder)
+        self._model_path = os.path.join(work_dir,model_floder) if(task_name==None)else os.path.join(work_dir,model_floder,task_name) 
         self._task_name = task_name
 
         if(not(os.path.exists(self._logs_path))):
@@ -189,10 +189,9 @@ class Trainer():
 
         if(save_dir==None): save_dir = os.path.join(self._model_path,file_name)
         elif(len(save_dir.split('.'))==1): save_dir = os.path.join(save_dir,file_name)
+        elif(os.path.dirname(save_dir)==''): save_dir = os.path.join(self._model_path,save_dir)
         else:
-            save_dir = os.path.join(
-                os.path.split(save_dir)[0],
-                "{}+{}".format(now_time,os.path.split(save_dir)[1]))
+            save_dir = save_dir
             
         if(not os.path.exists(os.path.dirname(save_dir))):
             os.makedirs(os.path.dirname(save_dir),exist_ok=True)
@@ -208,6 +207,7 @@ class Trainer():
                 for o in cur_time[:1-max_save]:
                     os.remove(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))
                     
+        print("Save at {}".format(save_dir))
         torch.save(self._net,save_dir)
         return 
         

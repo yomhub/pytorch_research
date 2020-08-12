@@ -198,16 +198,13 @@ class SynthText(Dataset):
                                 except:
                                     print(idx, min_y+th, min_x+tw)
         sample = {
-            'image': img,
+            'image': img if(self.transform)else self.transform(img),
             'char_gt': char_gt,
             'aff_gt': aff_gt,
             # 'affine_boxes': affine_boxes,
             # 'line_boxes': line_boxes,
             # 'char_label': char_label
         }
-
-        if self.transform:
-            sample = self.transform(sample)
 
         sample['char_gt'] = TR.resize(sample['char_gt'], (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
         sample['aff_gt'] = TR.resize(sample['aff_gt'], (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
