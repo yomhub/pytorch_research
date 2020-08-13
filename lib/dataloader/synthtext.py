@@ -7,7 +7,7 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from lib.utils.img_hlp import np_corp_points
+from lib.utils.img_hlp import np_corp_points, to_torch
 # =========================
 try:
     import lib.dataloader.datautils as datautils
@@ -198,42 +198,24 @@ class SynthText(Dataset):
                                 except:
                                     print(idx, min_y+th, min_x+tw)
         sample = {
-            'image': img if(self.transform)else self.transform(img),
-            'char_gt': char_gt,
-            'aff_gt': aff_gt,
+            # 'image': img if(self.transform)else self.transform(img),
+            'image': img,
+            'char_gt': np.expand_dims(TR.resize(char_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
+            'aff_gt': np.expand_dims(TR.resize(aff_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
             # 'affine_boxes': affine_boxes,
             # 'line_boxes': line_boxes,
             # 'char_label': char_label
         }
 
-        sample['char_gt'] = TR.resize(sample['char_gt'], (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
-        sample['aff_gt'] = TR.resize(sample['aff_gt'], (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate)))
-
         return sample
 
-def x_input_function(sample,th_device): 
-    if(isinstance(sample['image'],np.ndarray)):
-        sample['image'] = torch.from_numpy(sample['image'])
-    if(len(sample['image'].shape)==2):
-        sample['image'] = torch.reshape(sample['image'],(1,1,sample['image'].shape[0],sample['image'].shape[1]))
-    elif(len(sample['image'].shape)==3):
-        sample['image'] = torch.reshape(sample['image'],tuple([1]+list(sample['image'].shape)))
 
-    return sample['image'].type(torch.FloatTensor).to(th_device)
+def x_input_function(sample,th_device): 
+    x = sample['image'] if(isinstance(sample,dict))else sample
+    return to_torch(x,th_device)
 
 def y_input_function(sample,th_device): 
-    if(isinstance(sample['char_gt'],np.ndarray)):
-        sample['char_gt'] = torch.from_numpy(sample['char_gt'])
-    if(len(sample['char_gt'].shape)==2):
-        sample['char_gt'] = torch.reshape(sample['char_gt'],(1,1,sample['char_gt'].shape[0],sample['char_gt'].shape[1]))
-    elif(len(sample['char_gt'].shape)==3):
-        sample['char_gt'] = torch.reshape(sample['char_gt'],(sample['char_gt'].shape[0],1,sample['char_gt'].shape[1],sample['char_gt'].shape[2]))
+    char_gt = sample['char_gt'] if(isinstance(sample,dict))else sample[0]
+    aff_gt = sample['aff_gt'] if(isinstance(sample,dict))else sample[1]
 
-    if(isinstance(sample['aff_gt'],np.ndarray)):
-        sample['aff_gt'] = torch.from_numpy(sample['aff_gt'])
-    if(len(sample['aff_gt'].shape)==2):
-        sample['aff_gt'] = torch.reshape(sample['aff_gt'],(1,1,sample['aff_gt'].shape[0],sample['aff_gt'].shape[1]))
-    elif(len(sample['aff_gt'].shape)==3):
-        sample['aff_gt'] = torch.reshape(sample['aff_gt'],(sample['aff_gt'].shape[0],1,sample['aff_gt'].shape[1],sample['aff_gt'].shape[2]))
-
-    return sample['char_gt'].type(torch.FloatTensor).to(th_device),sample['aff_gt'].type(torch.FloatTensor).to(th_device)
+    return to_torch(char_gt,th_device), to_torch(aff_gt,th_device)

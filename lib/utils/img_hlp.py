@@ -3,6 +3,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import os
+import torch
+
+def to_torch(img,th_device):
+    if(isinstance(img,np.ndarray)):
+        img = torch.from_numpy(img)
+    if(len(img.shape)==2):
+        img = torch.reshape(img,(1,1,img.shape[0],img.shape[1]))
+    elif(len(img.shape)==3):
+        img = torch.reshape(img,tuple([1]+list(img.shape)))
+
+    return img.type(torch.FloatTensor).to(th_device)
 
 """
 The single sample of dataset should include:
@@ -339,7 +350,7 @@ class RandomScale(object):
             self.max_size = None
 
     def __call__(self, sample):
-        image = sample['image']
+        image = img
         img_size = image.shape[-3:-1]
         min_rate = np.divide(self.min_size,img_size)
         max_rate = np.divide(self.max_size,img_size) if(self.max_size!=None)else np.maximum(min_rate,(1.5,1.5))
@@ -347,7 +358,7 @@ class RandomScale(object):
         img_size *= rate
 
         s_shape = (image.shape[0],int(img_size[0]),int(img_size[1]),image.shape[-1]) if(len(image.shape)==4)else (int(img_size[0]),int(img_size[1]),image.shape[-1])
-        sample['image'] = np.resize(image,s_shape)
+        img = np.resize(image,s_shape)
 
         if('box_format' in sample):
             fmt = sample['box_format'].lower()

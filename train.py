@@ -11,12 +11,12 @@ from torchvision import transforms, utils
 # =================Local=======================
 from lib.model.craft import CRAFT
 from lib.model.mobilenet_v2 import CRAFT_MOB
-from lib.loss.mseloss import MSE_OHEM_Loss, MSELoss
+from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
-from lib.trainer_craft import CRAFTTrainer
+from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
 
@@ -54,14 +54,14 @@ if __name__ == "__main__":
     isdebug = args.debug
     # isdebug = True
     lr = args.learnrate
-    max_step = args.step if(not isdebug)else 1
+    max_step = args.step if(not isdebug)else 10
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
     lr_decay_step_size = tcfg['LR_DEC_STP']
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
-    num_workers=0
+    # num_workers=0
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
     # lr_decay_step_size = None
-
+    # net = CRAFT()
     net = CRAFT_MOB()
     if(args.opt.lower()=='adam'):
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
         num_workers=num_workers,
         pin_memory=True if(num_workers>0)else False)
-    loss = MSELoss()
+    loss = MSE_OHEM_Loss()
     trainer = CRAFTTrainer
     
     trainer = trainer(
@@ -100,6 +100,7 @@ if __name__ == "__main__":
         "\t Network: {}.\n".format(net.__class__.__name__)+\
         "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
         "\t Init learning rate: {}.\n".format(lr)+\
+        "\t Learning rate decay: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
@@ -110,8 +111,9 @@ if __name__ == "__main__":
     trainer.log_info(summarize)
 
     if(args.load):
-        print("Loading model...")
+        print("Loading model at {}.".format(args.load))
         trainer.load(args.load)
+
     trainer.loader_train(dataloader,int(len(train_dataset)/args.batch) if(max_step<0)else max_step)
     if(args.save):
         print("Saving model...")

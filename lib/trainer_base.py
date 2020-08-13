@@ -1,4 +1,4 @@
-import os
+import os, sys
 import heapq
 from datetime import datetime
 from tqdm import tqdm
@@ -9,11 +9,9 @@ from torch.utils.tensorboard import SummaryWriter
 # =================
 from lib.utils.log_hlp import str2time
 
-DEF_PROJ_PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
 class Trainer():
     def __init__(self,  
-        work_dir = DEF_PROJ_PATH, model_floder = 'saved_model',
+        work_dir = os.getcwd(), model_floder = 'saved_model',
         log_floder = 'log', task_name = None,
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
@@ -29,9 +27,9 @@ class Trainer():
         self._model_path = os.path.join(work_dir,model_floder) if(task_name==None)else os.path.join(work_dir,model_floder,task_name) 
         self._task_name = task_name
 
-        if(not(os.path.exists(self._logs_path))):
+        if(not(self._isdebug) and not(os.path.exists(self._logs_path))):
             os.makedirs(self._logs_path,exist_ok=True)
-        self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8')
+        self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8') if(not self._isdebug)else sys.stdout
 
         self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(not self._isdebug)else None
         self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
@@ -42,7 +40,6 @@ class Trainer():
         self._current_step = 0
         self._batch_size = 0
         self._data_count = 0
-        self._eva_step = 0
         self._task_name = task_name
         self._log_step_size = log_step_size
         self._save_step_size = save_step_size
@@ -66,12 +63,12 @@ class Trainer():
         if(self._net==None or self._opt==None or self._loss==None):return -1
         
         if(info!=None):self._f_train_loger.write(info+'\n')
-        if(isinstance(xs,list) or isinstance(xs,tuple)):batch_size=len(xs)
-        else:
-            batch_size= xs.shape[0] if(isinstance(xs,torch.Tensor))else 'Unknow'
+        if(type(xs) in (list,tuple,dict)):batch_size=len(xs)
+        elif(type(xs) in (torch.Tensor,np.ndarray)):batch_size = xs.shape[0] 
+        else: batch_size = 'Unknow'
 
-        if(isinstance(ys,list or isinstance(xs,tuple)) and len(ys)!=batch_size):return -1
-        elif(isinstance(ys,torch.Tensor)):
+        if(type(ys) in (list,tuple,dict) and len(ys)!=batch_size):return -1
+        elif(type(ys) in (torch.Tensor,np.ndarray)):
             if(ys.shape[0]!=batch_size):return -1
             ys = torch.split(ys,1)
 
@@ -111,10 +108,10 @@ class Trainer():
 
     def loader_train(self,loader,train_size,info=None):
         if(self._net==None or self._opt==None or self._loss==None):
-            print("Trainer log err: net/opt/loss is None")
+            print("Trainer err: net/opt/loss is None")
             return -1
         if(self._custom_x_input_function==None or self._custom_x_input_function==None):
-            print("Trainer log err: custom_input_function is None")
+            print("Trainer err: custom_input_function is None")
             return -1
         
         batch_size = loader.batch_size
@@ -138,11 +135,17 @@ class Trainer():
                 self._current_step += 1
                 self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
 
-                if(self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
+                if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
+                    self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
+                    if(self._file_writer!=None):self._file_writer.flush()
+
+                if(torch.isnan(loss).item()):
+                    self._f_train_loger.write("Nan at:{}.\n".format(self._current_step))
+                    return -1
+
+                if(not(self._isdebug) and self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
                     self.save()
                 
-                if(self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                    self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
 
                 if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
                     self.opt_decay()
@@ -184,7 +187,7 @@ class Trainer():
     def save(self,save_dir=None,max_save=3):
         """
         save_dir:
-            None or
+            'save.pkl' or
             '/xxx/save.pkl' or
             '/xxx/'
         """
@@ -194,7 +197,8 @@ class Trainer():
 
         if(save_dir==None): save_dir = os.path.join(self._model_path,file_name)
         elif(len(save_dir.split('.'))==1): save_dir = os.path.join(save_dir,file_name)
-        elif(os.path.dirname(save_dir)==''): save_dir = os.path.join(self._model_path,save_dir)
+        elif(os.path.dirname(save_dir)==''): 
+            save_dir = os.path.join(self._model_path,"{}+{}.pkl".format(now_time,save_dir.split('.')[0]))
         else:
             save_dir = save_dir
             
@@ -208,7 +212,10 @@ class Trainer():
                 sub_name = tsk_list[0].split('+')[1]
                 base_dir = os.path.dirname(save_dir)
                 for o in tsk_list:
-                    heapq.heappush(cur_time,str2time(o.split('+')[0]))
+                    try:
+                        heapq.heappush(cur_time,str2time(o.split('+')[0]))
+                    except:
+                        continue
                 for o in cur_time[:1-max_save]:
                     os.remove(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))
                     
@@ -225,6 +232,7 @@ class Trainer():
         if(load_dir==None):load_dir = self._model_path
         if(len(load_dir.split('.'))>1):
             if(os.path.exists(load_dir)):
+                print("Load at {}.".format(load_dir))
                 self._net=torch.load(load_dir)
                 self._net=self._net.float().to(self._device)
                 return

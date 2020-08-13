@@ -57,7 +57,7 @@ class Maploss(nn.Module):
 class MSE_OHEM_Loss(nn.Module):
     def __init__(self,positive_mult = 3):
         super(MSE_OHEM_Loss, self).__init__()
-        self.mse_loss = nn.MSELoss(reduction="none")
+        self.mse_loss = nn.MSELoss(reduction="none", size_average=False)
         self._positive_mult = float(positive_mult)
     
     def mse_loss_single(self,img,target):
@@ -101,23 +101,4 @@ class MSE_OHEM_Loss(nn.Module):
             loss_every_sample.append(char_loss+aff_loss)
             
         return torch.stack(loss_every_sample, 0).mean()
-
-class MSELoss(nn.Module):
-    def __init__(self,positive_mult = 3):
-        super(MSELoss, self).__init__()
-        self.mse_loss = nn.MSELoss(reduce=True, size_average=False)
-
-    def forward(self, x, y):
-        char_target, aff_target = y
-        x = x[0]
-        if(len(x.shape)==3):
-            x=torch.reshape(x,(1,x.shape[0],x.shape[1],x.shape[2]))
-
-        batch_size = x.shape[0]
-        # x = x.permute(0,2,3,1)
-        predict_r = x[:,0,:,:]
-        predict_a = x[:,1,:,:]
-        char_target = F.interpolate(char_target,size=predict_r.shape[1:], mode='bilinear', align_corners=False)
-        aff_target = F.interpolate(aff_target,size=predict_a.shape[1:], mode='bilinear', align_corners=False)
-        return (self.mse_loss(predict_r,char_target)+self.mse_loss(predict_a,aff_target))/batch_size
         
