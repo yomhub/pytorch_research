@@ -190,25 +190,26 @@ def mobilenet_v2(input_size,width_mult,pretrained=True,have_fc=False):
 
 
 class CRAFT_MOB(nn.Module):
-    def __init__(self, width_mult=1.,):
+    def __init__(self, width_mult=1.,pretrained=False):
         super(CRAFT_MOB, self).__init__()
 
         inverted_residual_setting = [
             # t, c, n, s
+            # 1/2
             [1, 16, 1, 1], # block_0
             [6, 24, 2, 2], # block_1
-            # 1/2
-            [6, 32, 3, 2], # block_2
             # 1/4
-            [6, 64, 4, 2], # block_3
-            [6, 96, 3, 1], # block_4
+            [6, 32, 3, 2], # block_2
             # 1/8
-            [6, 160, 3, 2], # block_5
-            [6, 320, 1, 1], # block_6
+            [6, 64, 4, 2], # block_3
             # 1/16
+            [6, 96, 3, 1], # block_4
+            [6, 160, 3, 2], # block_5
+            # 1/32
+            [6, 320, 1, 1], # block_6
         ]
-        mob = models.mobilenet_v2(
-            pretrained=False,
+        mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
+            pretrained=pretrained,
             width_mult=width_mult,
             inverted_residual_setting=inverted_residual_setting)
 

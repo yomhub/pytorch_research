@@ -35,14 +35,14 @@ class Total(base.BaseDataset):
         normalized: True to normalize coordinate
     """
     def __init__(self, img_dir, gt_mask_dir, gt_txt_dir,
-        out_box_format='cxywh', normalized=True, transform=None):
+        **params):
         in_box_format = 'yxyx'
         gt_txt_name_lambda = lambda x: "poly_gt_%s.txt"%x
         gt_mask_name_lambda = None
 
         super(Total,self).__init__(img_dir=img_dir, gt_mask_dir=gt_mask_dir, gt_txt_dir=gt_txt_dir, in_box_format=in_box_format,
         gt_mask_name_lambda=gt_mask_name_lambda, gt_txt_name_lambda=gt_txt_name_lambda, 
-        out_box_format=out_box_format, normalized=normalized, transform=transform)
+        **params)
 
     def read_boxs(self,fname:str):
         """

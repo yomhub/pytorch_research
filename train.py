@@ -37,7 +37,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
-    parser.add_argument('--net', help='Choose noework (craft).', default="craft")
+    parser.add_argument('--net', help='Choose noework (craft).', default=tcfg['NET'])
     parser.add_argument('--name', help='Name of task.')
     parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default=tcfg['DATASET'])
     parser.add_argument('--datax', type=int, help='Dataset output width.',default=tcfg['IMG_SIZE'][0])
@@ -61,10 +61,18 @@ if __name__ == "__main__":
     # num_workers=0
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
     # lr_decay_step_size = None
-    # net = CRAFT()
-    net = CRAFT_MOB()
+
+    if(args.net.lower()=='craft'):
+        net = CRAFT()
+    elif(args.net.lower()=='craft_mob'):
+        net = CRAFT_MOB(pretrained=True)
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+    net.float().to(device)
+
     if(args.opt.lower()=='adam'):
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
+    elif(args.opt.lower() in ['adag','adagrad']):
+        opt = optim.Adagrad(net.parameters())
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 

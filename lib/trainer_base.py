@@ -35,8 +35,6 @@ class Trainer():
         self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
         self._device = torch.device("cuda:0" if self._use_cuda else "cpu")
 
-        self.grad_dict = {}
-        self.loss_dict = {}
         self._current_step = 0
         self._batch_size = 0
         self._data_count = 0
@@ -217,7 +215,8 @@ class Trainer():
                     except:
                         continue
                 for o in cur_time[:1-max_save]:
-                    os.remove(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))
+                    if(os.path.exists(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))):
+                        os.remove(os.path.join(base_dir,o.strftime("%Y%m%d-%H%M%S")+'+'+sub_name))
                     
         print("Save at {}".format(save_dir))
         torch.save(self._net,save_dir)

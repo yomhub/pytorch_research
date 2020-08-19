@@ -15,7 +15,7 @@ cfg['IMG_SIZE'] = [
   ][1]
 
 # train step, -1 for all
-cfg['STEP'] = [1000*5,100*10,100*5,50*5,1*5,-1][1]
+cfg['STEP'] = [1000*5,100*10,100*5,50*5,1*5,-1][-1]
 cfg['BATCH'] = [4][0]
 # Step size for log
 cfg['LOGSTP'] = 100
@@ -34,5 +34,6 @@ cfg['LR_DEC_STP'] = [0,500][0]
 # learning rate decrease rate: current LR*(1-rt)
 cfg['LR_DEC_RT'] = [0.2,0.1][1]
 
+cfg['NET'] = ['craft', 'craft_mob'][0]
 
 cfg['DATASET'] = ["ttt","ctw","svt"][0]

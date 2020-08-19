@@ -325,6 +325,25 @@ def cv_score2boxs(score:np.ndarray,threshold=None):
 
     return det, labels, mapper
 
+def cv_crop_image_by_bbox(image, box):
+    """
+    box: ((x0,y0),(x1,y1),(x2,y2),(x3,y3),)
+    """
+    w = (int)(np.linalg.norm(box[0] - box[1]))
+    h = (int)(np.linalg.norm(box[0] - box[3]))
+    width = w
+    height = h
+    if h > w * 1.5:
+        width = h
+        height = w
+        M = cv2.getPerspectiveTransform(np.float32(box),
+                                        np.float32(np.array([[width, 0], [width, height], [0, height], [0, 0]])))
+    else:
+        M = cv2.getPerspectiveTransform(np.float32(box),
+                                        np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
+
+    warped = cv2.warpPerspective(image, M, (width, height))
+    return warped, M
     
 class RandomScale(object):
     """Resize randomly the image in a sample.
