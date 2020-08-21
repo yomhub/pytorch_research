@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import cv2
 import os
 import torch
+import math
+# ======================
+from . import log_hlp
 
 def to_torch(img,th_device):
     if(isinstance(img,np.ndarray)):
@@ -28,6 +31,7 @@ The single sample of dataset should include:
             'cxywh': box_cord = [cx,cy,w,h]
         'gtmask': (h,w,1 or 3) or (N,h,w,1 or 3) np array.
     }
+    CV image: ndarray with (h,w,c)
     CV format 4 points: (x,y) in 
     +------------> x
     | 
@@ -284,10 +288,10 @@ def cv_score2boxs(score:np.ndarray,threshold=None):
         if size < 10: continue
 
         # thresholding
-        if np.max(textmap[labels==k]) < text_threshold: continue
+        if np.max(scoremap[labels==k]) < text_threshold: continue
 
         # make segmentation map
-        segmap = np.zeros(textmap.shape, dtype=np.uint8)
+        segmap = np.zeros(scoremap.shape, dtype=np.uint8)
         segmap[labels==k] = 255
         segmap[np.logical_and(link_score==1, text_score==0)] = 0   # remove link area
         x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
@@ -325,14 +329,20 @@ def cv_score2boxs(score:np.ndarray,threshold=None):
 
     return det, labels, mapper
 
-def cv_crop_image_by_bbox(image, box):
+def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
     """
-    box: ((x0,y0),(x1,y1),(x2,y2),(x3,y3),)
+    Crop image by box, using cv2.
+    Args:
+        image: numpy with shape (h,w,3)
+        box: ((x0,y0),(x1,y1),(x2,y2),(x3,y3),)
+        w_multi: final width will be k*w_multi
+        h_multi: final height will be k*h_multi
+
     """
     w = (int)(np.linalg.norm(box[0] - box[1]))
     h = (int)(np.linalg.norm(box[0] - box[3]))
-    width = w
-    height = h
+    width = max(1,w//int(w_multi))*int(w_multi) if(w_multi!=None and w_multi>0)else w
+    height = max(1,h//int(h_multi))*int(h_multi) if(w_multi!=None and w_multi>0)else h
     if h > w * 1.5:
         width = h
         height = w
@@ -344,7 +354,124 @@ def cv_crop_image_by_bbox(image, box):
 
     warped = cv2.warpPerspective(image, M, (width, height))
     return warped, M
-    
+
+def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.5):
+    """
+    Box detector with confidence map (and optional segmentation map).
+    Args:
+        scoremap: confidence map, ndarray in (h,w,1) or (h,w), range in [0,1], float
+        segmap: segmentation map, ndarray in (h,w,1) or (h,w), range in [0,1], float
+        score_th: threshold of score, float
+        seg_th: threshold of segmentation, float
+    Ret:
+
+    """
+    img_h, img_w = scoremap.shape[0], scoremap.shape[1]
+    scoremap = scoremap.reshape((img_h, img_w))
+    if(segmap==None):
+        segmap = np.zeros((img_h, img_w))
+    else:
+        segmap = segmap.reshape((img_h, img_w))
+
+    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats((scoremap>=score_th or segmap>=seg_th).astype(np.uint8),
+                                                                         connectivity=4)
+
+    det = []
+    mapper = []
+    for k in range(1, nLabels):
+        # size filtering
+        rsize = stats[k, cv2.CC_STAT_AREA]
+        if rsize < 10: continue
+
+        # thresholding
+        if np.max(scoremap[labels == k]) < score_th: continue
+
+        # make segmentation map
+        tmp = np.zeros(scoremap.shape, dtype=np.uint8)
+        tmp[np.logical_and(labels == k,segmap<seg_th)] = 255
+
+        x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
+        w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
+        niter = int(math.sqrt(rsize * min(w, h) / (w * h)) * 2)
+        x0 = max(0,x - niter)
+        x1 = min(img_w,x + w + niter + 1)
+        y0 = max(0,y - niter)
+        y1 = min(img_h,y + h + niter + 1)
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1 + niter, 1 + niter))
+        tmp[y0:y1, x0:x1] = cv2.dilate(tmp[y0:y1, x0:x1], kernel)
+        # log_hlp.save_image(kernel,"dilate_{}.jpg".format(k))
+        
+        # make box
+        np_contours = np.roll(np.array(np.where(tmp != 0)), 1, axis=0).transpose().reshape(-1, 2)
+        rectangle = cv2.minAreaRect(np_contours)
+        box = cv2.boxPoints(rectangle)
+
+        # align diamond-shape
+        w, h = np.linalg.norm(box[0] - box[1]), np.linalg.norm(box[1] - box[2])
+        box_ratio = max(w, h) / (min(w, h) + 1e-5)
+        if abs(1 - box_ratio) <= 0.1:
+            l, r = min(np_contours[:, 0]), max(np_contours[:, 0])
+            t, b = min(np_contours[:, 1]), max(np_contours[:, 1])
+            box = np.array([[l, t], [r, t], [r, b], [l, b]], dtype=np.float32)
+
+        # make clock-wise order
+        startidx = box.sum(axis=1).argmin()
+        box = np.roll(box, 4 - startidx, 0)
+        box = np.array(box)
+
+        det.append(box)
+        mapper.append(k)
+
+    return det, labels, mapper
+
+def cv_draw_poly(image,boxes,color = (0,255,0),text=None):
+    """
+    Arg:
+        img: ndarray in (h,w,c)
+        boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
+            or (polygon point number,2 (x,y))
+    """
+    image = image.astype(np.uint8)
+    if(len(boxes)==2):
+        boxes=boxes.reshape((1,-1,2))
+    if(text and type(text) not in [list, tuple]):
+        text = [text]*boxes.shape[0]
+    for i in range(boxes.shape[0]):
+        # the points is (polygon point number,1,2) in list
+        cv2.polylines(image,[boxes[i].reshape((-1,1,2))],True,color)
+        if(text):
+            # print text box
+            cv2.rectangle(image,
+                (boxes[i,:,0].max(),max(0,boxes[i,:,1].min()-10)),#(x,y-10)
+                (min(image.shape[1]-1,boxes[i,:,0].max()+100),boxes[i,:,1].min()),#(x+100,y)
+                (255, 0, 0),-1)
+            # print text at top-right of box
+            cv2.putText(
+                image, text=text[i], org=(boxes[i,:,0].max(),boxes[i,:,1].min()), 
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, thickness=1, lineType=cv2.LINE_AA, color=(255, 255, 255))
+
+        
+    return image
+
+def cv_draw_rect(image,boxes,fm,color = (0,255,0)):
+    """
+    Draw rectangle box in image
+    Arg:
+        img: ndarray in (h,w,c)
+        boxes: ndarray, shape (N,4)
+        fm: box format in __DEF_FORMATS
+    """
+    image = image.astype(np.uint8)
+    if(not isinstance(boxes,np.array)):boxes = np.array(boxes)
+    if(len(boxes.shape)==1):boxes = boxes.reshape((1,-1))
+    fm = fm.lower() if(fm.lower() in __DEF_FORMATS)else __DEF_FORMATS[0]
+    if(fm!='xyxy'):boxes = np_box_transfrom(boxes,fm,'xyxy')
+    for o in boxes:
+        # top-left(x,y), bottom-right(x,y), color(r,b,g), thickness
+        cv2.rectangle(image,(o[0],o[1]),(o[2],o[3]),color,3)
+    return image
+
 class RandomScale(object):
     """Resize randomly the image in a sample.
 
@@ -541,29 +668,3 @@ class GaussianTransformer(object):
         cv2.polylines(threshhold_guassian, [np.reshape(self.regionbox, (-1, 1, 2))], True, (255, 255, 255), thickness=1)
         cv2.imwrite(os.path.join(images_folder, 'threshhold_guassian.jpg'), threshhold_guassian)
 
-
-if __name__ == '__main__':
-    gaussian = GaussianTransformer(512, 0.4, 0.2)
-    gaussian.saveGaussianHeat()
-    gaussian._test()
-    bbox0 = np.array([[[0, 0], [100, 0], [100, 100], [0, 100]]])
-    image = np.zeros((500, 500), np.uint8)
-    # image = gaussian.add_region_character(image, bbox)
-    bbox1 = np.array([[[100, 0], [200, 0], [200, 100], [100, 100]]])
-    bbox2 = np.array([[[100, 100], [200, 100], [200, 200], [100, 200]]])
-    bbox3 = np.array([[[0, 100], [100, 100], [100, 200], [0, 200]]])
-
-    bbox4 = np.array([[[96, 0], [151, 9], [139, 64], [83, 58]]])
-    # image = gaussian.add_region_character(image, bbox)
-    # print(image.max())
-    image = gaussian.generate_region((500, 500, 1), [bbox4])
-    target_gaussian_heatmap_color = (np.clip(image.copy() / 255, 0, 1) * 255).astype(np.uint8)
-    target_gaussian_heatmap_color = cv2.applyColorMap(target_gaussian_heatmap_color, cv2.COLORMAP_JET)
-    cv2.imshow("test", target_gaussian_heatmap_color)
-    cv2.imwrite("test.jpg", target_gaussian_heatmap_color)
-    cv2.waitKey()
-    # weight, target = gaussian.generate_target((1024, 1024, 3), bbox.copy())
-    # target_gaussian_heatmap_color = imgproc.cvt2HeatmapImg(weight.copy() / 255)
-    # cv2.imshow('test', target_gaussian_heatmap_color)
-    # cv2.waitKey()
-    # cv2.imwrite("test.jpg", target_gaussian_heatmap_color)

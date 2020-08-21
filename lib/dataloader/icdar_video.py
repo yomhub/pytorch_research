@@ -42,7 +42,7 @@ class ICDARV():
         height = vfile.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)
         fps = vfile.get(cv2.CAP_PROP_FPS)
         pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx]+'.xml'))
-
+        
         sample = {
             'video': vfile,
             'gt_gen': FrameGen(pointsxy,(int(height),int(width))),
@@ -54,21 +54,38 @@ class ICDARV():
     def get_name(self, index):
         return self._names[index]
 
+
+from lib.utils.img_hlp import cv_crop_image_by_bbox
 class FrameGen(points):
     def __init__(self, points, sizes):
         """
         sizes: (h,w)
         """
         self.points = points
-        self.sizes = sizes
-    def get_text_part(self, idx):
+        self.sizes = (1,sizes[0],sizes[1])
+    def get_text_part(self, idx, image, net):
+        """
+        Args:
+            image: (h,w,c)
+        """
         if torch.is_tensor(idx):
             idx = idx.tolist()
-
+        # (1,h,w)
         char_gt = np.zeros(self.sizes)
         aff_gt = np.zeros(self.sizes)
-        try:
-            pg = self.points[idx]
-            for o in pg:
+        image = image.numpy()
+        if(idx not in self.points):
+            return torch.from_numpy(char_gt),torch.from_numpy(aff_gt)
 
+        pg = self.points[idx]
+        for o in pg:
+            txt_img, MM = cv_crop_image_by_bbox(image,o,32,32)
+            txt_img = torch.from_numpy(np.expand_dims(txt_img,0)).permute(0,3,1,2)
+            txt_img.float().to(net.get_device())
+            res,_ = net(txt_img)
+            res.to('cpu')
+            res = res.numpy()
+            ch = res[0,0,:,:]
+            # af = res[0,1,:,:]
+    return None
         

@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.image as mimg
 from datetime import datetime
 
 def str2time(instr):
@@ -16,3 +17,7 @@ def plt_heatmap2d(arr: np.ndarray,cmap:str='viridis'):
     plt.colorbar()
     plt.show()
 
+def save_image(img:np.ndarray,f_name:str='image.jpg'):
+    if(os.path.dirname(f_name)==''):
+        img = os.path.join(os.getcwd(),f_name)
+    mimg.imsave(f_name, img)

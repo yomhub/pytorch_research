@@ -46,6 +46,8 @@ class CRAFTTrainer(Trainer):
         if(self._file_writer==None):return None
         self._file_writer.add_scalar('Loss/train', loss, step)
         return None
+    
+    # def calculate()
 
 
 class CRAFTTester(Tester):
