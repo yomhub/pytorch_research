@@ -5,6 +5,7 @@ import cv2
 import os
 import torch
 import math
+from collections import Iterable
 # ======================
 from . import log_hlp
 
@@ -425,7 +426,7 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
 
     return det, labels, mapper
 
-def cv_draw_poly(image,boxes,color = (0,255,0),text=None):
+def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
     """
     Arg:
         img: ndarray in (h,w,c)
@@ -435,26 +436,30 @@ def cv_draw_poly(image,boxes,color = (0,255,0),text=None):
     image = image.astype(np.uint8)
     if(len(boxes)==2):
         boxes=boxes.reshape((1,-1,2))
-    if(text and type(text) not in [list, tuple]):
+    if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
+    if(isinstance(text,np.ndarray)):
+        text = text.reshape((-1))        
+    elif(not isinstance(text,type(None)) and isinstance(text,Iterable)):
         text = [text]*boxes.shape[0]
+
     for i in range(boxes.shape[0]):
         # the points is (polygon point number,1,2) in list
         cv2.polylines(image,[boxes[i].reshape((-1,1,2))],True,color)
-        if(text):
+        if(not isinstance(None,type(None))):
             # print text box
             cv2.rectangle(image,
-                (boxes[i,:,0].max(),max(0,boxes[i,:,1].min()-10)),#(x,y-10)
-                (min(image.shape[1]-1,boxes[i,:,0].max()+100),boxes[i,:,1].min()),#(x+100,y)
+                (boxes[i,:,0].max(),max(0,boxes[i,:,1].min()-14)),#(x,y-10)
+                (min(image.shape[1]-1,boxes[i,:,0].max()+10*len(str(text[i]))),boxes[i,:,1].min()),#(x+10N,y)
                 (255, 0, 0),-1)
             # print text at top-right of box
             cv2.putText(
-                image, text=text[i], org=(boxes[i,:,0].max(),boxes[i,:,1].min()), 
-                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=2, thickness=1, lineType=cv2.LINE_AA, color=(255, 255, 255))
+                image, text=str(text[i]), org=(boxes[i,:,0].max(),boxes[i,:,1].min()), 
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, lineType=cv2.LINE_AA, color=(255, 255, 255))
 
         
     return image
 
-def cv_draw_rect(image,boxes,fm,color = (0,255,0)):
+def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
     """
     Draw rectangle box in image
     Arg:
@@ -463,13 +468,28 @@ def cv_draw_rect(image,boxes,fm,color = (0,255,0)):
         fm: box format in __DEF_FORMATS
     """
     image = image.astype(np.uint8)
-    if(not isinstance(boxes,np.array)):boxes = np.array(boxes)
+    if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes.shape)==1):boxes = boxes.reshape((1,-1))
     fm = fm.lower() if(fm.lower() in __DEF_FORMATS)else __DEF_FORMATS[0]
     if(fm!='xyxy'):boxes = np_box_transfrom(boxes,fm,'xyxy')
-    for o in boxes:
+    if(isinstance(text,np.ndarray)):
+        text = text.reshape((-1))        
+    elif(not isinstance(text,type(None)) and isinstance(text,Iterable)):
+        text = [text]*boxes.shape[0]
+
+    for i,o in enumerate(boxes):
         # top-left(x,y), bottom-right(x,y), color(r,b,g), thickness
         cv2.rectangle(image,(o[0],o[1]),(o[2],o[3]),color,3)
+        if(isinstance(text,Iterable)):
+            # print text box
+            cv2.rectangle(image,
+                (o[0],max(0,o[1]-14)),#(x,y-10)
+                (min(image.shape[1]-1,o[0]+10*len(str(text[i]))),o[1]),#(x+10N,y)
+                (255, 0, 0),-1)
+            # print text at top-right of box
+            cv2.putText(
+                image, text=str(text[i]), org=(o[0],o[1]), 
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, color=(255, 255, 255))
     return image
 
 class RandomScale(object):

@@ -1,34 +1,48 @@
 import os
 import cv2
 import torch
+import numpy as np
 from collections import defaultdict
 
 import xml.etree.ElementTree as ET
-def read_boxs(fname:str):
+def read_boxs(fname:str,fm:str='xyxy'):
     tree = ET.parse(fname)
     root = tree.getroot()
-    pointsxy = defaultdict(list)
+    pointsxy = {}
     for frame in root:
         fid = int(frame.attrib['ID'])
+        tmp = []
         for box in frame:
             # box.attrib['Transcription']=='##DONT#CARE##'
             # box.attrib['Quality']=='LOW'
-            pointsxy[fid].append(
-                [int(box.attrib['ID']),
-                int(box[0].attrib['x']),int(box[0].attrib['y']),
-                int(box[1].attrib['x']),int(box[1].attrib['y']),
-                int(box[2].attrib['x']),int(box[2].attrib['y']),
-                int(box[3].attrib['x']),int(box[3].attrib['y'])]
-                )
+            if(fm.lower()=='poly'):
+                tmp.append(
+                    (int(box.attrib['ID']),
+                    int(box[0].attrib['x']),int(box[0].attrib['y']),
+                    int(box[1].attrib['x']),int(box[1].attrib['y']),
+                    int(box[2].attrib['x']),int(box[2].attrib['y']),
+                    int(box[3].attrib['x']),int(box[3].attrib['y']))
+                    )
+            else:
+                tmp.append(
+                    (int(box.attrib['ID']),
+                    min(int(box[0].attrib['x']),int(box[1].attrib['x']),int(box[2].attrib['x']),int(box[3].attrib['x'])),
+                    min(int(box[0].attrib['y']),int(box[1].attrib['y']),int(box[2].attrib['y']),int(box[3].attrib['y'])),
+                    max(int(box[0].attrib['x']),int(box[1].attrib['x']),int(box[2].attrib['x']),int(box[3].attrib['x'])),
+                    max(int(box[0].attrib['y']),int(box[1].attrib['y']),int(box[2].attrib['y']),int(box[3].attrib['y'])),
+                    ))
+        if(tmp):
+            pointsxy[fid] = np.array(tmp,np.int32)
     return pointsxy
 
 class ICDARV():
-    def __init__(self, vdo_dir, out_box_format='cxywh', normalized=True):
+    def __init__(self, vdo_dir, out_box_format='cxywh', normalized=True, include_name=False):
         self._vdo_dir = vdo_dir
         self._in_box_format = 'xyxy'
         self._gt_name_lambda = lambda x: "%s_GT"%x
         self._vdo_type = ['mp4','avi']
         self._names = [o for o in os.listdir(self._vdo_dir) if o.lower().split('.')[-1] in self._vdo_type]
+        self._include_name = bool(include_name)
 
     def __len__(self):
         return len(self._names)
@@ -38,17 +52,20 @@ class ICDARV():
             idx = idx.tolist()
 
         vfile = cv2.VideoCapture(os.path.join(self._vdo_dir,self._names[idx]))
-        width  = vfile.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)
-        height = vfile.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)
-        fps = vfile.get(cv2.CAP_PROP_FPS)
-        pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx]+'.xml'))
+        width  = int(vfile.get(3))
+        height = int(vfile.get(4))
+        fps = int(vfile.get(5))
+        pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))
         
         sample = {
             'video': vfile,
-            'gt_gen': FrameGen(pointsxy,(int(height),int(width))),
+            # 'gt_gen': FrameGen(pointsxy,(int(height),int(width))),
+            'gt':pointsxy,
             'fps': fps,
+            'width':width,
+            'height':height,
             }
-        
+        if(self._include_name):sample['name']=self._names[idx]
         return sample
 
     def get_name(self, index):
@@ -56,7 +73,7 @@ class ICDARV():
 
 
 from lib.utils.img_hlp import cv_crop_image_by_bbox
-class FrameGen(points):
+class FrameGen():
     def __init__(self, points, sizes):
         """
         sizes: (h,w)
@@ -87,5 +104,5 @@ class FrameGen(points):
             res = res.numpy()
             ch = res[0,0,:,:]
             # af = res[0,1,:,:]
-    return None
+        return None
         
