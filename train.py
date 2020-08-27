@@ -75,13 +75,18 @@ if __name__ == "__main__":
         opt = optim.Adagrad(net.parameters())
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
-        transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
-        ]
-    ))
+
+        
+    if(args.dataset.lower()=="ttt"):
+        train_dataset = Total(os.path.join(__DEF_TTT_DIR,'Images','Train'),os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),os.path.join(__DEF_TTT_DIR,'gt_txt','Train'))
+    else:
+        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225])
+            ]
+        ))
     dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
         num_workers=num_workers,
         pin_memory=True if(num_workers>0)else False)

@@ -92,8 +92,8 @@ class Tester():
                 pred = self._net(x)
                 loss = self._loss(pred,y) if(self._loss!=None)else None
 
-                self._current_step += 1
                 self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._current_step += 1
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
                     self._logger(x,y,pred,loss.item() if(loss!=None)else None,self._current_step,batch_size)

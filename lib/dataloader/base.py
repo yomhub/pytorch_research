@@ -56,6 +56,7 @@ class BaseDataset(Dataset):
         self.vdo_type = ['mp4','avi']
         self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
         self.transform=transform
+        self.out_box_format = out_box_format
         
     def __len__(self):
         return len(self.img_names)
@@ -75,12 +76,12 @@ class BaseDataset(Dataset):
             img_nm = self.img_names[idx].split('.')[0]
             ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
             boxs, texts = self.read_boxs(ytdir)
-            if(box!=None):
+            if(isinstance(boxs,type(None))):
                 boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
                 if(self.normalize): boxs = np_box_nor(boxs,sample['image'].shape[-3:-1],self.out_box_format)
                 sample['box']=boxs
                 sample['box_format']=self.out_box_format
-            if(texts!=None):sample['text']=texts
+            if(isinstance(texts,type(None))):sample['text']=texts
 
         if(self.gt_mask_dir):
             ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(self.img_names[idx])) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,self.img_names[idx])

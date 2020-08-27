@@ -65,19 +65,28 @@ def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
-def np_box_rescale(box:np.ndarray,scale,box_format:str):
+def np_box_rescale(box,scale,box_format:str):
     """ Numpy box rescale.
     Args: 
+        box: (N,4 or 5) for rectangle
+             (k,2),(N,k*2),(N,k,2) for polygon
         scale: tuple (y,x) or float
+        box_format: __DEF_FORMATS for rectangle
+            'polyxy','polyyx' for polygon
     """
-    if(box[:,-4:].max()<=1.0): return box # no need for normalized coordinate
+    if(not isinstance(box,np.ndarray)):box = np.array(box)
+    if(box_format.lower() not in ['polyxy','polyyx'] and box[:,-4:].max()<=1.0): 
+        return box # no need for normalized coordinate
     if(isinstance(scale,float)):scale = (scale,scale)
     scale = np.clip(scale,0.001,10)
     if(box_format.lower() in ['xyxy','xywh','cxywh']):
         scale = np.array((scale[1],scale[0],scale[1],scale[0]))
+    elif(box_format.lower() in ['polyxy','polyyx']):
+        kr = [scale[1],scale[0]] if(box_format.lower()[-2:]=='xy')else [scale[0],scale[1]]
+        scale = np.array(kr*(box.shape[-1]//2))
     else: #'yxyx'
         scale = np.array((scale[0],scale[1],scale[0],scale[1]))
-    ret = box[:,-4:]*scale
+    ret = box[:,-4:]*scale if(box_format.lower() not in ['polyxy','polyyx'])else box*scale
     if(box.shape[-1]>4):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
@@ -221,6 +230,24 @@ def np_img_resize(img:np.ndarray,new_size=None,base_divisor=None):
     if(new_size[0]!=img.shape[-3] or new_size[1]!=img.shape[-2]): img = np.resize(img,s_shape)
     return img
 
+def np_img_normalize(img:np.ndarray,mean=(0.485, 0.456, 0.406), variance=(0.229, 0.224, 0.225)):
+    """
+    Normalize image
+    Args: 
+        img: ndarray with shape (N,y,x,c) or (y,x,c)
+        mean: float or tuple in each channel in [0,1]
+        variance: float or tuple in each channel in [0,1]
+    Return image
+    """
+    chs = img.shape[-1]
+    if(not isinstance(mean,Iterable)):mean = [mean]*chs
+    if(not isinstance(variance,Iterable)):variance = [variance]*chs
+    img = img.copy().astype(np.float32)
+    img -= np.array([mean[0] * 255.0, mean[1] * 255.0, mean[2] * 255.0], dtype=np.float32)
+    img /= np.array([variance[0] * 255.0, variance[1] * 255.0, variance[2] * 255.0], dtype=np.float32)
+
+    return img
+
 def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.0,mu:float=0.0):
     """
     Generate gaussian distribution.
@@ -230,11 +257,11 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
         img_size: tuple, (y,x) or int for both yx, 
     Return 2d gaussian distribution in numpy.
     """
-    if(not(isinstance(img_size,list) or isinstance(img_size,tuple))):
+    if(not isinstance(img_size,Iterable)):
         img_size = (img_size,img_size)
-    if(not(isinstance(x_range,list) or isinstance(x_range,tuple))):
+    if(not isinstance(x_range,Iterable)):
         x_range = (-x_range,x_range)
-    if(not(isinstance(y_range,list) or isinstance(y_range,tuple))):
+    if(not isinstance(y_range,Iterable)):
         y_range = (-y_range,y_range)
     dx, dy = np.meshgrid(
         np.linspace(x_range[0],x_range[1],img_size[1]), 
@@ -243,92 +270,6 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
     d = np.sqrt(dx**2+dy**2)
     g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
     return g
-
-# def np_gen_gaussian_in_img(img_size,boxes:np.ndarray,threshold=None):
-#     """
-#     Generate gaussian distribution in image by box.
-#     Args: 
-#         img_size: tuple, (y,x) or int for both yx, 
-#         boxes: (N,4) np.ndarray in (cx,cy,w,h)
-#     Return 2d gaussian distribution in numpy.
-#     """
-#     if(not(isinstance(img_size,list) or isinstance(img_size,tuple))):
-#         img_size = (img_size,img_size)
-#     if(boxes.max()>1.0):
-#         boxes = np_box_nor(boxes,img_size,'cxywh')
-#     gaussian_size = (int(boxes[:,-1].max()*img_size[0]),int(boxes[:,-2].max()*img_size[1]))
-#     gaussian_map = np_2d_gaussian(gaussian_size)
-#     if(threshold!=None):
-#         gaussian_map = np.where(gaussian_map>=float(threshold),gaussian_map,0.0)
-#     img = np.zeros(img_size)
-#     for box in boxes:
-#         box[]
-
-#     return img
-
-def cv_score2boxs(score:np.ndarray,threshold=None):
-    """
-    Convert score 2 box
-    ???
-    """
-    if(len(score.shape)>2):
-        score = np.clip(score.reshape(score.shape[-3:-1]),0,1)
-    else:
-        score = np.clip(score.copy(),0,1)
-
-    img_h, img_w = score.shape
-    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        score.astype(np.uint8), connectivity=4)
-
-    det = []
-    mapper = []
-
-    for k in range(1,nLabels):
-        # size filtering
-        size = stats[k, cv2.CC_STAT_AREA]
-        if size < 10: continue
-
-        # thresholding
-        if np.max(scoremap[labels==k]) < text_threshold: continue
-
-        # make segmentation map
-        segmap = np.zeros(scoremap.shape, dtype=np.uint8)
-        segmap[labels==k] = 255
-        segmap[np.logical_and(link_score==1, text_score==0)] = 0   # remove link area
-        x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
-        w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
-        niter = int(math.sqrt(size * min(w, h) / (w * h)) * 2)
-        sx, ex, sy, ey = x - niter, x + w + niter + 1, y - niter, y + h + niter + 1
-        # boundary check
-        if sx < 0 : sx = 0
-        if sy < 0 : sy = 0
-        if ex >= img_w: ex = img_w
-        if ey >= img_h: ey = img_h
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(1 + niter, 1 + niter))
-        segmap[sy:ey, sx:ex] = cv2.dilate(segmap[sy:ey, sx:ex], kernel)
-
-        # make box
-        np_contours = np.roll(np.array(np.where(segmap!=0)),1,axis=0).transpose().reshape(-1,2)
-        rectangle = cv2.minAreaRect(np_contours)
-        box = cv2.boxPoints(rectangle)
-
-        # align diamond-shape
-        w, h = np.linalg.norm(box[0] - box[1]), np.linalg.norm(box[1] - box[2])
-        box_ratio = max(w, h) / (min(w, h) + 1e-5)
-        if abs(1 - box_ratio) <= 0.1:
-            l, r = min(np_contours[:,0]), max(np_contours[:,0])
-            t, b = min(np_contours[:,1]), max(np_contours[:,1])
-            box = np.array([[l, t], [r, t], [r, b], [l, b]], dtype=np.float32)
-
-        # make clock-wise order
-        startidx = box.sum(axis=1).argmin()
-        box = np.roll(box, 4-startidx, 0)
-        box = np.array(box)
-
-        det.append(box)
-        mapper.append(k)
-
-    return det, labels, mapper
 
 def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
     """
@@ -356,7 +297,7 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
     warped = cv2.warpPerspective(image, M, (width, height))
     return warped, M
 
-def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.5):
+def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.4):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
@@ -374,8 +315,9 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
     else:
         segmap = segmap.reshape((img_h, img_w))
 
-    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats((scoremap>=score_th or segmap>=seg_th).astype(np.uint8),
-                                                                         connectivity=4)
+    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        np.logical_or(scoremap>=score_th,segmap>=seg_th).astype(np.uint8),
+        connectivity=4)
 
     det = []
     mapper = []
@@ -444,7 +386,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
 
     for i in range(boxes.shape[0]):
         # the points is (polygon point number,1,2) in list
-        cv2.polylines(image,[boxes[i].reshape((-1,1,2))],True,color)
+        cv2.polylines(image,[boxes[i].reshape((-1,1,2)).astype(np.int32)],True,color)
         if(not isinstance(None,type(None))):
             # print text box
             cv2.rectangle(image,
@@ -476,7 +418,7 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
         text = text.reshape((-1))        
     elif(not isinstance(text,type(None)) and isinstance(text,Iterable)):
         text = [text]*boxes.shape[0]
-
+    boxes = boxes.astype(np.int32)
     for i,o in enumerate(boxes):
         # top-left(x,y), bottom-right(x,y), color(r,b,g), thickness
         cv2.rectangle(image,(o[0],o[1]),(o[2],o[3]),color,3)
@@ -491,6 +433,12 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
                 image, text=str(text[i]), org=(o[0],o[1]), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, color=(255, 255, 255))
     return image
+
+def cv_heatmap(img):
+    img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    img = cv2.applyColorMap(img, cv2.COLORMAP_JET)
+    return img
+
 
 class RandomScale(object):
     """Resize randomly the image in a sample.
