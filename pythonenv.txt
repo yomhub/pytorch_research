@@ -1,8 +1,10 @@
-
-torch===1.5.1 torchvision===0.6.1 -f https://download.pytorch.org/whl/torch_stable.html
-opencv-python
+numpy
 scikit-image
+opencv-python
+Polygon3
+torch===1.5.1 torchvision===0.6.1 -f https://download.pytorch.org/whl/torch_stable.html
 torchutils
+
 datetime
 argparse
 tqdm

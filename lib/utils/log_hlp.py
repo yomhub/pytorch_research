@@ -17,7 +17,9 @@ def plt_heatmap2d(arr: np.ndarray,cmap:str='viridis'):
     plt.colorbar()
     plt.show()
 
-def save_image(img:np.ndarray,f_name:str='image.jpg'):
+def save_image(f_name:str,img:np.ndarray):
     if(os.path.dirname(f_name)==''):
         f_name = os.path.join(os.getcwd(),f_name)
+    if(len(f_name.split('.'))==1):
+        f_name += '.jpg'
     mimg.imsave(f_name, img)

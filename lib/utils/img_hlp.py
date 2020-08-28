@@ -6,6 +6,7 @@ import os
 import torch
 import math
 from collections import Iterable
+import Polygon as plg
 # ======================
 from . import log_hlp
 
@@ -36,10 +37,10 @@ The single sample of dataset should include:
     CV format 4 points: (x,y) in 
     +------------> x
     | 
-    | p2------p3
-    | |        |
-    | |        |
     | p0------p1
+    | |        |
+    | |        |
+    | p3------p2
     y
 """
 
@@ -95,9 +96,10 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     """
     Box transfrom in ['yxyx','xyxy','xywh','cxywh']
     """
-    src_format = src_format.lower() if(src_format.lower() in __DEF_FORMATS)else __DEF_FORMATS[0]
-    dst_format = dst_format.lower() if(dst_format.lower() in __DEF_FORMATS)else __DEF_FORMATS[0]
-    if(dst_format==src_format):return box
+    src_format = src_format.lower()
+    dst_format = dst_format.lower()
+    assert(src_format in __DEF_FORMATS and dst_format in __DEF_FORMATS)
+
     # convert all to 'cxywh'
     if(src_format=='yxyx'):
         ret = np.stack([
@@ -120,6 +122,9 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
             box[:,-2]-box[:,-4],#w
             box[:,-1]-box[:,-3],#h
             ],axis=-1)
+    else:
+        ret = box[:,-4:]
+         
     # convert from 'cxywh'
     if(dst_format=='yxyx'):
         ret = np.stack([
@@ -271,16 +276,47 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
     g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
     return g
 
+def cv_box2cvbox(boxes,image_size,box_format:str):
+    """
+    Convert regular box to CV2 coordinate.
+    Args:
+        boxes: (N,4 or 5) array
+        image_size: (h,w)
+
+    Return:
+        (N,4,2) rectangle box in CV2 coordinate.
+        +------------> x
+        | 
+        | p0------p1
+        | |        |
+        | |        |
+        | p3------p2
+        y
+    """
+    if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
+    if(len(boxes.shape)==1):boxes = np.expand_dims(boxes,0)
+    boxes = np_box_transfrom(boxes[:,-4:],box_format,'xyxy')
+    if(boxes.max()<=1.0):
+        boxes*=(image_size[1],image_size[0],image_size[1],image_size[0],)
+    
+    return np.stack([
+        boxes[:,0],boxes[:,1],#left-top
+        boxes[:,2],boxes[:,1],#right-top
+        boxes[:,2],boxes[:,3],#right-bottom
+        boxes[:,0],boxes[:,3],#left-bottom
+        ],axis=-1).reshape((-1,4,2))
+
 def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
     """
     Crop image by box, using cv2.
     Args:
         image: numpy with shape (h,w,3)
-        box: ((x0,y0),(x1,y1),(x2,y2),(x3,y3),)
+        box: shape (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
         w_multi: final width will be k*w_multi
         h_multi: final height will be k*h_multi
 
     """
+    if(not isinstance(box,np.ndarray)):box = np.array(box)
     w = (int)(np.linalg.norm(box[0] - box[1]))
     h = (int)(np.linalg.norm(box[0] - box[3]))
     width = max(1,w//int(w_multi))*int(w_multi) if(w_multi!=None and w_multi>0)else w
@@ -343,7 +379,6 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
 
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1 + niter, 1 + niter))
         tmp[y0:y1, x0:x1] = cv2.dilate(tmp[y0:y1, x0:x1], kernel)
-        # log_hlp.save_image(kernel,"dilate_{}.jpg".format(k))
         
         # make box
         np_contours = np.roll(np.array(np.where(tmp != 0)), 1, axis=0).transpose().reshape(-1, 2)
@@ -439,6 +474,69 @@ def cv_heatmap(img):
     img = cv2.applyColorMap(img, cv2.COLORMAP_JET)
     return img
 
+def cv_watershed(org_img, mask, viz=False):
+    """
+    Watershed algorithm
+    Args:
+        org_img: original image, (h,w,chs) in np.uint8
+        mask: mask image, (h,w) in np.float in [0,1]
+
+    """
+    if(org_img.shape[0:2]!=mask.shape[0:2]):
+        org_img = cv2.resize(org_img,(mask.shape[1],mask.shape[0]))
+
+    viz = lambda *args:None if(not viz)else cv2.imshow
+
+    # apply threshold
+    if(mask.max()>1.1):mask /= mask.max()
+    mask*=255
+    threshold = mask.max()*0.2
+    b_mask = np.where(mask>=threshold,255,0).astype(np.uint8)
+    viz("surface_bmask", b_mask)
+
+    # apply filter
+    kr = np.ones((3, 3), np.uint8)
+    b_mask = cv2.morphologyEx(b_mask, cv2.MORPH_OPEN, kr, iterations=1)
+    viz("surface_fg", b_mask)
+
+    # find background
+    sure_bg = cv2.dilate(b_mask, kr, iterations=3) 
+    viz("sure_bg", sure_bg)
+
+    # find foreground
+    threshold = mask.max()*0.5
+    sure_fg = np.where(mask>=threshold,255,0).astype(np.uint8)
+    viz("sure_fg", sure_fg)
+
+    unknown = sure_bg - sure_fg
+    viz("unknown", unknown)
+
+    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(sure_fg,
+                                                                         connectivity=4)
+    
+    markers = labels + 1
+    markers[unknown == 255] = 0
+
+    markers = cv2.watershed(org_img, markers=markers)
+    org_img[markers == -1] = [0, 0, 255]
+    viz("markers", markers)
+    viz("org_img", org_img)
+
+    boxes = []
+    for i in range(2, np.max(markers) + 1):
+        np_contours = np.roll(np.array(np.where(markers == i)), 1, axis=0).transpose().reshape(-1, 2)
+        rectangle = cv2.minAreaRect(np_contours)
+        box = cv2.boxPoints(rectangle)
+
+        startidx = box.sum(axis=1).argmin()
+        box = np.roll(box, 4 - startidx, 0)
+        poly = plg.Polygon(box)
+        area = poly.area()
+        if area < 10:
+            continue
+        box = np.array(box)
+        boxes.append(box)
+    return np.array(boxes)
 
 class RandomScale(object):
     """Resize randomly the image in a sample.

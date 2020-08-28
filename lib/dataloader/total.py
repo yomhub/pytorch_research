@@ -27,11 +27,12 @@ class Total(base.BaseDataset):
         Column 5 = Text
         Column 6 = Orientation (c=curve; h=horizontal; m=multi-oriented; #=dont care)
     Args:
-        'box_format': string in ['yxyx','xyxy','xywh','cxywh']
+        'box_format': string in ['yxyx','xyxy','xywh','cxywh','polyxy']
             'yxyx': box_cord = [y1,x1,y2,x2]
             'xyxy': box_cord = [x1,y1,x2,y2]
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
+            'polyxy': box_cord = [x,y,x,y,x,y,x,y]
         normalized: True to normalize coordinate
     """
     def __init__(self, img_dir, gt_mask_dir, gt_txt_dir,

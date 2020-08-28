@@ -76,12 +76,12 @@ class BaseDataset(Dataset):
             img_nm = self.img_names[idx].split('.')[0]
             ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
             boxs, texts = self.read_boxs(ytdir)
-            if(isinstance(boxs,type(None))):
+            if(not isinstance(boxs,type(None))):
                 boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
                 if(self.normalize): boxs = np_box_nor(boxs,sample['image'].shape[-3:-1],self.out_box_format)
                 sample['box']=boxs
                 sample['box_format']=self.out_box_format
-            if(isinstance(texts,type(None))):sample['text']=texts
+            if(not isinstance(texts,type(None))):sample['text']=texts
 
         if(self.gt_mask_dir):
             ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(self.img_names[idx])) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,self.img_names[idx])

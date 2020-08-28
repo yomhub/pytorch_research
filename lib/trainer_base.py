@@ -123,13 +123,7 @@ class Trainer():
             loss_10=[]
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
-                x=self._custom_x_input_function(sample,self._device)
-                y=self._custom_y_input_function(sample,self._device)
-                self._opt.zero_grad()
-                pred = self._net(x)
-                loss = self._loss(pred,y)
-                loss.backward()
-                self._opt.step()
+                x,y,pred,loss = self._train_act(sample)
                 self._current_step += 1
                 self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
 
@@ -172,6 +166,16 @@ class Trainer():
         # self._f_train_loger.write(str(prof))
         self._f_train_loger.flush()
         return 0
+
+    def _train_act(self,sample):
+        x=self._custom_x_input_function(sample,self._device)
+        y=self._custom_y_input_function(sample,self._device)
+        self._opt.zero_grad()
+        pred = self._net(x)
+        loss = self._loss(pred,y)
+        loss.backward()
+        self._opt.step()
+        return x,y,pred,loss
 
     def _logger(self,x,y,pred,loss,step,batch_size):
         return None
