@@ -86,11 +86,7 @@ class Trainer():
                 else:
                     if(self._use_cuda and isinstance(y,torch.Tensor)): y = y.to(self._device)
 
-                self._opt.zero_grad()
-                pred = self._net(x)
-                loss = self._loss(pred,y)
-                loss.backward()
-                self._opt.step()
+                x,y,pred,loss = self._train_act(sample)
                 c_loss += loss.item()
                 self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
         

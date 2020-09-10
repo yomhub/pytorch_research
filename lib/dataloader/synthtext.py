@@ -17,6 +17,16 @@ except:
     # from . import transutils
 
 RD_ONLY_MT_MEM = None
+def default_collate_fn(batch):
+    ret = {}
+    for key,value in batch[0].items():
+        if(key.lower() in ['box','text']):
+            ret[key]=[d[key] for d in batch]
+        elif(key.lower() in ['box_format']):
+            ret[key]=value
+        else:
+            ret[key]=torch.stack([torch.from_numpy(d[key])if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
+    return ret
 
 def _rd_mat(mt_dir):
     global RD_ONLY_MT_MEM
@@ -57,6 +67,8 @@ class SynthText(Dataset):
         self.random_rote_rate = random_rote_rate
         self.x_input_function = x_input_function
         self.y_input_function = y_input_function
+        self.default_collate_fn = default_collate_fn
+
     def __len__(self):
         return self.gt["txt"].shape[0]
 

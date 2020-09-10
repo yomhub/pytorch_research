@@ -12,6 +12,7 @@ from torchvision import transforms, utils
 from lib.model.craft import CRAFT
 from lib.model.mobilenet_v2 import CRAFT_MOB
 from lib.loss.mseloss import MSE_OHEM_Loss
+from lib.dataloader.icdar import ICDAR
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
 import lib.dataloader.synthtext as syn80k
@@ -25,6 +26,7 @@ __DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
+__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
 __DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
@@ -46,7 +48,6 @@ def copyStateDict(state_dict):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config tester')
 
-    parser.add_argument('--opt', help='Choose optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
     parser.add_argument('--name', help='Name of task.')
@@ -83,7 +84,34 @@ if __name__ == "__main__":
     net.eval()
     net.float().to(device)
 
-    train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
+    if(args.dataset.lower()=="ttt"):
+        train_dataset = Total(
+            os.path.join(__DEF_TTT_DIR,'Images','Test'),
+            os.path.join(__DEF_TTT_DIR,'gt_pixel','Test'),
+            os.path.join(__DEF_TTT_DIR,'gt_txt','Test'),
+            image_size=(3,640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+    elif(args.dataset.lower()=="ic15"):
+        train_dataset = ICDAR(
+            os.path.join(__DEF_IC15_DIR,'images','test'),
+            os.path.join(__DEF_IC15_DIR,'gt_txt','test'),
+            image_size=(3,640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+    else:
+        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225])
+            ]
+        ))
+        train_on_real = False
+        x_input_function=syn80k.x_input_function
+        y_input_function=syn80k.y_input_function
 
     dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, 
         num_workers=num_workers,

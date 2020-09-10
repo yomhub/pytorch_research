@@ -20,7 +20,7 @@ cfg['BATCH'] = [4][0]
 # Step size for log
 cfg['LOGSTP'] = 100
 # Step size for save model, -1 to disable 
-cfg['SAVESTP'] = [200,500,-1][1]
+cfg['SAVESTP'] = [200,500,-1][-1]
 # Optimizer
 cfg['OPT'] = ['sgd','adam'][1]
 # learning rate
@@ -36,4 +36,4 @@ cfg['LR_DEC_RT'] = [0.2,0.1][1]
 
 cfg['NET'] = ['craft', 'craft_mob'][0]
 
-cfg['DATASET'] = ["ttt","ctw","svt"][0]
+cfg['DATASET'] = ["ttt","ctw","svt",'sync','ic15'][-1]

@@ -45,26 +45,19 @@ The single sample of dataset should include:
 """
 
 # default is __DEF_FORMATS[0]
-__DEF_FORMATS = ['cxywh','yxyx','xyxy','xywh']
+__DEF_FORMATS = ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
 
 def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     """ Numpy box resize.
         Args: 
         org_size: tuple, (y,x)
         new_size: tuple, (y,x) or int for both yx
-        box_format: in 'cxywh','yxyx','xyxy','xywh'
+        box_format: in 'cxywh','yxyx','xyxy','xywh','polyxy','polyyx'
     """
-    if(box[:,-4:].max()<=1.0): return box # no need for normalized coordinate
-    if(isinstance(new_size,int) or isinstance(new_size,float)):new_size = (int(new_size),int(new_size))
-    rate = np.divide(new_size,org_size)
-    if(box_format.lower() in ['xyxy','xywh','cxywh']):
-        rate = np.array((rate[1],rate[0],rate[1],rate[0]))
-    else: #'yxyx'
-        rate = np.array((rate[0],rate[1],rate[0],rate[1]))
-    ret = box[:,-4:]*rate
-    if(box.shape[-1]>4):
-        ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
-    return ret
+    if(not isinstance(new_size,Iterable)):
+        new_size = (int(new_size),int(new_size))
+
+    return np_box_rescale(box,np.divide(new_size,org_size),box_format)
 
 def np_box_rescale(box,scale,box_format:str):
     """ Numpy box rescale.
@@ -76,19 +69,17 @@ def np_box_rescale(box,scale,box_format:str):
             'polyxy','polyyx' for polygon
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
-    if(box_format.lower() not in ['polyxy','polyyx'] and box[:,-4:].max()<=1.0): 
+    if(box[:,-(box.shape[-1]//2*2):].max()<=1.0): 
         return box # no need for normalized coordinate
-    if(isinstance(scale,float)):scale = (scale,scale)
+    if(not isinstance(scale,Iterable)):scale = (scale,scale)
     scale = np.clip(scale,0.001,10)
-    if(box_format.lower() in ['xyxy','xywh','cxywh']):
-        scale = np.array((scale[1],scale[0],scale[1],scale[0]))
-    elif(box_format.lower() in ['polyxy','polyyx']):
-        kr = [scale[1],scale[0]] if(box_format.lower()[-2:]=='xy')else [scale[0],scale[1]]
-        scale = np.array(kr*(box.shape[-1]//2))
+    if(box_format.lower() in ['xyxy','xywh','cxywh','polyxy']):
+        scale = np.array([scale[1],scale[0]]*(box.shape[-1]//2))
     else: #'yxyx'
-        scale = np.array((scale[0],scale[1],scale[0],scale[1]))
-    ret = box[:,-4:]*scale if(box_format.lower() not in ['polyxy','polyyx'])else box*scale
-    if(box.shape[-1]>4):
+        scale = np.array([scale[0],scale[1]]*(box.shape[-1]//2))
+
+    ret = box[:,-(box.shape[-1]//2*2):]*scale
+    if(box.shape[-1]%2):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
@@ -157,46 +148,17 @@ def np_box_nor(box:np.ndarray,image_size:tuple,box_format:str)->np.ndarray:
     Box normalization.
     Args:
         image_size: tuple (y,x)
-        box_format: ['yxyx','xyxy','xywh','cxywh']
+        box_format: ['yxyx','xyxy','xywh','cxywh','polyxy','polyyx']
     """
-    if(box_format.lower() in ['xyxy','xywh','cxywh']):
-        scale = np.array((1/image_size[1],1/image_size[0],1/image_size[1],1/image_size[0]))
+    if(box_format.lower() in ['xyxy','xywh','cxywh','polyxy']):
+        scale = np.array([1/image_size[1],1/image_size[0]]*(box.shape[-1]//2))
     else: #'yxyx'
-        scale = np.array((1/image_size[0],1/image_size[1],1/image_size[0],1/image_size[1]))
-    ret = box[:,-4:]*scale
+        scale = np.array([1/image_size[0],1/image_size[1]]*(box.shape[-1]//2))
+    ret = box[:,-(box.shape[-1]//2*2):]*scale
     ret = np.clip(ret,0.0,1.0)
-    if(box.shape[-1]>4):
+    if(box.shape[-1]%2):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
-
-def np_box_to_points(boxes:np.ndarray,img_size=None,box_format:str='xywh'):
-    """
-    Convert box to 4 points.
-    Args:
-        boxes: (N,4) np.ndarray
-        img_size: tuple, (y,x) or int for both yx, 
-            if img_size==None AND boxes is normalized,
-            return points coordinate in normalized.
-        box_format in ['yxyx','xyxy','xywh','cxywh']
-    Return:
-        (N,4,2) np.ndarray
-    """
-    if(img_size!=None and not(isinstance(img_size,list) or isinstance(img_size,tuple))):
-        img_size = (img_size,img_size)
-    if(box_format not in __DEF_FORMATS):box_format = __DEF_FORMATS[0]
-    boxes = np_box_transfrom(boxes,box_format,'xyxy')
-    ret = []
-    if(img_size!=None and boxes.max()<=1.0):
-        for o in boxes:
-            x1=o[0]*img_size[1]
-            y1=o[1]*img_size[0]
-            x2=o[2]*img_size[1]
-            y2=o[3]*img_size[0]
-            ret.append([(x1,y2),(x2,y2),(x1,y1),(x2,y1)])
-    else:
-        for o in boxes:
-            ret.append([(o[0],o[3]),(o[2],o[3]),(o[0],o[1]),(o[2],o[1])])
-    return np.array(ret,dtype=boxes.dtype)
 
 def np_corp_points(points:np.ndarray,ret_cod_len:int=4):
     """
@@ -293,6 +255,7 @@ def cv_box2cvbox(boxes,image_size,box_format:str):
         | p3------p2
         y
     """
+    if(box_format.lower()=='polyxy'):return boxes
     if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes.shape)==1):boxes = np.expand_dims(boxes,0)
     boxes = np_box_transfrom(boxes[:,-4:],box_format,'xyxy')
@@ -305,6 +268,21 @@ def cv_box2cvbox(boxes,image_size,box_format:str):
         boxes[:,2],boxes[:,3],#right-bottom
         boxes[:,0],boxes[:,3],#left-bottom
         ],axis=-1).reshape((-1,4,2))
+
+def cv_cvbox2box(cv_4p_boxes,box_format:str):
+    """
+    Convvert CV box to box
+    Args:
+        cv_4p_boxes: (box_number,4,2) array 
+        box_format: target box formot
+    Return: (N,4) box array
+    """
+    minx = cv_4p_boxes[:,:,0].min(axis=-1)
+    maxx = cv_4p_boxes[:,:,0].max(axis=-1)
+    miny = cv_4p_boxes[:,:,1].min(axis=-1)
+    maxy = cv_4p_boxes[:,:,1].max(axis=-1)
+
+    return np_box_transfrom(np.stack([minx,miny,maxx,maxy],axis=-1),'xyxy',box_format)
 
 def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
     """
@@ -332,6 +310,19 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
 
     warped = cv2.warpPerspective(image, M, (width, height))
     return warped, M
+
+def cv_uncrop_image(sub_image, M, width:int, height:int):
+    """
+    UNDO cv_crop_image_by_bbox
+    Args:
+        sub_image: croped sub-image, numpy with shape (in_h,in_w,ch)
+        M: map martex from cv_crop_image_by_bbox
+        width: output image width
+        height: output image height
+    Return: image with shape (height,width,ch)
+    """
+    ret, IM = cv2.invert(M)
+    return cv2.warpPerspective(sub_image, IM, (width, height))
 
 def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.4):
     """
@@ -406,7 +397,7 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
 def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
     """
     Arg:
-        img: ndarray in (h,w,c)
+        img: ndarray in (h,w,c) in [0,255]
         boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
             or (polygon point number,2 (x,y))
     """
@@ -484,7 +475,7 @@ def cv_watershed(org_img, mask, viz=False):
     """
     if(org_img.shape[0:2]!=mask.shape[0:2]):
         org_img = cv2.resize(org_img,(mask.shape[1],mask.shape[0]))
-
+    org_img = org_img.astype(np.uint8)
     viz = lambda *args:None if(not viz)else cv2.imshow
 
     # apply threshold
@@ -585,80 +576,56 @@ class RandomScale(object):
         return sample
 
 class GaussianTransformer(object):
+    """
+    Text level gaussian generator.
+    Args:
+        img_size: int or tuple for (y,x)
 
-    def __init__(self, imgSize=512, region_threshold=0.4,
+    """
+    def __init__(self, img_size=512, region_threshold=0.4,
                  affinity_threshold=0.2):
-        distanceRatio = 3.34
+        
         self.region_threshold = region_threshold
-        self.imgSize = imgSize
-        self.standardGaussianHeat = self._gen_gaussian_heatmap(imgSize, distanceRatio)
+        img_size = img_size if(isinstance(img_size,Iterable))else (img_size,img_size)
 
-        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= region_threshold * 255)), 1, axis=0).transpose().reshape(-1, 2)
+        self.standardGaussianHeat = np_2d_gaussian(img_size)
+        
+        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= region_threshold)), 1, axis=0).transpose().reshape(-1, 2)
         x, y, w, h = cv2.boundingRect(np_contours)
-        self.regionbox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.int32)
+        self.regionbox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.float32)
 
-        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= affinity_threshold * 255)), 1, axis=0).transpose().reshape(-1, 2)
+        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= affinity_threshold)), 1, axis=0).transpose().reshape(-1, 2)
         x, y, w, h = cv2.boundingRect(np_contours)
-        self.affinitybox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.int32)
+        self.affinitybox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.float32)
+        # CV coordinate (x,y,1)
+        self.oribox = np.array([[0, 0, 1], [img_size[1] - 1, 0, 1], [img_size[1] - 1, img_size[0] - 1, 1], [0, img_size[0] - 1, 1]],
+                               dtype=np.float32)
 
-        self.oribox = np.array([[0, 0, 1], [imgSize - 1, 0, 1], [imgSize - 1, imgSize - 1, 1], [0, imgSize - 1, 1]],
-                               dtype=np.int32)
+    def add_region_character(self, mask, cv_4p_box, regionbox=None):
+        """
+        Args:
+            mask: ndarray with shape (height, width) and value in [0,1]
+            cv_4p_box: ndarray with shape (4,2) with (x,y)
+        """
+        height, width = mask.shape[:2]
+        np.clip(cv_4p_box[:,0],0,width-1,out=cv_4p_box[:,0])
+        np.clip(cv_4p_box[:,1],0,height-1,out=cv_4p_box[:,1])
 
-    def _gen_gaussian_heatmap(self, imgSize, distanceRatio):
-        gf = lambda x: np.exp(-(1 / 2) * (x ** 2))
-        lx = ly = imgSize
-        dx, dy = np.meshgrid(np.arange(lx), np.arange(ly))
-        dx -= lx//2
-        dy -= ly//2
-        d = np.sqrt(dx**2+dy**2)*distanceRatio/max(ly//2,lx//2)
-        return np.clip(gf(d) * 255, 0, 255)#.astype(np.uint8)
+        if(isinstance(regionbox,type(None))):
+            regionbox = self.regionbox
 
-    def _test(self):
-        sigma = 10
-        spread = 3
-        extent = int(spread * sigma)
-        center = spread * sigma / 2
-        gaussian_heatmap = np.zeros([extent, extent], dtype=np.float32)
+        M = cv2.getPerspectiveTransform(regionbox, cv_4p_box)
+        real_target_box = cv2.perspectiveTransform(np.expand_dims(self.oribox[:,:2],0), M)[0]
+        np.clip(real_target_box[:, 0], 0, width-1, out=real_target_box[:,0])
+        np.clip(real_target_box[:, 1], 0, height-1, out=real_target_box[:,1])
 
-        for i_ in range(extent):
-            for j_ in range(extent):
-                gaussian_heatmap[i_, j_] = 1 / 2 / np.pi / (sigma ** 2) * np.exp(
-                    -1 / 2 * ((i_ - center - 0.5) ** 2 + (j_ - center - 0.5) ** 2) / (sigma ** 2))
-
-        gaussian_heatmap = (gaussian_heatmap / np.max(gaussian_heatmap) * 255).astype(np.uint8)
-        images_folder = os.path.abspath(os.path.dirname(__file__)) + '/images'
-        threshhold_guassian = cv2.applyColorMap(gaussian_heatmap, cv2.COLORMAP_JET)
-        cv2.imwrite(os.path.join(images_folder, 'test_guassian.jpg'), threshhold_guassian)
-
-    def add_region_character(self, image, target_bbox, regionbox=None):
-
-        if np.any(target_bbox < 0) or np.any(target_bbox[:, 0] > image.shape[1]) or np.any(
-                target_bbox[:, 1] > image.shape[0]):
-            return image
-        affi = False
-        if regionbox is None:
-            regionbox = self.regionbox.copy()
-        else:
-            affi = True
-
-        M = cv2.getPerspectiveTransform(np.float32(regionbox), np.float32(target_bbox))
-        oribox = np.array(
-            [[[0, 0], [self.imgSize - 1, 0], [self.imgSize - 1, self.imgSize - 1], [0, self.imgSize - 1]]],
-            dtype=np.float32)
-        test1 = cv2.perspectiveTransform(np.array([regionbox], np.float32), M)[0]
-        real_target_box = cv2.perspectiveTransform(oribox, M)[0]
-        real_target_box = np.int32(real_target_box)
-        real_target_box[:, 0] = np.clip(real_target_box[:, 0], 0, image.shape[1])
-        real_target_box[:, 1] = np.clip(real_target_box[:, 1], 0, image.shape[0])
-
-        if np.any(target_bbox[0] < real_target_box[0]) or (
-                target_bbox[3, 0] < real_target_box[3, 0] or target_bbox[3, 1] > real_target_box[3, 1]) or (
-                target_bbox[1, 0] > real_target_box[1, 0] or target_bbox[1, 1] < real_target_box[1, 1]) or (
-                target_bbox[2, 0] > real_target_box[2, 0] or target_bbox[2, 1] > real_target_box[2, 1]):
+        if np.any(cv_4p_box[0] < real_target_box[0]) or (
+                cv_4p_box[3, 0] < real_target_box[3, 0] or cv_4p_box[3, 1] > real_target_box[3, 1]) or (
+                cv_4p_box[1, 0] > real_target_box[1, 0] or cv_4p_box[1, 1] < real_target_box[1, 1]) or (
+                cv_4p_box[2, 0] > real_target_box[2, 0] or cv_4p_box[2, 1] > real_target_box[2, 1]):
             # if False:
-            warped = cv2.warpPerspective(self.standardGaussianHeat.copy(), M, (image.shape[1], image.shape[0]))
-            warped = np.array(warped, np.uint8)
-            image = np.where(warped > image, warped, image)
+            warped = cv2.warpPerspective(self.standardGaussianHeat, M, (width, height))
+            mask = np.where(warped > mask, warped, mask)
         else:
             xmin = real_target_box[:, 0].min()
             xmax = real_target_box[:, 0].max()
@@ -667,70 +634,94 @@ class GaussianTransformer(object):
 
             width = xmax - xmin
             height = ymax - ymin
-            _target_box = target_bbox.copy()
+            _target_box = cv_4p_box.copy()
             _target_box[:, 0] -= xmin
             _target_box[:, 1] -= ymin
-            _M = cv2.getPerspectiveTransform(np.float32(regionbox), np.float32(_target_box))
-            warped = cv2.warpPerspective(self.standardGaussianHeat.copy(), _M, (width, height))
-            warped = np.array(warped, np.uint8)
+            _M = cv2.getPerspectiveTransform(regionbox, _target_box)
+            warped = cv2.warpPerspective(self.standardGaussianHeat, _M, (width, height))
+
             if warped.shape[0] != (ymax - ymin) or warped.shape[1] != (xmax - xmin):
                 print("region (%d:%d,%d:%d) warped shape (%d,%d)" % (
                     ymin, ymax, xmin, xmax, warped.shape[1], warped.shape[0]))
-                return image
-            image[ymin:ymax, xmin:xmax] = np.where(warped > image[ymin:ymax, xmin:xmax], warped,
-                                                   image[ymin:ymax, xmin:xmax])
-        return image
+                return mask
+            ymin,ymax,xmin,xmax = int(ymin),int(ymax),int(xmin),int(xmax)
+            mask[ymin:ymax, xmin:xmax] = np.where(warped > mask[ymin:ymax, xmin:xmax], warped,
+                                                   mask[ymin:ymax, xmin:xmax])
+        return mask
 
-    def add_affinity_character(self, image, target_bbox):
-        return self.add_region_character(image, target_bbox, self.affinitybox)
+    def generate_region(self, image_size, cv_4p_boxes_list:list, mask:np.ndarray=None):
+        """
+        Generate word region mask.
+        Args:
+            image_size: int or tuple (y,x)
+            cv_4p_boxes_list: LIST of N connected character box (N,4,2) with (x,y)
+            mask: None or float ndarray with shape (image_size) or (image_size,1)
+        Return: mask with value in [0,1]
+        """
+        if(not isinstance(image_size,Iterable)):image_size = (image_size,image_size)
+        if(isinstance(mask,type(None))):
+            mask = np.zeros(image_size, dtype=np.float32)
+        elif(len(mask.shape)>2):
+            mask = mask.reshape(image_size)
 
-    def add_affinity(self, image, bbox_1, bbox_2):
-        center_1, center_2 = np.mean(bbox_1, axis=0), np.mean(bbox_2, axis=0)
-        tl = np.mean([bbox_1[0], bbox_1[1], center_1], axis=0)
-        bl = np.mean([bbox_1[2], bbox_1[3], center_1], axis=0)
-        tr = np.mean([bbox_2[0], bbox_2[1], center_2], axis=0)
-        br = np.mean([bbox_2[2], bbox_2[3], center_2], axis=0)
+        for word in cv_4p_boxes_list:
+            word = word.astype(np.float32)
+            for box in word:
+                mask = self.add_region_character(mask, box)
 
-        affinity = np.array([tl, tr, br, bl])
+        return mask
 
-        return self.add_affinity_character(image, affinity.copy()), np.expand_dims(affinity, axis=0)
+    def generate_affinity(self, image_size, cv_4p_boxes_list:list, mask:np.ndarray=None):
+        """
+        Generate word affinity.
+        Args:
+            image_size: int or tuple (y,x)
+            cv_4p_boxes_list: LIST of N connected character box (N,4,2) with (x,y)
+            mask: None or float ndarray with shape (image_size) or (image_size,1)
+        Return: mask with value in [0,1]
+        """
 
-    def generate_region(self, image_size, bboxes):
-        height, width = image_size[0], image_size[1]
-        target = np.zeros([height, width], dtype=np.uint8)
-        for i in range(len(bboxes)):
-            character_bbox = np.array(bboxes[i].copy())
-            for j in range(bboxes[i].shape[0]):
-                target = self.add_region_character(target, character_bbox[j])
+        if(not isinstance(image_size,Iterable)):image_size = (image_size,image_size)
+        if(isinstance(mask,type(None))):
+            mask = np.zeros(image_size, dtype=np.float32)
+        elif(len(mask.shape)>2):
+            mask = mask.reshape(image_size)
 
-        return target
+        for word in cv_4p_boxes_list:
+            word = word.astype(np.float32)
+            if(word.shape[0]<=1):continue
+            src,dst = word[:-1],word[1:]
+            center_src, center_dst = np.mean(src, axis=1), np.mean(dst, axis=1)
+            bboxes = np.stack([
+                np.mean([src[:,0,:], src[:,1,:], center_src], axis=0), # top-left 
+                np.mean([dst[:,0,:], dst[:,1,:], center_dst], axis=0), # top-right
+                np.mean([dst[:,2,:], dst[:,3,:], center_dst], axis=0), # bottom-right
+                np.mean([src[:,2,:], src[:,3,:], center_src], axis=0), # bottom-left 
+                ],axis = 1)
+            for box in bboxes:
+                mask = self.add_region_character(mask, box, self.affinitybox)
 
-    def generate_affinity(self, image_size, bboxes, words):
-        height, width = image_size[0], image_size[1]
-        target = np.zeros([height, width], dtype=np.uint8)
-        affinities = []
-        for i in range(len(words)):
-            character_bbox = np.array(bboxes[i])
-            total_letters = 0
-            for char_num in range(character_bbox.shape[0] - 1):
-                target, affinity = self.add_affinity(target, character_bbox[total_letters],
-                                                     character_bbox[total_letters + 1])
-                affinities.append(affinity)
-                total_letters += 1
-        if len(affinities) > 0:
-            affinities = np.concatenate(affinities, axis=0)
-        return target, affinities
+        return mask
 
-    def saveGaussianHeat(self,folder_name:str='gaussian_img'):
-        images_folder = os.path.join(os.path.abspath(os.path.dirname(__file__)),folder_name)
-        cv2.imwrite(os.path.join(images_folder, 'standard.jpg'), self.standardGaussianHeat)
-        warped_color = cv2.applyColorMap(self.standardGaussianHeat.astype(np.uint8), cv2.COLORMAP_JET)
-        cv2.polylines(warped_color, [np.reshape(self.regionbox, (-1, 1, 2))], True, (255, 255, 255), thickness=1)
-        cv2.imwrite(os.path.join(images_folder, 'standard_color.jpg'), warped_color)
-        standardGaussianHeat1 = self.standardGaussianHeat.copy()
-        threshhold = self.region_threshold * 255
-        standardGaussianHeat1[standardGaussianHeat1 > 0] = 255
-        threshhold_guassian = cv2.applyColorMap(standardGaussianHeat1.astype(np.uint8), cv2.COLORMAP_JET)
-        cv2.polylines(threshhold_guassian, [np.reshape(self.regionbox, (-1, 1, 2))], True, (255, 255, 255), thickness=1)
-        cv2.imwrite(os.path.join(images_folder, 'threshhold_guassian.jpg'), threshhold_guassian)
+    def split_word_box(self,cv_4p_boxes,split_num):
+        """
+        Args:
+            cv_4p_boxes: word box (4,2) with (x,y)
+            split_num: int
+        Return: N connected character box (N,4,2) with (x,y)
+        """
+        if(split_num<=1):return np.expand_dims(cv_4p_boxes,0)
+        # w = (np.sum(np.sqrt(np.square(cv_4p_boxes[1]-cv_4p_boxes[0])))+np.sum(np.sqrt(np.square(cv_4p_boxes[2]-cv_4p_boxes[3]))))/2
+        dw0 = (cv_4p_boxes[1]-cv_4p_boxes[0])/split_num
+        dw1 = (cv_4p_boxes[2]-cv_4p_boxes[3])/split_num
+        # h = (np.sum(np.sqrt(np.square(cv_4p_boxes[1]-cv_4p_boxes[0])))+np.sum(np.sqrt(np.square(cv_4p_boxes[2]-cv_4p_boxes[3]))))/2
+
+        ret = []
+        for i in range(split_num):
+            ret.append([cv_4p_boxes[0]+i*dw0,
+            cv_4p_boxes[0]+(i+1)*dw0,
+            cv_4p_boxes[3]+i*dw1,
+            cv_4p_boxes[3]+(i+1)*dw1,])
+
+        return np.array(ret,dtype=cv_4p_boxes.dtype)
 

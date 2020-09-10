@@ -1,5 +1,6 @@
 from __future__ import print_function, division
 import os
+from collections import Iterable
 from skimage import io, transform
 import numpy as np
 import torch
@@ -7,8 +8,23 @@ import torchvision
 import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
-from lib.utils.img_hlp import np_box_transfrom,np_box_nor
+from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize
 
+def default_collate_fn(batch):
+    ret = {}
+    for key,value in batch[0].items():
+        if(key.lower() in ['box','text']):
+            ret[key]=[d[key] for d in batch]
+        elif(key.lower() in ['box_format']):
+            ret[key]=value
+        else:
+            ret[key]=torch.stack([torch.from_numpy(d[key])if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
+    return ret
+
+def default_x_input_function(sample,th_device): 
+    x = sample['image'] if(isinstance(sample,dict))else sample
+    return x.permute((0,3,1,2)).float().to(th_device)
+    
 class BaseDataset(Dataset):
     """
     Args:
@@ -18,6 +34,7 @@ class BaseDataset(Dataset):
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
         normalized: True to normalize coordinate
+        image_size: (ch,y,x),(y,x),int or float for both (y,x)
     Outs:
         {
             'image': (h,w,1 or 3) np array.
@@ -37,14 +54,13 @@ class BaseDataset(Dataset):
         }
     """
 
-    def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format=None,
+    def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format:str=None,
         gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
-        out_box_format='cxywh', normalized=True, transform=None):
+        out_box_format:str='cxywh', normalized=False, transform=None,
+        image_size=None):
 
-        if(in_box_format!=None):
-            self.in_box_format = in_box_format.lower() if(in_box_format.lower() in ['yxyx','xyxy','xywh','cxywh'])else 'cxywh'
-        else:
-            self.in_box_format = None
+        self.in_box_format = in_box_format.lower() if(in_box_format!=None)else None
+        self.out_box_format = out_box_format.lower()
 
         self.normalize = bool(normalized)
         self.imgdir = img_dir
@@ -56,18 +72,33 @@ class BaseDataset(Dataset):
         self.vdo_type = ['mp4','avi']
         self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
         self.transform=transform
-        self.out_box_format = out_box_format
-        
+        self.ch = 3
+        if(isinstance(image_size,type(None))):
+            self.image_size = None
+        elif(not isinstance(image_size,Iterable)):
+            self.image_size = (image_size,image_size)
+        elif(len(image_size)==3):
+            self.image_size = image_size[1:]
+            self.ch = image_size[0]
+        else:
+            self.image_size = image_size
+        self.default_collate_fn = default_collate_fn
+        self.x_input_function = default_x_input_function
+
     def __len__(self):
         return len(self.img_names)
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
-
-        if(self.img_names[idx].split('.')[-1] in self.img_type):
-            sample = {'image': io.imread(os.path.join(self.imgdir,self.img_names[idx]))}
-        elif(self.img_names[idx].split('.')[-1] in self.vdo_type):
+        sample = {}
+        if(self.img_names[idx].split('.')[-1].lower() in self.img_type):
+            img = io.imread(os.path.join(self.imgdir,self.img_names[idx]))
+            org_shape = img.shape[0:2]
+            if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
+                img = transform.resize(img,self.image_size,preserve_range=True)
+            sample = {'image': img}
+        elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(os.path.join(self.imgdir,self.img_names[idx]))
             sample = {'video': vfile}
 
@@ -75,18 +106,29 @@ class BaseDataset(Dataset):
             assert(self.in_box_format!=None)
             img_nm = self.img_names[idx].split('.')[0]
             ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
-            boxs, texts = self.read_boxs(ytdir)
+            try:
+                boxs, texts = self.read_boxs(ytdir)
+            except Exception as ex:
+                print("Err when reading GT box at {}.".format(ytdir))
+                raise ex
+                
             if(not isinstance(boxs,type(None))):
-                boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
-                if(self.normalize): boxs = np_box_nor(boxs,sample['image'].shape[-3:-1],self.out_box_format)
-                sample['box']=boxs
+                if(self.normalize): boxs = np_box_nor(boxs,org_shape,self.in_box_format)
+                elif(not isinstance(self.image_size,type(None)) and sample['image'].shape[0:2]!=org_shape):
+                    boxs = np_box_resize(boxs,org_shape,self.image_size,self.in_box_format)
+                if(self.in_box_format!=self.out_box_format):
+                    boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
+                sample['box']= boxs
                 sample['box_format']=self.out_box_format
+
             if(not isinstance(texts,type(None))):sample['text']=texts
 
         if(self.gt_mask_dir):
             ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(self.img_names[idx])) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,self.img_names[idx])
             ypimg = io.imread(ypdir)
-            if(len(ypimg.shape)==2):ypimg = ypimg.reshape(list(ypimg.shape)+[1])
+            if(len(ypimg.shape)==2):ypimg = np.expand_dims(ypimg,-1)
+            if(not isinstance(self.image_size,type(None)) and ypimg.shape[0:2]!=self.image_size):
+                ypimg = transform.resize(ypimg,self.image_size)
             sample['gtmask'] = ypimg
 
         if(self.transform!=None):
@@ -95,8 +137,11 @@ class BaseDataset(Dataset):
         return sample
 
     def get_name(self, index):
-        return self.img_names[index]
+        return os.path.join(self.imgdir,self.img_names[idx])
 
     def read_boxs(self,fname:str):
+        """
+        Return boxes,texts
+        """
         raise NotImplementedError
 

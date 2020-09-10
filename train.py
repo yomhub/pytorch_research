@@ -13,6 +13,7 @@ from lib.model.craft import CRAFT
 from lib.model.mobilenet_v2 import CRAFT_MOB
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
+from lib.dataloader.icdar import ICDAR
 from lib.dataloader.icdar_video import ICDARV
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
@@ -25,7 +26,9 @@ __DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
+__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
 __DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
+
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
@@ -53,6 +56,9 @@ if __name__ == "__main__":
     time_start = datetime.now()
     isdebug = args.debug
     # isdebug = True
+    lod_dir = args.load
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_MOB_normal_adamg.pkl"
+
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 10
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
@@ -78,7 +84,22 @@ if __name__ == "__main__":
 
         
     if(args.dataset.lower()=="ttt"):
-        train_dataset = Total(os.path.join(__DEF_TTT_DIR,'Images','Train'),os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),os.path.join(__DEF_TTT_DIR,'gt_txt','Train'))
+        train_dataset = Total(
+            os.path.join(__DEF_TTT_DIR,'Images','Train'),
+            os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
+            os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
+            image_size=(3,640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+    elif(args.dataset.lower()=="ic15"):
+        train_dataset = ICDAR(
+            os.path.join(__DEF_IC15_DIR,'images','train'),
+            os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
+            image_size=(3,640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
     else:
         train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
             transform=transforms.Compose([
@@ -87,9 +108,16 @@ if __name__ == "__main__":
                                     std=[0.229, 0.224, 0.225])
             ]
         ))
+        train_on_real = False
+        x_input_function=syn80k.x_input_function
+        y_input_function=syn80k.y_input_function
+
     dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
         num_workers=num_workers,
-        pin_memory=True if(num_workers>0)else False)
+        pin_memory=True if(num_workers>0)else False,
+        collate_fn=train_dataset.default_collate_fn,
+        )
+
     loss = MSE_OHEM_Loss()
     trainer = CRAFTTrainer
     
@@ -101,9 +129,11 @@ if __name__ == "__main__":
         log_step_size = tcfg['LOGSTP'],
         save_step_size = tcfg['SAVESTP'],
         lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
-        custom_x_input_function=syn80k.x_input_function,
-        custom_y_input_function=syn80k.y_input_function,
+        custom_x_input_function=x_input_function,
+        custom_y_input_function=y_input_function,
+        train_on_real = train_on_real,
         )
+    trainer.set_teacher("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl")
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(work_dir)+\
@@ -117,15 +147,15 @@ if __name__ == "__main__":
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-        "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
+        "\t Load network: {}.\n".format(lod_dir if(lod_dir)else 'No')+\
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
     trainer.log_info(summarize)
-
-    if(args.load):
-        print("Loading model at {}.".format(args.load))
-        trainer.load(args.load)
+    
+    if(lod_dir):
+        print("Loading model at {}.".format(lod_dir))
+        trainer.load(lod_dir)
 
     trainer.loader_train(dataloader,int(len(train_dataset)/args.batch) if(max_step<0)else max_step)
     if(args.save):

@@ -83,6 +83,11 @@ class MSE_OHEM_Loss(nn.Module):
         return avg_sample_loss
 
     def forward(self, x, y):
+        """
+        Args:
+            x: pred (batch,2,h,w),feature
+            y: char_target ,aff_target (batch,h,w)
+        """
         char_target, aff_target = y
         x = x[0]
         if(len(x.shape)==3):
