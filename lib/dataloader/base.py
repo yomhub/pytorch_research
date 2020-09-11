@@ -97,7 +97,6 @@ class BaseDataset(Dataset):
             org_shape = img.shape[0:2]
             if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
                 img = transform.resize(img,self.image_size,preserve_range=True)
-            img = np_img_normalize(img)
             sample = {'image': img}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(os.path.join(self.imgdir,self.img_names[idx]))

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mimg
 from matplotlib import cm
 from datetime import datetime
-from skimage import transform
+from skimage import io, transform
 
 def str2time(instr):
     ymd,hms=instr.split('-')
@@ -43,8 +43,12 @@ def plt_3d_projection(values: np.ndarray, xy_image: np.ndarray=None):
                         linewidth=0, antialiased=False)
     fig.colorbar(surf, shrink=0.5, aspect=5)
 
-    cset = ax.contour(X, Y, values, zdir='x', cmap=cm.coolwarm)
-    cset = ax.contour(X, Y, values, zdir='y', cmap=cm.coolwarm)
+    # # xoy projection
+    # cset = ax.contour(X, Y, values, zdir='z', cmap=cm.coolwarm)
+    # # xoz projection
+    # cset = ax.contour(X, Y, values, zdir='y', cmap=cm.coolwarm)
+    # # yoz projection
+    # cset = ax.contour(X, Y, values, zdir='x', cmap=cm.coolwarm)
     if(not isinstance(xy_image,type(None))):
         if(len(xy_image.shape)==2):xy_image = np.expand_dims(xy_image,-1)
         if(xy_image.shape[:2]!=(h,w)):
@@ -62,3 +66,10 @@ def save_image(f_name:str,img:np.ndarray):
     if(len(f_name.split('.'))==1):
         f_name += '.jpg'
     mimg.imsave(f_name, img)
+
+if __name__ == "__main__":
+    img = io.imread("/home/yomcoding/Pytorch/MyResearch/dataset/ICDAR2015/images/test/img_5.jpg")
+    mask = np.random.uniform(0.0,1.0,(img.shape[0],img.shape[1]))
+    fig,ax = plt_3d_projection(mask,img)
+    fig.savefig("/home/yomcoding/Pytorch/MyResearch/test.jpg")
+    pass
