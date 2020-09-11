@@ -209,7 +209,7 @@ def np_img_normalize(img:np.ndarray,mean=(0.485, 0.456, 0.406), variance=(0.229,
     chs = img.shape[-1]
     if(not isinstance(mean,Iterable)):mean = [mean]*chs
     if(not isinstance(variance,Iterable)):variance = [variance]*chs
-    img = img.copy().astype(np.float32)
+    img = img.astype(np.float32)
     img -= np.array([mean[0] * 255.0, mean[1] * 255.0, mean[2] * 255.0], dtype=np.float32)
     img /= np.array([variance[0] * 255.0, variance[1] * 255.0, variance[2] * 255.0], dtype=np.float32)
 
@@ -402,9 +402,10 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
             or (polygon point number,2 (x,y))
     """
     image = image.astype(np.uint8)
+
+    if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes)==2):
         boxes=boxes.reshape((1,-1,2))
-    if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(isinstance(text,np.ndarray)):
         text = text.reshape((-1))        
     elif(not isinstance(text,type(None)) and isinstance(text,Iterable)):
@@ -528,6 +529,45 @@ def cv_watershed(org_img, mask, viz=False):
         box = np.array(box)
         boxes.append(box)
     return np.array(boxes)
+
+def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
+    """
+    Calculate pixel level box moving vector
+    Args:
+        cv_src_box: sorce boxes (t-1) in cv coordinate, (N,4,2)
+        cv_dst_box: dest boxes (t) in cv coordinate, (N,4,2)
+            The shape of cv_src_box and cv_dst_box MUST be same
+            and the box label is same in axis 0
+        image_size: int/float or (h,w) or None
+
+    Return:
+        matrix_list: list of affine matrix
+        matrix_map: affine matrix in pixel level, (h,w,6)
+            or None if image_size is none
+    """
+
+    if(not isinstance(image_size,type(None)) and not isinstance(image_size,Iterable)):
+        image_size = (image_size,image_size)
+    matrix_map = np.zeros((image_size[0],image_size[1],6)) if(not isinstance(image_size,type(None)))else None
+    assert(cv_src_box.shape==cv_dst_box.shape)
+    matrix_list = []
+    for i in range(cv_src_box.shape[0]):
+        mm = cv2.getAffineTransform(cv_src_box[i,:3].astype(np.float32), cv_dst_box[i,:3].astype(np.float32))
+        matrix_list.append(mm)
+        if(not isinstance(image_size,type(None))):
+            x1= int(max(cv_dst_box[i,:,0].min(),0))
+            x2= int(min(cv_dst_box[i,:,0].max(),image_size[1]-1))
+            y1= int(max(cv_dst_box[i,:,1].min(),0))
+            y2= int(min(cv_dst_box[i,:,1].max(),image_size[0]-1))
+            matrix_map[y1:y2,x1:x2]=mm.reshape((-1))
+
+    return np.array(matrix_list),matrix_map
+
+# 
+# ===============================================
+# ==================== Class ====================
+# ===============================================
+#
 
 class RandomScale(object):
     """Resize randomly the image in a sample.

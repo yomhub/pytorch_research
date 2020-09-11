@@ -1,3 +1,4 @@
+import os
 # =================Torch=======================
 import torch
 import numpy as np
@@ -8,6 +9,7 @@ from lib.tester_base import Tester
 from lib.utils.img_hlp import cv_getDetCharBoxes_core, cv_draw_rect, cv_draw_poly, cv_heatmap, np_box_rescale
 from lib.utils.log_hlp import save_image
 from lib.utils.img_hlp import cv_crop_image_by_bbox,cv_box2cvbox,cv_watershed,GaussianTransformer
+
 class CRAFTTrainer(Trainer):
     def __init__(self,  
         train_on_real,
@@ -142,7 +144,7 @@ class CRAFTTrainer(Trainer):
             y = self._custom_y_input_function(sample,self._device)
 
         self._opt.zero_grad()
-        pred = self._net(x)
+        pred,_ = self._net(x)
         loss = self._loss(pred,y)
         loss.backward()
         self._opt.step()
@@ -153,25 +155,28 @@ class CRAFTTester(Tester):
         super(CRAFTTester,self).__init__(**params)
 
     def _step_callback(self,x,y,pred,loss,step,batch_size):
+        pred = pred[0].to('cpu').detach().numpy()
+        scale = (x.shape[2]/pred.shape[2],x.shape[3]/pred.shape[3])
+        x = x.permute(0,2,3,1).to('cpu').detach().numpy().astype(np.uint8)
         if(self._file_writer==None):return None
-        self._file_writer.add_scalar('Loss/test', loss, step)
+        if(loss!=None): self._file_writer.add_scalar('Loss/test', loss, step)
 
-        wods = torch.sum(pred,1).to('cpu').detach().numpy()
-        for i,wod in enumerate(wods):
+        wods = np.sum(pred,1)
+        for batch,wod in enumerate(wods):
             det, labels, mapper = cv_getDetCharBoxes_core(wod)
 
-            odet = np_box_rescale(det,(x.shape[2]/pred.shape[2],x.shape[3]/pred.shape[3]),'polyxy')
+            odet = np_box_rescale(det,scale,'polyxy')
             save_image(
-                os.path.join(self._logs_path,'{:05d}_im.jpg'.format(step*batch_size+i)),
-                cv_draw_poly(x.permute(0,2,3,1).to('cpu').detach().numpy().astype(np.uint8),odet),
+                os.path.join(self._logs_path,'{:05d}_im.jpg'.format(step*batch_size+batch)),
+                cv_draw_poly(x[batch],odet),
                 )
             save_image(
-                os.path.join(self._logs_path,'{:05d}_ch.jpg'.format(step*batch_size+i)),
-                cv_draw_poly(cv_heatmap(np.expand_dims(pred[0,0,:,:].detach().numpy(),-1)),det),
+                os.path.join(self._logs_path,'{:05d}_ch.jpg'.format(step*batch_size+batch)),
+                cv_draw_poly(cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1)),det),
                 )
             save_image(
-                os.path.join(self._logs_path,'{:05d}_af.jpg'.format(step*batch_size+i)),
-                cv_draw_poly(cv_heatmap(np.expand_dims(pred[0,1,:,:].detach().numpy(),-1)),det),
+                os.path.join(self._logs_path,'{:05d}_af.jpg'.format(step*batch_size+batch)),
+                cv_draw_poly(cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1)),det),
                 )
 
         return None

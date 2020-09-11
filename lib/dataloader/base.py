@@ -8,7 +8,7 @@ import torchvision
 import cv2
 from torch.utils.data import Dataset
 from torchvision import transforms, utils
-from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize
+from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize,np_img_normalize
 
 def default_collate_fn(batch):
     ret = {}
@@ -97,6 +97,7 @@ class BaseDataset(Dataset):
             org_shape = img.shape[0:2]
             if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
                 img = transform.resize(img,self.image_size,preserve_range=True)
+            img = np_img_normalize(img)
             sample = {'image': img}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(os.path.join(self.imgdir,self.img_names[idx]))

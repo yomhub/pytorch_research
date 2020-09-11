@@ -87,12 +87,12 @@ class Tester():
             for j,sample in enumerate(loader):
                 if(j>=test_size):break
                 x=self._custom_x_input_function(sample,self._device)
-                y=self._custom_y_input_function(sample,self._device)
+                y=self._custom_y_input_function(sample,self._device) if(self._custom_y_input_function!=None)else None
                 
                 pred = self._net(x)
-                loss = self._loss(pred,y) if(self._loss!=None)else None
+                loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
 
-                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._step_callback(x,y,pred,loss.item()if(loss!=None)else None,self._current_step,batch_size)
                 self._current_step += 1
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):

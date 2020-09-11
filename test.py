@@ -18,7 +18,7 @@ from lib.dataloader.icdar_video import ICDARV
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTester
-from lib.config.train_default import cfg as tcfg
+from lib.config.test_default import cfg as tcfg
 
 
 __DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -50,18 +50,19 @@ if __name__ == "__main__":
 
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
+    parser.add_argument('--f', type=str, help='Set --f to choose a test floder.',default=os.path.join(__DEF_DATA_DIR,'mini_test'))
     parser.add_argument('--name', help='Name of task.')
-    parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default=tcfg['DATASET'])
+    parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt/ic15.', default=tcfg['DATASET'])
     parser.add_argument('--datax', type=int, help='Dataset output width.',default=tcfg['IMG_SIZE'][0])
     parser.add_argument('--datay', type=int, help='Dataset output height.',default=tcfg['IMG_SIZE'][1])
     parser.add_argument('--step', type=int, help='Step size.',default=5)
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
-    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=-1)
+    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=1)
 
     args = parser.parse_args()
     load_dir = args.load
-    # load_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_MOB_Adag/20200819-010649+craft_MOB_normal_adamg.pkl"
+    load_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    # load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_MOB_Adag/20200819-010649+craft_MOB_normal_adamg.pkl"
     if(load_dir and os.path.exists(load_dir)):
         net = torch.load(load_dir)
     else:
@@ -102,13 +103,7 @@ if __name__ == "__main__":
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     else:
-        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
-            transform=transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
-            ]
-        ))
+        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
         train_on_real = False
         x_input_function=syn80k.x_input_function
         y_input_function=syn80k.y_input_function
@@ -116,7 +111,8 @@ if __name__ == "__main__":
     dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, 
         num_workers=num_workers,
         pin_memory=True if(num_workers>0)else False)
-    loss = MSE_OHEM_Loss()
+    # loss = MSE_OHEM_Loss()
+    loss = None
     tester = CRAFTTester
     
     tester = tester(
@@ -125,8 +121,8 @@ if __name__ == "__main__":
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss,
         log_step_size = 1,
-        custom_x_input_function=syn80k.x_input_function,
-        custom_y_input_function=syn80k.y_input_function,
+        custom_x_input_function=x_input_function,
+        custom_y_input_function=y_input_function,
         )
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\

@@ -3,6 +3,8 @@ import cv2
 import torch
 import numpy as np
 from collections import defaultdict
+# =====================
+from lib.utils.img_hlp import np_box_transfrom
 
 import xml.etree.ElementTree as ET
 def read_boxs(fname:str,fm:str='xyxy'):
@@ -36,13 +38,14 @@ def read_boxs(fname:str,fm:str='xyxy'):
     return pointsxy
 
 class ICDARV():
-    def __init__(self, vdo_dir, out_box_format='cxywh', normalized=True, include_name=False):
+    def __init__(self, vdo_dir, out_box_format='polyxy', normalized=True, include_name=False):
         self._vdo_dir = vdo_dir
         self._in_box_format = 'xyxy'
         self._gt_name_lambda = lambda x: "%s_GT"%x
         self._vdo_type = ['mp4','avi']
         self._names = [o for o in os.listdir(self._vdo_dir) if o.lower().split('.')[-1] in self._vdo_type]
         self._include_name = bool(include_name)
+        self._out_box_format = out_box_format.lower()
 
     def __len__(self):
         return len(self._names)
@@ -55,7 +58,11 @@ class ICDARV():
         width  = int(vfile.get(3))
         height = int(vfile.get(4))
         fps = int(vfile.get(5))
-        pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))
+        if(self._out_box_format=='polyxy'):
+            pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'),'poly')
+        else:
+            pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))
+            pointsxy = np_box_transfrom(pointsxy,'xyxy',self._out_box_format)
         
         sample = {
             'video': vfile,
