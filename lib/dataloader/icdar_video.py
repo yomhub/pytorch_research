@@ -37,6 +37,10 @@ def read_boxs(fname:str,fm:str='xyxy'):
             pointsxy[fid] = np.array(tmp,np.int32)
     return pointsxy
 
+def default_collate_fn(batch):
+
+    return batch[0]
+
 class ICDARV():
     def __init__(self, vdo_dir, out_box_format='polyxy', normalized=True, include_name=False):
         self._vdo_dir = vdo_dir
@@ -46,6 +50,7 @@ class ICDARV():
         self._names = [o for o in os.listdir(self._vdo_dir) if o.lower().split('.')[-1] in self._vdo_type]
         self._include_name = bool(include_name)
         self._out_box_format = out_box_format.lower()
+        self.default_collate_fn = default_collate_fn
 
     def __len__(self):
         return len(self._names)

@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 import torch.nn.functional as F
 from lib.model.vgg16 import VGG16
 from lib.utils.net_hlp import init_weights
+from lib.model.mobilenet_v2 import MobUNet
+from lib.model.lstm import BottleneckLSTMCell
 
 class double_conv(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
@@ -71,3 +74,90 @@ class CRAFT(nn.Module):
         y = self.conv_cls(feature)
 
         return y, feature
+
+
+class CRAFT_MOB(nn.Module):
+    def __init__(self, width_mult=1.,pretrained=False):
+        super(CRAFT_MOB, self).__init__()
+        self._mob = MobUNet(width_mult=width_mult)
+
+        self._final_predict = nn.Sequential(
+            nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        )
+
+        self.init_weights(self._final_predict.modules())
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                # init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self,x):
+        f = self._mob(x)
+        pred = self._final_predict(f)
+        return pred,f
+
+class CRAFT_LSTM(nn.Module):
+    def __init__(self, width_mult = 1.0):
+        super(CRAFT_LSTM, self).__init__()
+        self._mob = MobUNet(width_mult=width_mult)
+        hidden_channels = self._mob.final_predict_ch
+        self._lstm = BottleneckLSTMCell(
+            input_channels=self._mob.final_predict_ch,
+            hidden_channels=self._mob.final_predict_ch,)
+        
+        self._distribution = nn.Sequential(
+            nn.Conv2d(hidden_channels, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        )
+        self._aff_map = nn.Sequential(
+            nn.Conv2d(hidden_channels, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 6, kernel_size=1, stride=1)
+        )
+        self.init_weights(self._distribution.modules())
+        self.init_weights(self._aff_map.modules())
+        self._lstmh,self._lstmc = self._lstm.init_hidden(4,self._mob.final_predict_ch,(320,320))
+
+    def forward(self,x):
+        f = self._mob(x)
+        self._lstmh,self._lstmc = self._lstm(f,self._lstmh,self._lstmc)
+        score = self._distribution(self._lstmh)
+        pred_map = self._aff_map(self._lstmh)
+
+        return torch.cat((score,pred_map),1),self._lstmh
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                # init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)

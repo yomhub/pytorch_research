@@ -28,6 +28,7 @@ def default_x_input_function(sample,th_device):
 class BaseDataset(Dataset):
     """
     Args:
+        img_dir: str or list, image folder
         'box_format': string in ['yxyx','xyxy','xywh','cxywh']
             'yxyx': box_cord = [y1,x1,y2,x2]
             'xyxy': box_cord = [x1,y1,x2,y2]
@@ -63,14 +64,14 @@ class BaseDataset(Dataset):
         self.out_box_format = out_box_format.lower()
 
         self.normalize = bool(normalized)
-        self.imgdir = img_dir
+        self.imgdir = img_dir if(type(img_dir) in [list,tuple])else (img_dir)
         self.gt_mask_dir = gt_mask_dir
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
         self.img_type = ['jpg','png','bmp']
         self.vdo_type = ['mp4','avi']
-        self.img_names = [o for o in os.listdir(self.imgdir) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+        self.img_names = [os.path.join(fld,o) for fld in self.imgdir for o in os.listdir(fld) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
         self.transform=transform
         self.ch = 3
         if(isinstance(image_size,type(None))):
@@ -93,18 +94,18 @@ class BaseDataset(Dataset):
             idx = idx.tolist()
         sample = {}
         if(self.img_names[idx].split('.')[-1].lower() in self.img_type):
-            img = io.imread(os.path.join(self.imgdir,self.img_names[idx]))
+            img = io.imread(self.img_names[idx])
             org_shape = img.shape[0:2]
-            if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
-                img = transform.resize(img,self.image_size,preserve_range=True)
+            # if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
+            img = transform.resize(img,self.image_size,preserve_range=True)
             sample = {'image': img}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
-            vfile = cv2.VideoCapture(os.path.join(self.imgdir,self.img_names[idx]))
+            vfile = cv2.VideoCapture(self.img_names[idx])
             sample = {'video': vfile}
 
+        img_nm = os.path.basename(self.img_names[idx]).split('.')[0]
         if(self.gt_txt_dir!=None):
             assert(self.in_box_format!=None)
-            img_nm = self.img_names[idx].split('.')[0]
             ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
             try:
                 boxs, texts = self.read_boxs(ytdir)
@@ -124,7 +125,7 @@ class BaseDataset(Dataset):
             if(not isinstance(texts,type(None))):sample['text']=texts
 
         if(self.gt_mask_dir):
-            ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(self.img_names[idx])) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,self.img_names[idx])
+            ypdir = os.path.join(self.gt_mask_dir,self.gt_mask_name_lambda(img_nm)) if(self.gt_mask_name_lambda)else os.path.join(self.gt_mask_dir,os.path.basename(self.img_names[idx]))
             ypimg = io.imread(ypdir)
             if(len(ypimg.shape)==2):ypimg = np.expand_dims(ypimg,-1)
             if(not isinstance(self.image_size,type(None)) and ypimg.shape[0:2]!=self.image_size):
@@ -136,8 +137,10 @@ class BaseDataset(Dataset):
 
         return sample
 
-    def get_name(self, index):
-        return os.path.join(self.imgdir,self.img_names[idx])
+    def get_name(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        return self.img_names[idx]
 
     def read_boxs(self,fname:str):
         """

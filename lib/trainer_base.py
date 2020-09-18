@@ -105,8 +105,7 @@ class Trainer():
             print("Trainer err: net/opt/loss is None")
             return -1
         if(self._custom_x_input_function==None or self._custom_x_input_function==None):
-            print("Trainer err: custom_input_function is None")
-            return -1
+            print("Warring: custom_input_function is None")
         
         batch_size = loader.batch_size
 
@@ -120,7 +119,6 @@ class Trainer():
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
                 x,y,pred,loss = self._train_act(sample)
-                self._current_step += 1
                 self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
@@ -145,6 +143,7 @@ class Trainer():
                 del sample
                 del x
                 del y
+                self._current_step += 1
 
                 if(self._auto_decay):
                     loss_10.append(loss.item())

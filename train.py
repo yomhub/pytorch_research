@@ -9,12 +9,12 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # =================Local=======================
-from lib.model.craft import CRAFT
-from lib.model.mobilenet_v2 import CRAFT_MOB
+from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import ICDAR
 from lib.dataloader.icdar_video import ICDARV
+from lib.dataloader.base import BaseDataset
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTrainer
@@ -24,10 +24,10 @@ from lib.config.train_default import cfg as tcfg
 __DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
 __DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
+__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
+__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
 
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
@@ -55,15 +55,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
-    # isdebug = True
+    isdebug = True
     lod_dir = args.load
     # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_MOB_normal_adamg.pkl"
 
     lr = args.learnrate
-    max_step = args.step if(not isdebug)else 10
+    max_step = args.step if(not isdebug)else 1000
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
     lr_decay_step_size = tcfg['LR_DEC_STP']
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
+    batch = args.batch
     # num_workers=0
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
     # lr_decay_step_size = None
@@ -72,6 +73,9 @@ if __name__ == "__main__":
         net = CRAFT()
     elif(args.net.lower()=='craft_mob'):
         net = CRAFT_MOB(pretrained=True)
+    elif(args.net.lower()=='craft_lstm'):
+        net = CRAFT_LSTM()
+
     device = torch.device("cuda:0" if use_cuda else "cpu")
     net.float().to(device)
 
@@ -100,7 +104,7 @@ if __name__ == "__main__":
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
-    else:
+    elif(args.dataset.lower()=='sync'):
         train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
             transform=transforms.Compose([
                 transforms.ToTensor(),
@@ -111,8 +115,25 @@ if __name__ == "__main__":
         train_on_real = False
         x_input_function=syn80k.x_input_function
         y_input_function=syn80k.y_input_function
+    elif(args.dataset.lower()=='icv15'):
+        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
+        train_on_real = True
+        x_input_function = None
+        y_input_function = None
+        num_workers = 0
+        batch = 1
+    else:
+        train_dataset = BaseDataset((
+            os.path.join(__DEF_IC15_DIR,'images','train'),
+            os.path.join(__DEF_TTT_DIR,'Images','Train'),
+            __DEF_SVT_DIR,
+            ),
+            image_size=(3,640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
 
-    dataloader = DataLoader(train_dataset, batch_size=args.batch, shuffle=True, 
+    dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
         num_workers=num_workers,
         pin_memory=True if(num_workers>0)else False,
         collate_fn=train_dataset.default_collate_fn,
@@ -138,10 +159,11 @@ if __name__ == "__main__":
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(work_dir)+\
         "Running with: \n"+\
-        "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,args.batch)+\
+        "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,batch)+\
         "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
         "\t Network: {}.\n".format(net.__class__.__name__)+\
         "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
+        "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
         "\t Init learning rate: {}.\n".format(lr)+\
         "\t Learning rate decay: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
