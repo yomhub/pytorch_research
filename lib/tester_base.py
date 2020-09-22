@@ -91,12 +91,11 @@ class Tester():
                 
                 pred = self._net(x)
                 loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
-
-                self._step_callback(x,y,pred,loss.item()if(loss!=None)else None,self._current_step,batch_size)
-                self._current_step += 1
+                cryt = self._criterion(pred,sample)
+                self._step_callback(x,y,pred,loss.item()if(loss!=None)else None,cryt,self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                    self._logger(x,y,pred,loss.item() if(loss!=None)else None,self._current_step,batch_size)
+                    self._logger(x,y,pred,loss.item() if(loss!=None)else None,cryt,self._current_step,batch_size)
                     if(self._file_writer!=None):self._file_writer.flush()
 
                 if(loss!=None):
@@ -107,6 +106,7 @@ class Tester():
                 del sample
                 del x
                 del y
+                self._current_step += 1
 
                 if(test_size<=100 or j%int(test_size/100)==0):
                     pbar.update()
@@ -115,9 +115,11 @@ class Tester():
         self._f_train_loger.flush()
         return 0
 
-    def _logger(self,x,y,pred,loss,step,batch_size):
+    def _logger(self,x,y,pred,loss,cryt,step,batch_size):
         return None
-    def _step_callback(self,x,y,pred,loss,step,batch_size):
+    def _step_callback(self,x,y,pred,loss,cryt,step,batch_size):
+        return None
+    def _criterion(self,pred,sample):
         return None
         
     def get_net_size(self):

@@ -7,6 +7,7 @@ import torch
 import math
 from collections import Iterable
 import Polygon as plg
+from shapely.geometry import Polygon
 # ======================
 from . import log_hlp
 
@@ -78,8 +79,8 @@ def np_box_rescale(box,scale,box_format:str):
     else: #'yxyx'
         scale = np.array([scale[0],scale[1]]*(box.shape[-1]//2))
 
-    ret = box[:,-(box.shape[-1]//2*2):]*scale
-    if(box.shape[-1]%2):
+    ret = box[:,-(box.shape[-1]//2*2):]*scale if(len(box.shape)==2)else box*scale
+    if(len(box.shape)==2 and box.shape[-1]%2):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
@@ -238,6 +239,27 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
     g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
     return g
 
+def cv_box_overlap(boxes1,boxes2):
+    """
+    Calculate box overlap in CV coordinate
+    Args:
+        boxes1: ((N1),2,4) CV coordinate
+        boxes1: ((N2),2,4) CV coordinate
+    Return:
+        overlap: (N1,N2) array, -1 for non-overlap
+    """
+    if(len(boxes1.shape)==2):boxes1 = np.expand_dims(boxes1,0)
+    if(len(boxes2.shape)==2):boxes2 = np.expand_dims(boxes2,0)
+    ans = []
+    for b1 in boxes1:
+        tmp = []
+        p1 = Polygon(b1)
+        for b2 in boxes2:
+            p2 = Polygon(b2)
+            tmp.append(p1.intersection(p2).area if(p1.intersects(p2))else -1.0)
+        ans.append(tmp)
+    return np.array(ans)
+
 def cv_box2cvbox(boxes,image_size,box_format:str):
     """
     Convert regular box to CV2 coordinate.
@@ -333,12 +355,14 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
         score_th: threshold of score, float
         seg_th: threshold of segmentation, float
     Ret:
-
+        detections: (N,4,2) box with polyxy format
+        labels: map of labeled number
+        mapper: list of number label for each box
     """
     img_h, img_w = scoremap.shape[0], scoremap.shape[1]
     scoremap = scoremap.reshape((img_h, img_w))
-    if(segmap==None):
-        segmap = np.zeros((img_h, img_w))
+    if(isinstance(segmap,type(None))):
+        segmap = np.zeros((img_h, img_w),dtype=scoremap.dtype)
     else:
         segmap = segmap.reshape((img_h, img_w))
 
@@ -392,7 +416,7 @@ def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_t
         det.append(box)
         mapper.append(k)
 
-    return det, labels, mapper
+    return np.array(det), labels, mapper
 
 def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
     """
@@ -474,6 +498,7 @@ def cv_watershed(org_img, mask, viz=False):
     Args:
         org_img: original image, (h,w,chs) in np.uint8
         mask: mask image, (h,w) in np.float in [0,1]
+    Return:
 
     """
     if(org_img.shape[0:2]!=mask.shape[0:2]):

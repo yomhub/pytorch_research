@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from lib.model.bottleneck_lstm import BottleneckLSTMCell
+from lib.model.lstm import BottleneckLSTMCell
 from lib.model.mobilenet_v2 import MobileNetV2
-from lib.utils.net_hlp import init_weights
 
 class SLLSTM(nn.Module):
     def __init__(self,
@@ -43,7 +42,7 @@ class SLLSTM(nn.Module):
             nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
             nn.Conv2d(16, num_class, kernel_size=1),
         )
-        init_weights(self._final_predict.modules())
+        self.init_weights(self._final_predict.modules())
         self._frame_cont = 0
         self._frame_period = int(frame_period)
         
@@ -72,3 +71,15 @@ class SLLSTM(nn.Module):
         
         return x
     
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                m.weight.data.fill_(1)
+                m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()

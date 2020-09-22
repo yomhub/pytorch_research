@@ -9,8 +9,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # =================Local=======================
-from lib.model.craft import CRAFT
-from lib.model.mobilenet_v2 import CRAFT_MOB
+from lib.model.craft import CRAFT,CRAFT_MOB
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.icdar import ICDAR
 from lib.dataloader.total import Total

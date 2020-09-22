@@ -86,7 +86,7 @@ class MSE_OHEM_Loss(nn.Module):
         """
         Args:
             x: pred (batch,2,h,w),feature
-            y: char_target ,aff_target (batch,h,w)
+            y: char_target ,aff_target (batch,1,h,w)
         """
         char_target, aff_target = y
         x = x[0]

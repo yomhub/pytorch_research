@@ -55,7 +55,7 @@ class BottleneckLSTMCell(nn.Module):
 			output tensor after LSTM cell 
 		"""
 		x = self.W(x)
-		y = torch.cat((x, h),1) #concatenate input and hidden layers
+		y = torch.cat((x, h[:x.shape[0]]),1) #concatenate input and hidden layers
 		i = self.Wy(y) #reduce to hidden layer size
 		b = self.Wi(i)	#depth wise 3*3
 		ci = torch.sigmoid(self.Wbi(b) + c * self.Wci)
@@ -105,8 +105,8 @@ class BottleneckLSTM(nn.Module):
 		self.hidden_state = h
 		self.cell_state = c
 
-	def forward(self, input):
-		new_h, new_c = self.cell(input, self.hidden_state, self.cell_state)
+	def forward(self, x):
+		new_h, new_c = self.cell(x, self.hidden_state, self.cell_state)
 		self.hidden_state = new_h
 		self.cell_state = new_c
 		return self.hidden_state
