@@ -38,7 +38,7 @@ elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yo
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
 
 if __name__ == "__main__":
-    load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_LSTM_teacher.pkl"
+    load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_LSTM_pre/20200921-181646+craft_LSTM_teacher.pkl"
     device='cuda'
     log_stp = 10
 

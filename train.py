@@ -9,7 +9,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # =================Local=======================
-from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM
+from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import ICDAR
@@ -57,7 +57,8 @@ if __name__ == "__main__":
     isdebug = args.debug
     # isdebug = True
     lod_dir = args.load
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm_pre.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob.pkl"
+    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
 
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 1000
@@ -76,6 +77,10 @@ if __name__ == "__main__":
         net = CRAFT_MOB(pretrained=True)
     elif(args.net.lower()=='craft_lstm'):
         net = CRAFT_LSTM()
+    elif(args.net.lower()=='craft_motion'):
+        net = CRAFT_MOTION()
+
+    net = net.float().to("cuda:0" if(use_cuda)else "cpu")
     
     if(args.opt.lower()=='adam'):
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
@@ -152,7 +157,7 @@ if __name__ == "__main__":
         custom_y_input_function=y_input_function,
         train_on_real = train_on_real,
         )
-    trainer.set_teacher("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl")
+    trainer.set_teacher(teacher_pkl_dir)
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(work_dir)+\

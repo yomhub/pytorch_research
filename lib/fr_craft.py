@@ -22,10 +22,10 @@ class CRAFTTrainer(Trainer):
 
         super(CRAFTTrainer,self).__init__(**params)
     
-    def set_teacher(self,mod_dir:str):
-        self.teacher = torch.load(mod_dir)
+    def set_teacher(self,mod_dir:str,device='cuda'):
+        self.teacher_device = torch.device(device)
+        self.teacher = torch.load(mod_dir).float().to(self.teacher_device)
         self.teacher.eval()
-        self.teacher = self.teacher.float().to(self._device)
         self.use_teacher=True
 
     def _logger(self,x,y,pred,loss,step,batch_size):
@@ -120,21 +120,26 @@ class CRAFTTrainer(Trainer):
     def _train_act(self,sample):
         if('video' not in sample):
             x=self._custom_x_input_function(sample,self._device)
+            try:
+                self._net.init_state()
+            except:
+                None
             if(self.use_teacher):
                 try:
                     img = sample['image'].numpy()
                 except:
                     img = sample['image']
                 img = np_img_normalize(img)
-                gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self._device))
-                gt = gt.detach()
+                with torch.no_grad():
+                    gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self.teacher_device))
+                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
                 # gt = torch.from_numpy(gt).to(self._device)
                 chmap = torch.unsqueeze(gt[:,0,:,:],1)
                 afmap = torch.unsqueeze(gt[:,1,:,:],1)
-                chmap -= torch.min(chmap)
-                chmap /= torch.max(chmap)
-                afmap -= torch.min(afmap)
-                afmap /= torch.max(afmap)
+                # chmap -= torch.min(chmap)
+                # chmap /= torch.max(chmap)
+                # afmap -= torch.min(afmap)
+                # afmap /= torch.max(afmap)
                 y=chmap,afmap
 
             elif(self.train_on_real):
@@ -185,9 +190,9 @@ class CRAFTTrainer(Trainer):
                     x = np.expand_dims(x,0)
                 if(len(x_list)<10 and fm_cnt%30==0):
                     x_list.append(torch.from_numpy(x))
-
-                gt,_ = self.teacher(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self._device))
-                gt = gt.detach()
+                with torch.no_grad():
+                    gt,_ = self.teacher(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self.teacher_device))
+                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
                 ch,af = gt[:,0].to('cpu').numpy(),gt[:,1].to('cpu').numpy()
                 if(len(y_ch_list)<10 and fm_cnt%30==0):
                     y_ch_list.append(torch.unsqueeze(gt[:,0],1).to('cpu'))
@@ -248,8 +253,10 @@ class CRAFTTrainer(Trainer):
                 loss.backward()
                 loss_list.append(loss.item())
                 self._opt.step()
-                self._net.lstmh = self._net.lstmh.detach()
-                self._net.lstmc = self._net.lstmc.detach()
+                # self._net.lstmh = self._net.lstmh.detach()
+                # self._net.lstmc = self._net.lstmc.detach()
+                self._net.lstmh = self._net.lstmh.grad.data.zero_()
+                self._net.lstmc = self._net.lstmc.grad.data.zero_()
                 fm_cnt += 1
             vdo.release()
             x=torch.cat(x_list)

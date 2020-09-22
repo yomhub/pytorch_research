@@ -32,8 +32,7 @@ class Trainer():
         self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8') if(not self._isdebug)else sys.stdout
 
         self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(not self._isdebug)else None
-        self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
-        self._device = torch.device("cuda:0" if self._use_cuda else "cpu")
+        self._device = torch.device("cuda:0" if(bool(use_cuda) and torch.cuda.is_available())else "cpu")
 
         self._current_step = 0
         self._batch_size = 0
@@ -80,11 +79,11 @@ class Trainer():
                 if(custom_x_input_function!=None):
                     x=custom_x_input_function(x,self._device)
                 else:
-                    if(self._use_cuda and isinstance(x,torch.Tensor)): x = x.to(self._device)
+                    x = x.to(self._device)
                 if(custom_y_input_function!=None):
                     y=custom_y_input_function(y,self._device)
                 else:
-                    if(self._use_cuda and isinstance(y,torch.Tensor)): y = y.to(self._device)
+                    y = y.to(self._device)
 
                 x,y,pred,loss = self._train_act(sample)
                 c_loss += loss.item()

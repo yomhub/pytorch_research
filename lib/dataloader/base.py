@@ -64,7 +64,7 @@ class BaseDataset(Dataset):
         self.out_box_format = out_box_format.lower()
 
         self.normalize = bool(normalized)
-        self.imgdir = img_dir if(type(img_dir) in [list,tuple])else (img_dir)
+        self.imgdir = img_dir if(type(img_dir) in [list,tuple])else [img_dir]
         self.gt_mask_dir = gt_mask_dir
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir

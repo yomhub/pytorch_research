@@ -166,5 +166,71 @@ class CRAFT_LSTM(nn.Module):
         for k,v in self.state_dict().items():
             d = v
             break
+        # try:
+        #     del self.lstmh
+        #     del self.lstmc
+        # except:
+        #     None
         self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
         self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+
+
+class CRAFT_MOTION(nn.Module):
+    def __init__(self, width_mult=1.,pretrained=False,motion_chs:int = 6):
+        super(CRAFT_MOTION, self).__init__()
+        self._mob = MobUNet(width_mult=width_mult)
+
+        self._map = nn.Sequential(
+            nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        )
+        
+        self._motion = nn.Sequential(
+            nn.Conv2d(self._mob.final_predict_ch*2, self._mob.final_predict_ch, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, motion_chs, kernel_size=1, stride=1)
+        )
+
+        self.init_weights(self._map.modules())
+        self.init_weights(self._motion.modules())
+
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                # init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self,x):
+        f = self._mob(x)
+        try:
+            self.st = torch.cat((f,self.st[:,:self.st.shape[1]//2,:,:]),1)
+        except:
+            self.st = torch.cat((f,torch.zeros(f.shape,dtype=f.dtype).to(f.device)),1)
+        pred_map = self._map(f)
+        pred_mot = self._motion(self.st)
+        return torch.cat((pred_map,pred_mot),1),f
+
+    def init_state(self,shape=(320,320),batch_size=1):
+        for k,v in self.state_dict().items():
+            d = v
+            break
+        try:
+            self.st = torch.zeros(self.st.shape,dtype=self.st.dtype).to(d.device)
+        except:
+            self.st = torch.zeros((batch_size,self._mob.final_predict_ch*2,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+
