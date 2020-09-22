@@ -30,18 +30,29 @@ def plt_3d_projection(values: np.ndarray, xy_image: np.ndarray=None):
     """
     fig = plt.figure()
     ax = fig.gca(projection='3d')
+    ax.figure.subplotpars.left=0.05
+    ax.figure.subplotpars.right=0.95
+    ax.figure.subplotpars.top=0.05
+    ax.figure.subplotpars.bottom=0.95
     h,w=values.shape[:2]
     if(len(values.shape)==3):
         values = values.reshape(values.shape[:2])
     dx = np.arange(w)
     dy = np.arange(h)
     X, Y = np.meshgrid(dx, dy)
-
-    ax.set_xlim(0, w)
+    ax.grid(False)
+    ax.set_xlim(w, 0)
+    ax.set_xticks([])
     ax.set_ylim(0, h)
-    surf = ax.plot_surface(X, Y, values, cmap=cm.coolwarm,
-                        linewidth=0, antialiased=False)
-    fig.colorbar(surf, shrink=0.5, aspect=5)
+    ax.set_yticks([])
+    ax.set_zlim(0, 1)
+    ax.spines['top'].set_color('none')
+    ax.spines['right'].set_color('none')
+    ax.spines['left'].set_color('none')
+    ax.spines['bottom'].set_color('none')
+    # surf = ax.plot_surface(X, Y, values, cmap=cm.coolwarm,
+    #                     linewidth=0, antialiased=False)
+    # fig.colorbar(surf, shrink=0.5, aspect=5)
 
     # # xoy projection
     # cset = ax.contour(X, Y, values, zdir='z', cmap=cm.coolwarm)
@@ -51,9 +62,10 @@ def plt_3d_projection(values: np.ndarray, xy_image: np.ndarray=None):
     # cset = ax.contour(X, Y, values, zdir='x', cmap=cm.coolwarm)
     if(not isinstance(xy_image,type(None))):
         if(len(xy_image.shape)==2):xy_image = np.expand_dims(xy_image,-1)
-        if(xy_image.shape[:2]!=(h,w)):
-            xy_image = transform.resize(xy_image,(h,w),preserve_range=True)
-        ax.imshow(xy_image)
+        # if(xy_image.shape[:2]!=(h,w)):
+        xy_image = transform.resize(xy_image,(h,w),preserve_range=False)
+        # ax.plot_surface(X, Y, np.array([[-1]]), rstride=2, cstride=2,
+        #         facecolors=xy_image)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Value')
@@ -68,8 +80,9 @@ def save_image(f_name:str,img:np.ndarray):
     mimg.imsave(f_name, img)
 
 if __name__ == "__main__":
-    img = io.imread("/home/yomcoding/Pytorch/MyResearch/dataset/ICDAR2015/images/test/img_5.jpg")
-    mask = np.random.uniform(0.0,1.0,(img.shape[0],img.shape[1]))
+    img = io.imread("D:\\development\\workspace\\Dataset\\ICDAR2015\\ch4_test_images\\img_2.jpg")
+    
+    mask = np.random.uniform(0.0,1.0,(640,640))
     fig,ax = plt_3d_projection(mask,img)
-    fig.savefig("/home/yomcoding/Pytorch/MyResearch/test.jpg")
+    plt.show(fig)
     pass
