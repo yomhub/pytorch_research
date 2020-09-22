@@ -63,20 +63,22 @@ class ICDARV():
         width  = int(vfile.get(3))
         height = int(vfile.get(4))
         fps = int(vfile.get(5))
-        if(self._out_box_format=='polyxy'):
-            pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'),'poly')
-        else:
-            pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))
-            pointsxy = np_box_transfrom(pointsxy,'xyxy',self._out_box_format)
-        
         sample = {
             'video': vfile,
             # 'gt_gen': FrameGen(pointsxy,(int(height),int(width))),
-            'gt':pointsxy,
             'fps': fps,
             'width':width,
             'height':height,
             }
+
+        if(os.path.exists(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))):
+            if(self._out_box_format=='polyxy'):
+                pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'),'poly')
+            else:
+                pointsxy = read_boxs(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))
+                pointsxy = np_box_transfrom(pointsxy,'xyxy',self._out_box_format)
+            sample['gt']=pointsxy
+        
         if(self._include_name):sample['name']=self._names[idx]
         return sample
 

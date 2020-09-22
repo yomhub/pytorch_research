@@ -113,7 +113,7 @@ class CRAFT_MOB(nn.Module):
         return pred,f
 
 class CRAFT_LSTM(nn.Module):
-    def __init__(self, width_mult = 1.0):
+    def __init__(self, width_mult = 1.0, batch_size = 4):
         super(CRAFT_LSTM, self).__init__()
         self._mob = MobUNet(width_mult=width_mult)
         hidden_channels = self._mob.final_predict_ch
@@ -135,15 +135,15 @@ class CRAFT_LSTM(nn.Module):
         )
         self.init_weights(self._distribution.modules())
         self.init_weights(self._aff_map.modules())
-        self._lstmh,self._lstmc = self._lstm.init_hidden(4,self._mob.final_predict_ch,(320,320))
+        self.lstmh,self.lstmc = self._lstm.init_hidden(batch_size,self._mob.final_predict_ch,(320,320))
 
     def forward(self,x):
         f = self._mob(x)
-        self._lstmh,self._lstmc = self._lstm(f,self._lstmh,self._lstmc)
-        score = self._distribution(self._lstmh)
-        pred_map = self._aff_map(self._lstmh)
+        self.lstmh,self.lstmc = self._lstm(f,self.lstmh,self.lstmc)
+        score = self._distribution(self.lstmh)
+        pred_map = self._aff_map(self.lstmh)
 
-        return torch.cat((score,pred_map),1),self._lstmh
+        return torch.cat((score,pred_map),1),self.lstmh
 
     def init_weights(self,modules):
         for m in modules:
@@ -161,3 +161,10 @@ class CRAFT_LSTM(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.zeros_(m.bias)
+    
+    def init_state(self,shape=(320,320),batch_size=1):
+        for k,v in self.state_dict().items():
+            d = v
+            break
+        self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+        self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)

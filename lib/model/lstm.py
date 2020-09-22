@@ -54,8 +54,13 @@ class BottleneckLSTMCell(nn.Module):
 		Returns:
 			output tensor after LSTM cell 
 		"""
+		if(h.device!=x.device):
+			h = h.to(x.device).type(x.dtype)
+			c = c.to(x.device).type(x.dtype)
+
 		x = self.W(x)
 		y = torch.cat((x, h[:x.shape[0]]),1) #concatenate input and hidden layers
+		# --------------------
 		i = self.Wy(y) #reduce to hidden layer size
 		b = self.Wi(i)	#depth wise 3*3
 		ci = torch.sigmoid(self.Wbi(b) + c * self.Wci)
@@ -63,6 +68,11 @@ class BottleneckLSTMCell(nn.Module):
 		cc = cf * c + ci * torch.relu(self.Wbc(b))
 		co = torch.sigmoid(self.Wbo(b) + cc * self.Wco)
 		ch = co * torch.relu(cc)
+		# ++++++++++++++++++++
+		# b = self.Wi(self.Wy(y))
+		# cc = torch.sigmoid(self.Wbf(b) + c * self.Wcf) * c + torch.sigmoid(self.Wbi(b) + c * self.Wci) * torch.relu(self.Wbc(b))
+		# ch = torch.sigmoid(self.Wbo(b) + cc * self.Wco) * torch.relu(cc)
+		# ==================
 		return ch, cc
 
 	def init_hidden(self, batch_size, hidden, shape):
@@ -75,15 +85,13 @@ class BottleneckLSTMCell(nn.Module):
 			cell state and hidden state
 		"""
 		if self.Wci is None:
-			self.Wci = Variable(torch.zeros(1, hidden, shape[0], shape[1]))
-			self.Wcf = Variable(torch.zeros(1, hidden, shape[0], shape[1]))
-			self.Wco = Variable(torch.zeros(1, hidden, shape[0], shape[1]))
+			self.Wci = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=torch.float32))
+			self.Wcf = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=torch.float32))
+			self.Wco = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=torch.float32))
 		else:
 			assert shape[0] == self.Wci.size()[2], 'Input Height Mismatched!'
 			assert shape[1] == self.Wci.size()[3], 'Input Width Mismatched!'
-		return (Variable(torch.zeros(batch_size, hidden, shape[0], shape[1])),
-				Variable(torch.zeros(batch_size, hidden, shape[0], shape[1]))
-				)
+		return torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=torch.float32),torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=torch.float32)
 
 class BottleneckLSTM(nn.Module):
 	def __init__(self, input_channels, hidden_channels, height, width, batch_size):

@@ -55,13 +55,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
-    isdebug = True
+    # isdebug = True
     lod_dir = args.load
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_MOB_normal_adamg.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm_pre.pkl"
 
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 1000
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
+    # use_cuda = False
     lr_decay_step_size = tcfg['LR_DEC_STP']
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     batch = args.batch
@@ -75,10 +76,7 @@ if __name__ == "__main__":
         net = CRAFT_MOB(pretrained=True)
     elif(args.net.lower()=='craft_lstm'):
         net = CRAFT_LSTM()
-
-    device = torch.device("cuda:0" if use_cuda else "cpu")
-    net.float().to(device)
-
+    
     if(args.opt.lower()=='adam'):
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     elif(args.opt.lower() in ['adag','adagrad']):
@@ -179,7 +177,7 @@ if __name__ == "__main__":
         print("Loading model at {}.".format(lod_dir))
         trainer.load(lod_dir)
 
-    trainer.loader_train(dataloader,int(len(train_dataset)/args.batch) if(max_step<0)else max_step)
+    trainer.loader_train(dataloader,int(len(train_dataset)/dataloader.batch_size) if(max_step<0)else max_step)
     if(args.save):
         print("Saving model...")
         trainer.save(args.save)

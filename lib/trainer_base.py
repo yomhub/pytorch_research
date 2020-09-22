@@ -119,25 +119,34 @@ class Trainer():
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
                 x,y,pred,loss = self._train_act(sample)
-                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._step_callback(x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                    self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
-                    if(self._file_writer!=None):self._file_writer.flush()
+                    try:
+                        self._logger(x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
+                        if(self._file_writer!=None):self._file_writer.flush()
+                    except Exception as e:
+                        print("Log err: {}".format(str(e)))
 
-                if(torch.isnan(loss).item()):
+                if(not isinstance(loss,list) and torch.isnan(loss).item()):
                     self._f_train_loger.write("Nan at:{}.\n".format(self._current_step))
                     return -1
 
                 if(not(self._isdebug) and self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
-                    self.save()
-                
+                    try:
+                        self.save()
+                    except Exception as e:
+                        print("Save err: {}".format(str(e)))
 
                 if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
-                    self.opt_decay()
+                    try:
+                        self.opt_decay()
+                    except Exception as e:
+                        print("Opt_decay err: {}".format(str(e)))
 
-                self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
-                self._f_train_loger.flush()
+                if(not isinstance(loss,list)):
+                    self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
+                    self._f_train_loger.flush()
 
                 # del 
                 del sample
@@ -159,7 +168,7 @@ class Trainer():
                 i+=1
 
         # self._f_train_loger.write(str(prof))
-        self._f_train_loger.flush()
+        # self._f_train_loger.flush()
         return 0
 
     def _train_act(self,sample):
@@ -233,6 +242,10 @@ class Trainer():
                 print("Load at {}.".format(load_dir))
                 self._net=torch.load(load_dir)
                 self._net=self._net.float().to(self._device)
+                try:
+                    self._net.init_state()
+                except:
+                    print("Skip init state function.")
                 return
             else:
                 load_dir = os.path.dirname(load_dir.split('.')[0])
@@ -248,6 +261,10 @@ class Trainer():
         print("Load at {}.".format(os.path.join(load_dir,tsk_list[cur_i])))
         self._net=torch.load(os.path.join(load_dir,tsk_list[cur_i]))
         self._net=self._net.float().to(self._device)
+        try:
+            self._net.init_state()
+        except:
+            print("Skip init state function.")
         return 
 
     def log_info(self,info):
