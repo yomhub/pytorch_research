@@ -464,6 +464,8 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
     if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes.shape)==1):boxes = boxes.reshape((1,-1))
     fm = fm.lower() if(fm.lower() in __DEF_FORMATS)else __DEF_FORMATS[0]
+    if(fm=='polyxy'):
+        return cv_draw_poly(image,boxes.reshape((-1,2,4)),text)
     if(fm!='xyxy'):boxes = np_box_transfrom(boxes,fm,'xyxy')
     if(isinstance(text,np.ndarray)):
         text = text.reshape((-1))        
