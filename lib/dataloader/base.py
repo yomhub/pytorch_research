@@ -71,7 +71,8 @@ class BaseDataset(Dataset):
         self.gt_txt_name_lambda = gt_txt_name_lambda
         self.img_type = ['jpg','png','bmp']
         self.vdo_type = ['mp4','avi']
-        self.img_names = [os.path.join(fld,o) for fld in self.imgdir for o in os.listdir(fld) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+        self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+
         self.transform=transform
         self.ch = 3
         if(isinstance(image_size,type(None))):

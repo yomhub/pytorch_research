@@ -18,7 +18,7 @@ cfg['IMG_SIZE'] = [
 cfg['STEP'] = [1000*5,100*10,100*5,50*5,1*5,-1][-1]
 cfg['BATCH'] = [1,4][0]
 # Step size for log
-cfg['LOGSTP'] = [20,100][1]
+cfg['LOGSTP'] = [20,100,200][-1]
 # Step size for save model, -1 to disable 
 cfg['SAVESTP'] = [100,200,500,-1][0]
 # Optimizer
@@ -34,6 +34,6 @@ cfg['LR_DEC_STP'] = [0,500][0]
 # learning rate decrease rate: current LR*(1-rt)
 cfg['LR_DEC_RT'] = [0.2,0.1][1]
 
-cfg['NET'] = ['craft', 'craft_mob', 'craft_lstm', 'craft_motion'][-1]
+cfg['NET'] = ['craft', 'craft_mob', 'craft_lstm', 'craft_motion'][-2]
 
-cfg['DATASET'] = ["ttt","ctw","svt",'sync','ic15','icv15','all'][-1]
+cfg['DATASET'] = ["ttt","ctw","svt",'sync','ic15','icv15','all'][-2]

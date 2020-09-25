@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 from lib.model.vgg16 import VGG16
 from lib.utils.net_hlp import init_weights
 from lib.model.mobilenet_v2 import MobUNet
@@ -113,7 +114,7 @@ class CRAFT_MOB(nn.Module):
         return pred,f
 
 class CRAFT_LSTM(nn.Module):
-    def __init__(self, width_mult = 1.0, batch_size = 4):
+    def __init__(self, width_mult = 1.0, batch_size = 1):
         super(CRAFT_LSTM, self).__init__()
         self._mob = MobUNet(width_mult=width_mult)
         hidden_channels = self._mob.final_predict_ch
@@ -139,6 +140,9 @@ class CRAFT_LSTM(nn.Module):
 
     def forward(self,x):
         f = self._mob(x)
+        if(self.lstmh.device!=f.device):
+            self.lstmh = self.lstmh.to(f.device)
+            self.lstmc = self.lstmc.to(f.device)
         self.lstmh,self.lstmc = self._lstm(f,self.lstmh,self.lstmc)
         score = self._distribution(self.lstmh)
         pred_map = self._aff_map(self.lstmh)
@@ -166,13 +170,15 @@ class CRAFT_LSTM(nn.Module):
         for k,v in self.state_dict().items():
             d = v
             break
-        # try:
-        #     del self.lstmh
-        #     del self.lstmc
-        # except:
-        #     None
-        self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
-        self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+        try:
+            self.lstmh.data.zeros_()
+            self.lstmc.data.zeros_()
+            self.lstmh.grad.data.zero_()
+            self.lstmc.grad.data.zero_()
+        except:
+            None
+            self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+            self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
 
 
 class CRAFT_MOTION(nn.Module):
@@ -196,7 +202,6 @@ class CRAFT_MOTION(nn.Module):
 
         self.init_weights(self._map.modules())
         self.init_weights(self._motion.modules())
-
 
     def init_weights(self,modules):
         for m in modules:
@@ -230,6 +235,8 @@ class CRAFT_MOTION(nn.Module):
             d = v
             break
         try:
+            self.st.data.zeros_()
+            self.st.grad.data.zero_()
             self.st = torch.zeros(self.st.shape,dtype=self.st.dtype).to(d.device)
         except:
             self.st = torch.zeros((batch_size,self._mob.final_predict_ch*2,shape[0],shape[1]),dtype=d.dtype).to(d.device)

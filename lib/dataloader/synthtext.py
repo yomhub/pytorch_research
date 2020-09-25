@@ -224,7 +224,7 @@ class SynthText(Dataset):
 
 def x_input_function(sample,th_device): 
     x = sample['image'] if(isinstance(sample,dict))else sample
-    return to_torch(x,th_device)
+    return to_torch(x,th_device).permute(0,3,1,2)
 
 def y_input_function(sample,th_device): 
     char_gt = sample['char_gt'] if(isinstance(sample,dict))else sample[0]

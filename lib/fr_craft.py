@@ -24,17 +24,21 @@ class CRAFTTrainer(Trainer):
     
     def set_teacher(self,mod_dir:str,device='cuda'):
         self.teacher_device = torch.device(device)
-        self.teacher = torch.load(mod_dir).float().to(self.teacher_device)
+        self.teacher = torch.load(mod_dir)
+        self.teacher = self.teacher.float().to(self.teacher_device)
+        print("Load teacher at {}.".format(mod_dir))
         self.teacher.eval()
         self.use_teacher=True
 
-    def _logger(self,x,y,pred,loss,step,batch_size):
+    def _logger(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
         # self._file_writer.add_scalar('Loss/train', loss, step)
-        if(len(x.shape)==4):
-            self._file_writer.add_image('Image', x[0]/255, step)
+        img = sample['image']
+        if(len(img.shape)==4):
+            for i in range(img.shape[0]):
+                self._file_writer.add_image('Image', img[i], step*batch_size+i)
         else:
-            self._file_writer.add_image('Image', x/255, step)
+            self._file_writer.add_image('Image', img, step)
         char_target, aff_target = y
         if(len(char_target.shape)==4):
             for i in range(char_target.shape[0]):
@@ -57,7 +61,7 @@ class CRAFTTrainer(Trainer):
 
         return None
 
-    def _step_callback(self,x,y,pred,loss,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
         if(isinstance(loss,list)):
             for i,o in enumerate(loss):
@@ -162,14 +166,17 @@ class CRAFTTrainer(Trainer):
                 y = torch.stack(ch_mask_list,0).float().to(self._device), torch.stack(af_mask_list,0).float().to(self._device)
             else:
                 y = self._custom_y_input_function(sample,self._device)
-
+            x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
             self._opt.zero_grad()
             pred = self._net(x)
             loss = self._loss(pred[0] if(isinstance(pred,tuple))else pred,y)
             loss.backward()
             self._opt.step()
         else:
-            self._net.init_state()
+            try:
+                self._net.init_state()
+            except:
+                None
             im_size = (sample['height'],sample['width'])
             pointsxy = sample['gt']
             p_keys = list(pointsxy.keys())
@@ -207,7 +214,7 @@ class CRAFTTrainer(Trainer):
                     idx = -1
 
                 self._opt.zero_grad()
-                pred,_ = self._net(torch.from_numpy(x).float().permute(0,3,1,2).to(self._device))
+                pred,_ = self._net(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self._device))
                 if(len(pred_list)<10 and fm_cnt%30==0):
                     pred_list.append(pred.detach().to('cpu'))
                 loss = self._loss(pred,y)
@@ -250,13 +257,16 @@ class CRAFTTrainer(Trainer):
                             loss_box/=box_cnt
                         if(loss_box>0.0):
                             loss+=loss_box
-                loss.backward()
+                loss.backward(retain_graph=True)
                 loss_list.append(loss.item())
                 self._opt.step()
-                # self._net.lstmh = self._net.lstmh.detach()
-                # self._net.lstmc = self._net.lstmc.detach()
-                self._net.lstmh = self._net.lstmh.grad.data.zero_()
-                self._net.lstmc = self._net.lstmc.grad.data.zero_()
+                # try:
+                #     # self._net.lstmh = self._net.lstmh.detach()
+                #     # self._net.lstmc = self._net.lstmc.detach()
+                #     self._net.lstmh.grad.data.zero_()
+                #     self._net.lstmc.grad.data.zero_()
+                # except:
+                #     None
                 fm_cnt += 1
             vdo.release()
             x=torch.cat(x_list)

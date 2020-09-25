@@ -60,12 +60,12 @@ class Trainer():
         if(self._net==None or self._opt==None or self._loss==None):return -1
         
         if(info!=None):self._f_train_loger.write(info+'\n')
-        if(type(xs) in (list,tuple,dict)):batch_size=len(xs)
-        elif(type(xs) in (torch.Tensor,np.ndarray)):batch_size = xs.shape[0] 
+        if(isinstance(xs,(list,tuple,dict))):batch_size=len(xs)
+        elif(isinstance(xs,(torch.Tensor,np.ndarray))):batch_size = xs.shape[0] 
         else: batch_size = 'Unknow'
 
-        if(type(ys) in (list,tuple,dict) and len(ys)!=batch_size):return -1
-        elif(type(ys) in (torch.Tensor,np.ndarray)):
+        if(isinstance(ys,(list,tuple,dict)) and len(ys)!=batch_size):return -1
+        elif(sinstance(ys,(torch.Tensor,np.ndarray))):
             if(ys.shape[0]!=batch_size):return -1
             ys = torch.split(ys,1)
 
@@ -74,25 +74,15 @@ class Trainer():
         c_loss = 0.0
         with torch.autograd.profiler.profile() as prof:
             for i in range(len(xs)):
-                x=xs[i]
-                y=ys[i]
-                if(custom_x_input_function!=None):
-                    x=custom_x_input_function(x,self._device)
-                else:
-                    x = x.to(self._device)
-                if(custom_y_input_function!=None):
-                    y=custom_y_input_function(y,self._device)
-                else:
-                    y = y.to(self._device)
-
+                sample = (xs[i],ys[i])
                 x,y,pred,loss = self._train_act(sample)
                 c_loss += loss.item()
-                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._step_callback(sample,x,y,pred,loss.item(),self._current_step,batch_size)
         
         c_loss /= float(len(xs))
         self._current_step += 1
         if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
-            self._logger(x,y,pred,c_loss,self._current_step,batch_size)
+            self._logger(sample,x,y,pred,c_loss,self._current_step,batch_size)
         
         self._f_train_loger.write("Avg loss:{}.\n".format(c_loss))
         self._f_train_loger.write(prof)
@@ -118,11 +108,11 @@ class Trainer():
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
                 x,y,pred,loss = self._train_act(sample)
-                self._step_callback(x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
+                self._step_callback(sample,x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
                     try:
-                        self._logger(x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
+                        self._logger(sample,x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
                         if(self._file_writer!=None):self._file_writer.flush()
                     except Exception as e:
                         print("Log err: {}".format(str(e)))
@@ -180,9 +170,9 @@ class Trainer():
         self._opt.step()
         return x,y,pred,loss
 
-    def _logger(self,x,y,pred,loss,step,batch_size):
+    def _logger(self,sample,x,y,pred,loss,step,batch_size):
         return None
-    def _step_callback(self,x,y,pred,loss,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,step,batch_size):
         return None
 
     def get_net_size(self):

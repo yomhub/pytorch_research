@@ -49,15 +49,17 @@ if __name__ == "__main__":
     parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
     parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
-    parser.add_argument('--savestep', type=int, help='Batch size.',default=20)
+    parser.add_argument('--savestep', type=int, help='Batch size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
+    parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
 
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
-    # isdebug = True
+    isdebug = True
     lod_dir = args.load
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_motion_syn.pkl"
+    teacher_pkl_dir = args.teacher
     teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
 
     lr = args.learnrate
@@ -85,7 +87,7 @@ if __name__ == "__main__":
     if(args.opt.lower()=='adam'):
         opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     elif(args.opt.lower() in ['adag','adagrad']):
-        opt = optim.Adagrad(net.parameters())
+        opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
 
@@ -130,6 +132,7 @@ if __name__ == "__main__":
             os.path.join(__DEF_IC15_DIR,'images','train'),
             os.path.join(__DEF_TTT_DIR,'Images','Train'),
             __DEF_SVT_DIR,
+            __DEF_SYN_DIR,
             ),
             image_size=(3,640, 640),)
         train_on_real = True
@@ -157,7 +160,8 @@ if __name__ == "__main__":
         custom_y_input_function=y_input_function,
         train_on_real = train_on_real,
         )
-    trainer.set_teacher(teacher_pkl_dir)
+    if(teacher_pkl_dir):
+        trainer.set_teacher(teacher_pkl_dir)
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(work_dir)+\
@@ -170,9 +174,10 @@ if __name__ == "__main__":
         "\t Init learning rate: {}.\n".format(lr)+\
         "\t Learning rate decay: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
+        "\t Teacher: {}.\n".format(teacher_pkl_dir)+\
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
-        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
         "\t Load network: {}.\n".format(lod_dir if(lod_dir)else 'No')+\
+        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
