@@ -215,8 +215,8 @@ class CRAFTTrainer(Trainer):
 
                 self._opt.zero_grad()
                 pred,_ = self._net(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self._device))
-                if(len(pred_list)<10 and fm_cnt%30==0):
-                    pred_list.append(pred.detach().to('cpu'))
+                # if(len(pred_list)<10 and fm_cnt%30==0):
+                #     pred_list.append(pred.detach().to('cpu'))
                 loss = self._loss(pred,y)
                 if(idx>0):
                     pred_aff_map = pred[:,2:].to('cpu')
