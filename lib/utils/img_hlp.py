@@ -90,6 +90,7 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     """
     src_format = src_format.lower()
     dst_format = dst_format.lower()
+    if(src_format==dst_format):return box
     assert(src_format in __DEF_FORMATS and dst_format in __DEF_FORMATS)
 
     # convert all to 'cxywh'

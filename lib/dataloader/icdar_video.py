@@ -21,10 +21,10 @@ def read_boxs(fname:str,fm:str='xyxy'):
                 tmp.append(
                     (int(box.attrib['ID']),
                     int(box[0].attrib['x']),int(box[0].attrib['y']),
-                    int(box[1].attrib['x']),int(box[1].attrib['y']),
                     int(box[2].attrib['x']),int(box[2].attrib['y']),
-                    int(box[3].attrib['x']),int(box[3].attrib['y']))
-                    )
+                    int(box[3].attrib['x']),int(box[3].attrib['y']),
+                    int(box[1].attrib['x']),int(box[1].attrib['y']),
+                    ))
             else:
                 tmp.append(
                     (int(box.attrib['ID']),
