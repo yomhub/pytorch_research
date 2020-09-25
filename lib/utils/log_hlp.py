@@ -75,6 +75,8 @@ def plt_3d_projection(values: np.ndarray, xy_image: np.ndarray=None):
 def save_image(f_name:str,img:np.ndarray):
     if(os.path.dirname(f_name)==''):
         f_name = os.path.join(os.getcwd(),f_name)
+    if(not os.path.exists(os.path.dirname(f_name))):
+        os.mkdir(os.path.dirname(f_name))
     if(len(f_name.split('.'))==1):
         f_name += '.jpg'
     mimg.imsave(f_name, img)

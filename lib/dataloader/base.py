@@ -64,14 +64,15 @@ class BaseDataset(Dataset):
         self.out_box_format = out_box_format.lower()
 
         self.normalize = bool(normalized)
-        self.imgdir = img_dir if(type(img_dir) in [list,tuple])else (img_dir)
+        self.imgdir = img_dir if(type(img_dir) in [list,tuple])else [img_dir]
         self.gt_mask_dir = gt_mask_dir
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
         self.img_type = ['jpg','png','bmp']
         self.vdo_type = ['mp4','avi']
-        self.img_names = [os.path.join(fld,o) for fld in self.imgdir for o in os.listdir(fld) if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+        self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+
         self.transform=transform
         self.ch = 3
         if(isinstance(image_size,type(None))):

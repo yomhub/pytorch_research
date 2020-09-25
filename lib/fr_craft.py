@@ -1,6 +1,7 @@
 import os
 # =================Torch=======================
 import torch
+import torch.nn as nn
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
@@ -18,43 +19,55 @@ class CRAFTTrainer(Trainer):
         self.train_on_real = bool(train_on_real)
         self.gaussianTransformer = GaussianTransformer()
         self.use_teacher = False
+
         super(CRAFTTrainer,self).__init__(**params)
     
-    def set_teacher(self,mod_dir:str):
+    def set_teacher(self,mod_dir:str,device='cuda'):
+        self.teacher_device = torch.device(device)
         self.teacher = torch.load(mod_dir)
+        self.teacher = self.teacher.float().to(self.teacher_device)
+        print("Load teacher at {}.".format(mod_dir))
         self.teacher.eval()
-        self.teacher = self.teacher.float().to('cpu')
         self.use_teacher=True
 
-    def _logger(self,x,y,pred,loss,step,batch_size):
+    def _logger(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
         # self._file_writer.add_scalar('Loss/train', loss, step)
-        if(len(x.shape)==4):
-            self._file_writer.add_image('Image', x[0]/255, step)
+        img = sample['image']
+        if(len(img.shape)==4):
+            for i in range(img.shape[0]):
+                self._file_writer.add_image('Image', img[i], step*batch_size+i)
         else:
-            self._file_writer.add_image('Image', x/255, step)
+            self._file_writer.add_image('Image', img, step)
         char_target, aff_target = y
         if(len(char_target.shape)==4):
-            self._file_writer.add_image('Char Gaussian', char_target[0], step)               
+            for i in range(char_target.shape[0]):
+                self._file_writer.add_image('Char Gaussian', char_target[i], step*batch_size+i)               
         else:
             self._file_writer.add_image('Char Gaussian', char_target, step)
 
         if(len(aff_target.shape)==4):
-            self._file_writer.add_image('Affinity Gaussian', aff_target[0], step)
+            for i in range(aff_target.shape[0]):
+                self._file_writer.add_image('Affinity Gaussian', aff_target[i], step*batch_size+i)
         else:
             self._file_writer.add_image('Affinity Gaussian', aff_target, step)
         pred = pred[0] if(isinstance(pred,tuple))else pred
         predict_r = torch.unsqueeze(pred[:,0,:,:],1)
         predict_a = torch.unsqueeze(pred[:,1,:,:],1)
 
-        self._file_writer.add_image('Pred char Gaussian', predict_r[0], step)
-        self._file_writer.add_image('Pred affinity Gaussian', predict_a[0], step)
+        for i in range(predict_r.shape[0]):
+            self._file_writer.add_image('Pred char Gaussian', predict_r[i], step*batch_size+i)
+            self._file_writer.add_image('Pred affinity Gaussian', predict_a[i], step*batch_size+i)
 
         return None
 
-    def _step_callback(self,x,y,pred,loss,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
-        self._file_writer.add_scalar('Loss/train', loss, step)
+        if(isinstance(loss,list)):
+            for i,o in enumerate(loss):
+                self._file_writer.add_scalar('Loss/train', o, step*batch_size+i)
+        else:
+            self._file_writer.add_scalar('Loss/train', loss, step)
         return None
     
     def inference_pursedo_bboxes(self,img:np.ndarray,cv_word_box:np.ndarray,word:str,auto_box_expand:bool=True):
@@ -111,21 +124,26 @@ class CRAFTTrainer(Trainer):
     def _train_act(self,sample):
         if('video' not in sample):
             x=self._custom_x_input_function(sample,self._device)
+            try:
+                self._net.init_state()
+            except:
+                None
             if(self.use_teacher):
                 try:
                     img = sample['image'].numpy()
                 except:
                     img = sample['image']
                 img = np_img_normalize(img)
-                gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float())
-                gt = gt.detach().numpy()
-                gt = torch.from_numpy(gt).to(self._device)
+                with torch.no_grad():
+                    gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self.teacher_device))
+                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
+                # gt = torch.from_numpy(gt).to(self._device)
                 chmap = torch.unsqueeze(gt[:,0,:,:],1)
                 afmap = torch.unsqueeze(gt[:,1,:,:],1)
-                chmap -= torch.min(chmap)
-                chmap /= torch.max(chmap)
-                afmap -= torch.min(afmap)
-                afmap /= torch.max(afmap)
+                # chmap -= torch.min(chmap)
+                # chmap /= torch.max(chmap)
+                # afmap -= torch.min(afmap)
+                # afmap /= torch.max(afmap)
                 y=chmap,afmap
 
             elif(self.train_on_real):
@@ -148,20 +166,28 @@ class CRAFTTrainer(Trainer):
                 y = torch.stack(ch_mask_list,0).float().to(self._device), torch.stack(af_mask_list,0).float().to(self._device)
             else:
                 y = self._custom_y_input_function(sample,self._device)
-
+            x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
             self._opt.zero_grad()
             pred = self._net(x)
             loss = self._loss(pred[0] if(isinstance(pred,tuple))else pred,y)
             loss.backward()
             self._opt.step()
         else:
+            try:
+                self._net.init_state()
+            except:
+                None
             im_size = (sample['height'],sample['width'])
             pointsxy = sample['gt']
             p_keys = list(pointsxy.keys())
             p_keys.sort()
             vdo = sample['video']
             fm_cnt = 0
-
+            loss_list = []
+            x_list = []
+            y_ch_list = []
+            y_af_list = []
+            pred_list = []
             while(vdo.isOpened()):
                 ret, x = vdo.read()
                 if(ret==False):
@@ -169,24 +195,31 @@ class CRAFTTrainer(Trainer):
                 x = transform.resize(x,(640,640),preserve_range=True)
                 if(len(x.shape)==3): 
                     x = np.expand_dims(x,0)
+                if(len(x_list)<10 and fm_cnt%30==0):
+                    x_list.append(torch.from_numpy(x))
+                with torch.no_grad():
+                    gt,_ = self.teacher(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self.teacher_device))
+                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
+                ch,af = gt[:,0].to('cpu').numpy(),gt[:,1].to('cpu').numpy()
+                if(len(y_ch_list)<10 and fm_cnt%30==0):
+                    y_ch_list.append(torch.unsqueeze(gt[:,0],1).to('cpu'))
+                    y_af_list.append(torch.unsqueeze(gt[:,1],1).to('cpu'))
 
-                gt,_ = self.teacher(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2))
-                gt = gt.detach().to('cpu').numpy()
-                ch,af = gt[:,0],gt[:,1]
-
-                y = torch.unsqueeze(torch.from_numpy(ch),1).to(self._device),torch.unsqueeze(torch.from_numpy(af),1).to(self._device)
+                y = torch.unsqueeze(gt[:,0],1),torch.unsqueeze(gt[:,1],1)
                 word_map = np.where(ch>af,ch,af)
 
                 try:
                     idx = p_keys.index(fm_cnt)
                 except:
                     idx = -1
-                idx = 1
+
                 self._opt.zero_grad()
-                pred,_ = self._net(torch.from_numpy(x).float().to(self._device).permute(0,3,1,2))
+                pred,_ = self._net(torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2).to(self._device))
+                if(len(pred_list)<10 and fm_cnt%30==0):
+                    pred_list.append(pred.detach().to('cpu'))
                 loss = self._loss(pred,y)
-                pred_aff_map = pred[:,2:].to('cpu')
                 if(idx>0):
+                    pred_aff_map = pred[:,2:].to('cpu')
                     dst,src = pointsxy[p_keys[idx]],pointsxy[p_keys[idx-1]]
                     src_box = []
                     dst_box = []
@@ -202,7 +235,7 @@ class CRAFTTrainer(Trainer):
                         aff_list, _ = cv_box_moving_vector(src_box,dst_box)
                         aff_list = aff_list.reshape((-1,6))
                         # (N,1,6,1,1)
-                        aff_list = torch.from_numpy(np.expand_dims(aff_list,(1,3,4)))
+                        aff_list = torch.tensor(np.expand_dims(aff_list,(1,3,4)).astype(np.float32),requires_grad=True)
                         loss_box = 0.0
                         box_cnt = 0
                         odet, labels, mapper = cv_getDetCharBoxes_core(word_map[0])
@@ -216,18 +249,30 @@ class CRAFTTrainer(Trainer):
                             if(torch.max(labels[y1:y2,x1:x2])>0):
                                 sub_labels = labels[y1:y2,x1:x2].reshape(-1)
                                 sub_map = pred_aff_map[0,:,y1:y2,x1:x2].permute(1,2,0).reshape((-1,6))
-                                post = torch.abs(torch.masked_select(sub_map,sub_labels>0)-aff_list[i].reshape(6))
+                                post = torch.abs(torch.masked_select(sub_map,sub_labels.reshape((-1,1))>0).reshape((-1,6))-aff_list[i].reshape(-1))
                                 post = torch.sum(post,dim=-1)
-                                loss_box+=torch.mean(post)
+                                loss_box+=torch.mean(post).data
                                 box_cnt+=1
                         if(box_cnt>0):
                             loss_box/=box_cnt
-                        loss+=loss_box
-                        
-                loss.backward()
+                        if(loss_box>0.0):
+                            loss+=loss_box
+                loss.backward(retain_graph=True)
+                loss_list.append(loss.item())
                 self._opt.step()
+                # try:
+                #     # self._net.lstmh = self._net.lstmh.detach()
+                #     # self._net.lstmc = self._net.lstmc.detach()
+                #     self._net.lstmh.grad.data.zero_()
+                #     self._net.lstmc.grad.data.zero_()
+                # except:
+                #     None
                 fm_cnt += 1
             vdo.release()
+            x=torch.cat(x_list)
+            y=torch.cat(y_ch_list),torch.cat(y_af_list)
+            loss = loss_list
+            pred = torch.cat(pred_list)
         return x,y,pred,loss
 
 class CRAFTTester(Tester):

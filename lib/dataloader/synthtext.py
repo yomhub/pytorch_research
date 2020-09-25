@@ -211,7 +211,7 @@ class SynthText(Dataset):
                                     print(idx, min_y+th, min_x+tw)
         sample = {
             # 'image': img if(self.transform)else self.transform(img),
-            'image': img,
+            'image': np.transpose(img,(1,2,0)),
             'char_gt': np.expand_dims(TR.resize(char_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
             'aff_gt': np.expand_dims(TR.resize(aff_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
             # 'affine_boxes': affine_boxes,
@@ -224,7 +224,7 @@ class SynthText(Dataset):
 
 def x_input_function(sample,th_device): 
     x = sample['image'] if(isinstance(sample,dict))else sample
-    return to_torch(x,th_device)
+    return to_torch(x,th_device).permute(0,3,1,2)
 
 def y_input_function(sample,th_device): 
     char_gt = sample['char_gt'] if(isinstance(sample,dict))else sample[0]

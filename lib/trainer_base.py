@@ -32,8 +32,7 @@ class Trainer():
         self._f_train_loger = open(os.path.join(self._logs_path,'train.txt'),'w',encoding='utf8') if(not self._isdebug)else sys.stdout
 
         self._file_writer = SummaryWriter(os.path.join(self._logs_path,'Summary')) if(not self._isdebug)else None
-        self._use_cuda = bool(use_cuda) and torch.cuda.is_available()
-        self._device = torch.device("cuda:0" if self._use_cuda else "cpu")
+        self._device = torch.device("cuda:0" if(bool(use_cuda) and torch.cuda.is_available())else "cpu")
 
         self._current_step = 0
         self._batch_size = 0
@@ -61,12 +60,12 @@ class Trainer():
         if(self._net==None or self._opt==None or self._loss==None):return -1
         
         if(info!=None):self._f_train_loger.write(info+'\n')
-        if(type(xs) in (list,tuple,dict)):batch_size=len(xs)
-        elif(type(xs) in (torch.Tensor,np.ndarray)):batch_size = xs.shape[0] 
+        if(isinstance(xs,(list,tuple,dict))):batch_size=len(xs)
+        elif(isinstance(xs,(torch.Tensor,np.ndarray))):batch_size = xs.shape[0] 
         else: batch_size = 'Unknow'
 
-        if(type(ys) in (list,tuple,dict) and len(ys)!=batch_size):return -1
-        elif(type(ys) in (torch.Tensor,np.ndarray)):
+        if(isinstance(ys,(list,tuple,dict)) and len(ys)!=batch_size):return -1
+        elif(sinstance(ys,(torch.Tensor,np.ndarray))):
             if(ys.shape[0]!=batch_size):return -1
             ys = torch.split(ys,1)
 
@@ -75,25 +74,15 @@ class Trainer():
         c_loss = 0.0
         with torch.autograd.profiler.profile() as prof:
             for i in range(len(xs)):
-                x=xs[i]
-                y=ys[i]
-                if(custom_x_input_function!=None):
-                    x=custom_x_input_function(x,self._device)
-                else:
-                    if(self._use_cuda and isinstance(x,torch.Tensor)): x = x.to(self._device)
-                if(custom_y_input_function!=None):
-                    y=custom_y_input_function(y,self._device)
-                else:
-                    if(self._use_cuda and isinstance(y,torch.Tensor)): y = y.to(self._device)
-
+                sample = (xs[i],ys[i])
                 x,y,pred,loss = self._train_act(sample)
                 c_loss += loss.item()
-                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._step_callback(sample,x,y,pred,loss.item(),self._current_step,batch_size)
         
         c_loss /= float(len(xs))
         self._current_step += 1
         if(self._log_step_size!=None and self._current_step%self._log_step_size==0):
-            self._logger(x,y,pred,c_loss,self._current_step,batch_size)
+            self._logger(sample,x,y,pred,c_loss,self._current_step,batch_size)
         
         self._f_train_loger.write("Avg loss:{}.\n".format(c_loss))
         self._f_train_loger.write(prof)
@@ -119,25 +108,34 @@ class Trainer():
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
                 x,y,pred,loss = self._train_act(sample)
-                self._step_callback(x,y,pred,loss.item(),self._current_step,batch_size)
+                self._step_callback(sample,x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                    self._logger(x,y,pred,loss.item(),self._current_step,batch_size)
-                    if(self._file_writer!=None):self._file_writer.flush()
+                    try:
+                        self._logger(sample,x,y,pred,loss if(isinstance(loss,list))else loss.item(),self._current_step,batch_size)
+                        if(self._file_writer!=None):self._file_writer.flush()
+                    except Exception as e:
+                        print("Log err: {}".format(str(e)))
 
-                if(torch.isnan(loss).item()):
+                if(not isinstance(loss,list) and torch.isnan(loss).item()):
                     self._f_train_loger.write("Nan at:{}.\n".format(self._current_step))
                     return -1
 
                 if(not(self._isdebug) and self._save_step_size!=None and self._save_step_size>0 and self._current_step%self._save_step_size==0):
-                    self.save()
-                
+                    try:
+                        self.save()
+                    except Exception as e:
+                        print("Save err: {}".format(str(e)))
 
                 if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
-                    self.opt_decay()
+                    try:
+                        self.opt_decay()
+                    except Exception as e:
+                        print("Opt_decay err: {}".format(str(e)))
 
-                self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
-                self._f_train_loger.flush()
+                if(not isinstance(loss,list)):
+                    self._f_train_loger.write("Avg loss:{}.\n".format(loss.item()))
+                    self._f_train_loger.flush()
 
                 # del 
                 del sample
@@ -159,7 +157,7 @@ class Trainer():
                 i+=1
 
         # self._f_train_loger.write(str(prof))
-        self._f_train_loger.flush()
+        # self._f_train_loger.flush()
         return 0
 
     def _train_act(self,sample):
@@ -172,9 +170,9 @@ class Trainer():
         self._opt.step()
         return x,y,pred,loss
 
-    def _logger(self,x,y,pred,loss,step,batch_size):
+    def _logger(self,sample,x,y,pred,loss,step,batch_size):
         return None
-    def _step_callback(self,x,y,pred,loss,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,step,batch_size):
         return None
 
     def get_net_size(self):
@@ -233,6 +231,10 @@ class Trainer():
                 print("Load at {}.".format(load_dir))
                 self._net=torch.load(load_dir)
                 self._net=self._net.float().to(self._device)
+                try:
+                    self._net.init_state()
+                except:
+                    print("Skip init state function.")
                 return
             else:
                 load_dir = os.path.dirname(load_dir.split('.')[0])
@@ -248,6 +250,10 @@ class Trainer():
         print("Load at {}.".format(os.path.join(load_dir,tsk_list[cur_i])))
         self._net=torch.load(os.path.join(load_dir,tsk_list[cur_i]))
         self._net=self._net.float().to(self._device)
+        try:
+            self._net.init_state()
+        except:
+            print("Skip init state function.")
         return 
 
     def log_info(self,info):
