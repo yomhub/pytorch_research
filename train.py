@@ -60,7 +60,7 @@ if __name__ == "__main__":
     lod_dir = args.load
     # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_motion_syn.pkl"
     teacher_pkl_dir = args.teacher
-    teacher_pkl_dir = os.path.join(__DEF_LOCAL_DIR,'pre_train','craft_mlt_25k.pkl')
+    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
 
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 1000
