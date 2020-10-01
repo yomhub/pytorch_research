@@ -16,18 +16,18 @@ class BottleneckLSTMCell(nn.Module):
 
 		self.input_channels = int(input_channels)
 		self.hidden_channels = int(hidden_channels)
-
-		self.W = nn.Conv2d(in_channels=self.input_channels, out_channels=self.input_channels, kernel_size=3, groups=self.input_channels, stride=1, padding=1)
-		self.Wy  = nn.Conv2d(int(self.input_channels+self.hidden_channels), self.hidden_channels, kernel_size=1)
+		
+		self.W = nn.Conv2d(self.input_channels, self.input_channels, 3, 1, padding=1, groups=self.input_channels)
+		self.Wy  = nn.Conv2d(self.input_channels+self.hidden_channels, self.hidden_channels, kernel_size=1)
 		self.Wi  = nn.Conv2d(self.hidden_channels, self.hidden_channels, 3, 1, 1, groups=self.hidden_channels, bias=False)  
 		self.Wbi = nn.Conv2d(self.hidden_channels, self.hidden_channels, 1, 1, 0, bias=False)
 		self.Wbf = nn.Conv2d(self.hidden_channels, self.hidden_channels, 1, 1, 0, bias=False)
 		self.Wbc = nn.Conv2d(self.hidden_channels, self.hidden_channels, 1, 1, 0, bias=False)
 		self.Wbo = nn.Conv2d(self.hidden_channels, self.hidden_channels, 1, 1, 0, bias=False)
-		self.relu = nn.ReLU6()
-		# self.Wci = None
-		# self.Wcf = None
-		# self.Wco = None
+
+		self.Wci = None
+		self.Wcf = None
+		self.Wco = None
 		self._initialize_weights()
 
 	def _initialize_weights(self):
@@ -53,15 +53,24 @@ class BottleneckLSTMCell(nn.Module):
 		Returns:
 			output tensor after LSTM cell 
 		"""
-		x = self.W(x)
-		y = torch.cat((x, h),1) #concatenate input and hidden layers
+		if(h.device!=x.device):
+			h = h.to(x.device).type(x.dtype)
+			c = c.to(x.device).type(x.dtype)
+
+		y = torch.cat((self.W(x), h),1) #concatenate input and hidden layers
+		# --------------------
 		i = self.Wy(y) #reduce to hidden layer size
 		b = self.Wi(i)	#depth wise 3*3
-		ci = torch.sigmoid(self.Wbi(b))
-		cf = torch.sigmoid(self.Wbf(b))
-		cc = cf * c + ci * self.relu(self.Wbc(b))
-		co = torch.sigmoid(self.Wbo(b))
-		ch = co * self.relu(cc)
+		ci = torch.sigmoid(self.Wbi(b) + c * self.Wci)
+		cf = torch.sigmoid(self.Wbf(b) + c * self.Wcf)
+		cc = cf * c + ci * torch.relu(self.Wbc(b))
+		co = torch.sigmoid(self.Wbo(b) + cc * self.Wco)
+		ch = co * torch.relu(cc)
+		# ++++++++++++++++++++
+		# b = self.Wi(self.Wy(y))
+		# cc = torch.sigmoid(self.Wbf(b) + c * self.Wcf) * c + torch.sigmoid(self.Wbi(b) + c * self.Wci) * torch.relu(self.Wbc(b))
+		# ch = torch.sigmoid(self.Wbo(b) + cc * self.Wco) * torch.relu(cc)
+		# ==================
 		return ch, cc
 
 	def init_hidden(self, batch_size, hidden, shape):
@@ -73,18 +82,19 @@ class BottleneckLSTMCell(nn.Module):
 		Returns:
 			cell state and hidden state
 		"""
-		# if self.Wci is None:
-		# 	self.Wci = Variable(torch.zeros(1, hidden, shape[0], shape[1])).cuda()
-		# 	self.Wcf = Variable(torch.zeros(1, hidden, shape[0], shape[1])).cuda()
-		# 	self.Wco = Variable(torch.zeros(1, hidden, shape[0], shape[1])).cuda()
-		# else:
-		# 	assert shape[0] == self.Wci.size()[2], 'Input Height Mismatched!'
-		# 	assert shape[1] == self.Wci.size()[3], 'Input Width Mismatched!'
 		for k,v in self.state_dict().items():
 			d = v
 			break
-		return (Variable(torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype)).to(d.device),
-				Variable(torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype)).to(d.device)
+		if self.Wci is None:
+			self.Wci = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=d.dtype),requires_grad=True)
+			self.Wcf = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=d.dtype),requires_grad=True)
+			self.Wco = nn.Parameter(torch.rand(1, hidden, shape[0], shape[1],dtype=d.dtype),requires_grad=True)
+		else:
+			assert shape[0] == self.Wci.size()[2], 'Input Height Mismatched!'
+			assert shape[1] == self.Wci.size()[3], 'Input Width Mismatched!'
+
+		return (torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype).to(d.device),
+				torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype).to(d.device)
 				)
 
 class BottleneckLSTM(nn.Module):
