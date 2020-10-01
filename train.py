@@ -56,21 +56,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
     time_start = datetime.now()
     isdebug = args.debug
-    isdebug = True
     lod_dir = args.load
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_motion_syn.pkl"
     teacher_pkl_dir = args.teacher
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-
     lr = args.learnrate
     max_step = args.step if(not isdebug)else 1000
     use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
-    # use_cuda = False
     lr_decay_step_size = tcfg['LR_DEC_STP']
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     batch = args.batch
-    # num_workers=0
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
+
+    # For Debug config
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm.pkl"
+    # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    # isdebug = True
+    # use_cuda = False
+    # num_workers=0
     # lr_decay_step_size = None
 
     if(args.net.lower()=='craft'):

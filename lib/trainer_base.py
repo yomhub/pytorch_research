@@ -191,6 +191,10 @@ class Trainer():
         file_name = "{}+{}.pkl".format(now_time,self._task_name if(self._task_name!=None)else "save")
 
         if(save_dir==None): save_dir = os.path.join(self._model_path,file_name)
+        elif(os.path.dirname(save_dir)):
+            print("Save at {}".format(save_dir))
+            torch.save(self._net,save_dir)
+            return
         elif(len(save_dir.split('.'))==1): save_dir = os.path.join(save_dir,file_name)
         elif(os.path.dirname(save_dir)==''): 
             save_dir = os.path.join(self._model_path,"{}+{}.pkl".format(now_time,save_dir.split('.')[0]))

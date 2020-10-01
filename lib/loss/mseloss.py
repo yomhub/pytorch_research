@@ -89,7 +89,8 @@ class MSE_OHEM_Loss(nn.Module):
             y: char_target ,aff_target (batch,1,h,w)
         """
         char_target, aff_target = y
-        x = x[0]
+        if(isinstance(x,tuple)):
+            x = x[0]
         if(len(x.shape)==3):
             x=torch.reshape(x,(1,x.shape[0],x.shape[1],x.shape[2]))
         loss_every_sample = []

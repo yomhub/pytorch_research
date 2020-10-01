@@ -20,7 +20,7 @@ cfg['BATCH'] = [1,4][0]
 # Step size for log
 cfg['LOGSTP'] = [20,100,200][-1]
 # Step size for save model, -1 to disable 
-cfg['SAVESTP'] = [100,200,500,-1][0]
+cfg['SAVESTP'] = [100,200,500,5,-1][-2]
 # Optimizer
 cfg['OPT'] = ['sgd','adam'][1]
 # learning rate

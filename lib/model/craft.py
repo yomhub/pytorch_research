@@ -136,15 +136,12 @@ class CRAFT_LSTM(nn.Module):
         )
         self.init_weights(self._distribution.modules())
         self.init_weights(self._aff_map.modules())
-        self.lstmh,self.lstmc = self._lstm.init_hidden(batch_size,self._mob.final_predict_ch,(320,320))
+        self.init_state((320,320),batch_size)
 
     def forward(self,x):
         f = self._mob(x)
-        if(self.lstmh.device!=f.device):
-            self.lstmh = self.lstmh.to(f.device)
-            self.lstmc = self.lstmc.to(f.device)
+        score = self._distribution(f)
         self.lstmh,self.lstmc = self._lstm(f,self.lstmh,self.lstmc)
-        score = self._distribution(self.lstmh)
         pred_map = self._aff_map(self.lstmh)
 
         return torch.cat((score,pred_map),1),self.lstmh
@@ -170,15 +167,9 @@ class CRAFT_LSTM(nn.Module):
         for k,v in self.state_dict().items():
             d = v
             break
-        try:
-            self.lstmh.data.zeros_()
-            self.lstmc.data.zeros_()
-            self.lstmh.grad.data.zero_()
-            self.lstmc.grad.data.zero_()
-        except:
-            None
-            self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
-            self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+
+        self.lstmh = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+        self.lstmc = torch.zeros((batch_size,self._mob.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
 
 
 class CRAFT_MOTION(nn.Module):
@@ -234,10 +225,5 @@ class CRAFT_MOTION(nn.Module):
         for k,v in self.state_dict().items():
             d = v
             break
-        try:
-            self.st.data.zeros_()
-            self.st.grad.data.zero_()
-            self.st = torch.zeros(self.st.shape,dtype=self.st.dtype).to(d.device)
-        except:
-            self.st = torch.zeros((batch_size,self._mob.final_predict_ch*2,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+        self.st = torch.zeros((batch_size,self._mob.final_predict_ch*2,shape[0],shape[1]),dtype=d.dtype).to(d.device)
 
