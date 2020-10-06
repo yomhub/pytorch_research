@@ -3,6 +3,7 @@ import os
 import torch
 import torch.nn as nn
 import numpy as np
+import cv2
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.trainer_base import Trainer
@@ -34,10 +35,10 @@ class CRAFTTrainer(Trainer):
         if(self._file_writer==None):return None
         # self._file_writer.add_scalar('Loss/train', loss, step)
         if('image' in sample):
-            img = sample['image']
+            img = sample['image'].type(torch.uint8)
             if(len(img.shape)==4):
                 for i in range(img.shape[0]):
-                    self._file_writer.add_image('Image', img[i], step*batch_size+i)
+                    self._file_writer.add_image('Image', img[i], step*batch_size+i,dataformats='HWC')
             else:
                 self._file_writer.add_image('Image', img, step)
         char_target, aff_target = y
@@ -302,33 +303,36 @@ class CRAFTTester(Tester):
         super(CRAFTTester,self).__init__(**params)
 
     def _step_callback(self,x,y,pred,loss,cryt,step,batch_size):
-        pred = pred[0].to('cpu').detach().numpy()
+        if(isinstance(pred,tuple)):
+            pred = pred[0]
+        pred = pred.to('cpu').detach().numpy()
         scale = (x.shape[2]/pred.shape[2],x.shape[3]/pred.shape[3])
         x = x.permute(0,2,3,1).to('cpu').detach().numpy().astype(np.uint8)
         if(self._file_writer==None):return None
         if(loss!=None): self._file_writer.add_scalar('Loss/test', loss, step)
 
+        lines = np.ones((pred.shape[2],5,3))*255.0
+        lines = lines.astype(x.dtype)
         wods = np.sum(pred,1)
         for batch,wod in enumerate(wods):
             odet, labels, mapper = cv_getDetCharBoxes_core(wod)
-
-            # odet = np_box_rescale(odet,scale,'polyxy')
-            save_image(
-                os.path.join(self._logs_path,'{:05d}_im.jpg'.format(step*batch_size+batch)),
-                cv_draw_poly(x[batch],odet),
-                )
-            save_image(
-                os.path.join(self._logs_path,'{:05d}_ch.jpg'.format(step*batch_size+batch)),
-                cv_draw_poly(cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1)),det),
-                )
-            save_image(
-                os.path.join(self._logs_path,'{:05d}_af.jpg'.format(step*batch_size+batch)),
-                cv_draw_poly(cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1)),det),
-                )
+            frame = x[batch]
+            ch = cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1))
+            af = cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1))
+                
+            if(odet.size>0):
+                # odet = np_box_rescale(odet,scale,'polyxy')
+                frame = cv_draw_poly(frame,odet)
+                
+            frame = cv2.resize(frame,ch.shape[:2]).astype(np.uint8)
+            img = np.concatenate((frame,lines,ch,lines,af),axis=-2)
+            save_image(os.path.join(self._logs_path,'{:05d}_im_ch_af.jpg'.format(step*batch_size+batch)),img)
 
         return None
 
     def _criterion(self,pred,sample):
+        if('gt' not in sample):
+            return -1
         pred = pred[0] if(isinstance(pred,tuple))else pred
         pred = pred.detach().to('cpu').numpy()
         chmap = np.expand_dims(pred[:,0],-1)

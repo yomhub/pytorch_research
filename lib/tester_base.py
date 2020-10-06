@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 # =================
 from lib.utils.log_hlp import str2time
+from lib.utils.img_hlp import *
 
 class Tester():
     def __init__(self,  
@@ -88,8 +89,9 @@ class Tester():
                 if(j>=test_size):break
                 x=self._custom_x_input_function(sample,self._device)
                 y=self._custom_y_input_function(sample,self._device) if(self._custom_y_input_function!=None)else None
-                
-                pred = self._net(x)
+                x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
+                with torch.no_grad():
+                    pred = self._net(x)
                 loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
                 cryt = self._criterion(pred,sample)
                 self._step_callback(x,y,pred,loss.item()if(loss!=None)else None,cryt,self._current_step,batch_size)

@@ -58,7 +58,7 @@ class BaseDataset(Dataset):
     def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format:str=None,
         gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
         out_box_format:str='cxywh', normalized=False, transform=None,
-        image_size=None):
+        image_size=None,img_only = False):
 
         self.in_box_format = in_box_format.lower() if(in_box_format!=None)else None
         self.out_box_format = out_box_format.lower()
@@ -69,8 +69,7 @@ class BaseDataset(Dataset):
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
-        self.img_type = ['jpg','png','bmp']
-        self.vdo_type = ['mp4','avi']
+        type_list = ['jpg','png','bmp'] if(img_only)else ['jpg','png','bmp','mp4','avi']
         self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
 
         self.transform=transform
@@ -95,7 +94,15 @@ class BaseDataset(Dataset):
             idx = idx.tolist()
         sample = {}
         if(self.img_names[idx].split('.')[-1].lower() in self.img_type):
-            img = io.imread(self.img_names[idx])
+            try:
+                img = io.imread(self.img_names[idx])
+                if(len(img.shape)==2):
+                    img = np.expand_dims(img,-1)
+                    img = np.broadcast_to(img,(img.shape[0],img.shape[1],3))
+                img = img[:,:,:3]
+            except Exception as e:
+                raise RuntimeError("Err when reading {}: {}".format(self.img_names[idx],e))
+
             org_shape = img.shape[0:2]
             # if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
             img = transform.resize(img,self.image_size,preserve_range=True)

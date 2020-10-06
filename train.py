@@ -14,6 +14,7 @@ from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import ICDAR
 from lib.dataloader.icdar_video import ICDARV
+from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
@@ -27,7 +28,9 @@ __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
 __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
+__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
 __DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
+__DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
 
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
@@ -49,11 +52,13 @@ if __name__ == "__main__":
     parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
     parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
-    parser.add_argument('--savestep', type=int, help='Batch size.',default=tcfg['SAVESTP'])
+    parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
     parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
 
     args = parser.parse_args()
+    use_net = args.net.lower()
+    use_dataset = args.dataset.lower()
     time_start = datetime.now()
     isdebug = args.debug
     lod_dir = args.load
@@ -70,17 +75,19 @@ if __name__ == "__main__":
     # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm.pkl"
     # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
     # isdebug = True
+    # use_net = 'craft_mob'
+    # use_dataset = 'all'
     # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
 
-    if(args.net.lower()=='craft'):
+    if(use_net=='craft'):
         net = CRAFT()
-    elif(args.net.lower()=='craft_mob'):
+    elif(use_net=='craft_mob'):
         net = CRAFT_MOB(pretrained=True)
-    elif(args.net.lower()=='craft_lstm'):
+    elif(use_net=='craft_lstm'):
         net = CRAFT_LSTM()
-    elif(args.net.lower()=='craft_motion'):
+    elif(use_net=='craft_motion'):
         net = CRAFT_MOTION()
 
     net = net.float().to("cuda:0" if(use_cuda)else "cpu")
@@ -93,7 +100,7 @@ if __name__ == "__main__":
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
 
         
-    if(args.dataset.lower()=="ttt"):
+    if(use_dataset=="ttt"):
         train_dataset = Total(
             os.path.join(__DEF_TTT_DIR,'Images','Train'),
             os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
@@ -102,7 +109,7 @@ if __name__ == "__main__":
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
-    elif(args.dataset.lower()=="ic15"):
+    elif(use_dataset=="ic15"):
         train_dataset = ICDAR(
             os.path.join(__DEF_IC15_DIR,'images','train'),
             os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
@@ -110,7 +117,7 @@ if __name__ == "__main__":
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
-    elif(args.dataset.lower()=='sync'):
+    elif(use_dataset=='sync'):
         train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
             transform=transforms.Compose([
                 transforms.ToTensor(),
@@ -121,8 +128,15 @@ if __name__ == "__main__":
         train_on_real = False
         x_input_function=syn80k.x_input_function
         y_input_function=syn80k.y_input_function
-    elif(args.dataset.lower()=='icv15'):
+    elif(use_dataset=='icv15'):
         train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
+        train_on_real = True
+        x_input_function = None
+        y_input_function = None
+        num_workers = 0
+        batch = 1
+    elif(use_dataset in ['minetto','mine']):
+        train_dataset = Minetto(__DEF_MINE_DIR)
         train_on_real = True
         x_input_function = None
         y_input_function = None
@@ -131,11 +145,13 @@ if __name__ == "__main__":
     else:
         train_dataset = BaseDataset((
             os.path.join(__DEF_IC15_DIR,'images','train'),
+            os.path.join(__DEF_IC19_DIR,'Train'),
             os.path.join(__DEF_TTT_DIR,'Images','Train'),
             __DEF_SVT_DIR,
-            __DEF_SYN_DIR,
+            # __DEF_SYN_DIR,
             ),
-            image_size=(3,640, 640),)
+            image_size=(3,640, 640),
+            img_only=True)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
@@ -154,8 +170,8 @@ if __name__ == "__main__":
         task_name=args.name if(args.name!=None)else net.__class__.__name__,
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss, opt = opt,
-        log_step_size = tcfg['LOGSTP'],
-        save_step_size = tcfg['SAVESTP'],
+        log_step_size = args.logstp,
+        save_step_size = args.savestep,
         lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
         custom_x_input_function=x_input_function,
         custom_y_input_function=y_input_function,

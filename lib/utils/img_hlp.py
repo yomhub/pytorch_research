@@ -233,6 +233,7 @@ def torch_img_normalize(img,mean=(0.485, 0.456, 0.406), variance=(0.229, 0.224, 
     img -= torch.mul(torch.tensor(mean,dtype=torch.float32),255.0).float().to(img.device)
     img /= torch.mul(torch.tensor(variance,dtype=torch.float32),255.0).float().to(img.device)
     return img
+    
 def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.0,mu:float=0.0):
     """
     Generate gaussian distribution.

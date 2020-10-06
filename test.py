@@ -14,19 +14,21 @@ from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.icdar import ICDAR
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
+from lib.dataloader.base import BaseDataset
 import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTester
 from lib.config.test_default import cfg as tcfg
 
-
 __DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
 __DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
 __DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt')
+__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_ICV_DIR = os.path.join(__DEF_DATA_DIR, 'TextVideo')
+__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
+__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
+
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
@@ -60,31 +62,32 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     load_dir = args.load
-    load_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    time_start = datetime.now()
+    isdebug = args.debug
+    use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
+    work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
+    num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
+    use_dataset = args.dataset.lower()
+    max_step = args.step if(not isdebug)else 10
+
+    # For debug
+    load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob.pkl"
+    use_dataset = 'sync'
+    max_step = 10
     # load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_MOB_Adag/20200819-010649+craft_MOB_normal_adamg.pkl"
+    # num_workers=0
+    # lr_decay_step_size = None
+    # isdebug = True
+
     if(load_dir and os.path.exists(load_dir)):
         net = torch.load(load_dir)
     else:
         raise Exception("Can't load network.")
-    # net = CRAFT()
-    # net.load_state_dict(copyStateDict(torch.load(load_dir, map_location='cpu')))
-    time_start = datetime.now()
-    isdebug = args.debug
-    # isdebug = True
-
-    max_step = args.step if(not isdebug)else 10
-    use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
-
-    num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
-    # num_workers=0
-    work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
-    # lr_decay_step_size = None
-
     device = torch.device("cuda:0" if use_cuda else "cpu")
     net.eval()
     net.float().to(device)
 
-    if(args.dataset.lower()=="ttt"):
+    if(use_dataset=="ttt"):
         train_dataset = Total(
             os.path.join(__DEF_TTT_DIR,'Images','Test'),
             os.path.join(__DEF_TTT_DIR,'gt_pixel','Test'),
@@ -93,7 +96,7 @@ if __name__ == "__main__":
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
-    elif(args.dataset.lower()=="ic15"):
+    elif(use_dataset=="ic15"):
         train_dataset = ICDAR(
             os.path.join(__DEF_IC15_DIR,'images','test'),
             os.path.join(__DEF_IC15_DIR,'gt_txt','test'),
@@ -101,11 +104,30 @@ if __name__ == "__main__":
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
-    else:
+    elif(use_dataset=='sync'):
         train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
         train_on_real = False
         x_input_function=syn80k.x_input_function
         y_input_function=syn80k.y_input_function
+    elif(use_dataset=='icv15'):
+        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'test'))
+        train_on_real = True
+        x_input_function = None
+        y_input_function = None
+        num_workers = 0
+        batch = 1
+    else:
+        train_dataset = BaseDataset((
+            os.path.join(__DEF_IC15_DIR,'images','test'),
+            os.path.join(__DEF_IC19_DIR,'Test'),
+            os.path.join(__DEF_TTT_DIR,'Images','Test'),
+            __DEF_SVT_DIR,
+            ),
+            image_size=(3,640, 640),
+            img_only=True)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
 
     dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, 
         num_workers=num_workers,

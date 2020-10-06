@@ -66,6 +66,9 @@ class Total(base.BaseDataset):
             xs = [int(o) for o in parts[0].split('[[')[-1].split(']]')[0].split()]
             ys = [int(o) for o in parts[1].split('[[')[-1].split(']]')[0].split()]
             txt = parts[3].split()[-1][3:-2]
-            boxs.append([int(1), min(ys), min(xs),max(ys), max(xs)])
+            if('poly' in self.out_box_format):
+                boxs.append([(xi,yi) for xi,yi in zip(xs,ys)])
+            else:
+                boxs.append([int(1), min(ys), min(xs),max(ys), max(xs)])
             txts.append(txt)
         return np.array(boxs),txts
