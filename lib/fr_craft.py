@@ -5,6 +5,7 @@ import torch.nn as nn
 import numpy as np
 import cv2
 from torch.utils.tensorboard import SummaryWriter
+from skimage import transform as TR
 # =================Local=======================
 from lib.trainer_base import Trainer
 from lib.tester_base import Tester
@@ -34,32 +35,39 @@ class CRAFTTrainer(Trainer):
     def _logger(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
         # self._file_writer.add_scalar('Loss/train', loss, step)
-        if('image' in sample):
-            img = sample['image'].type(torch.uint8)
-            if(len(img.shape)==4):
-                for i in range(img.shape[0]):
-                    self._file_writer.add_image('Image', img[i], step*batch_size+i,dataformats='HWC')
-            else:
-                self._file_writer.add_image('Image', img, step)
-        char_target, aff_target = y
-        if(len(char_target.shape)==4):
-            for i in range(char_target.shape[0]):
-                self._file_writer.add_image('Char Gaussian', char_target[i], step*batch_size+i)               
-        else:
-            self._file_writer.add_image('Char Gaussian', char_target, step)
-
-        if(len(aff_target.shape)==4):
-            for i in range(aff_target.shape[0]):
-                self._file_writer.add_image('Affinity Gaussian', aff_target[i], step*batch_size+i)
-        else:
-            self._file_writer.add_image('Affinity Gaussian', aff_target, step)
         pred = pred[0] if(isinstance(pred,tuple))else pred
-        predict_r = torch.unsqueeze(pred[:,0,:,:],1)
-        predict_a = torch.unsqueeze(pred[:,1,:,:],1)
-
-        for i in range(predict_r.shape[0]):
-            self._file_writer.add_image('Pred char Gaussian', predict_r[i], step*batch_size+i)
-            self._file_writer.add_image('Pred affinity Gaussian', predict_a[i], step*batch_size+i)
+        ch_y, af_y = y
+        if(len(ch_y.shape)==4):
+            if(ch_y.shape[1]==1):
+                ch_y = ch_y[:,0,:,:].to('cpu').numpy()
+                af_y = af_y[:,0,:,:].to('cpu').numpy()
+            else:
+                ch_y = ch_y[:,:,:,0].to('cpu').numpy()
+                af_y = af_y[:,:,:,0].to('cpu').numpy()
+        else:
+            ch_y = ch_y.to('cpu').numpy()
+            af_y = af_y.to('cpu').numpy()
+        ch_p = pred[:,0,:,:]
+        af_p = pred[:,1,:,:]
+        x = x.permute(0,2,3,1).to('cup').numpy()
+        batch_size = int(pred.shape[0])
+        lines = np.ones((ch_y.shape[1],5,3),dtype=np.uint8)*255
+        
+        for i in range(batch_size):
+            if('image' in sample):
+                img = sample['image'][i].type(torch.uint8)
+                self._file_writer.add_image('Org:Image', img, step*batch_size+i,dataformats='HWC')
+            frame = TR.resize(x[i],af_y.shape[1:-1],preserve_range=True)*255.0
+            ch_i = cv_heatmap(ch_y[i])
+            af_i = cv_heatmap(af_y[i])
+            frame = frame.astype(af_i.dtype)
+            lines = lines.astype(af_i.dtype)
+            img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
+            self._file_writer.add_image('GT:Img|Char|Affinity', img, step*batch_size+i)     
+            ch_i = cv_heatmap(ch_p[i])
+            af_i = cv_heatmap(af_p[i])
+            img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
+            self._file_writer.add_image('Pred:Img|Char|Affinity', img, step*batch_size+i)
 
         return None
 

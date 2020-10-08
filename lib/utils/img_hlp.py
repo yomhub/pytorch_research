@@ -84,6 +84,58 @@ def np_box_rescale(box,scale,box_format:str):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
+def np_polybox_minrect(cv_polybox,box_format:str):
+    """
+    Find minimum rectangle for cv ploy box
+        cv_polybox: ((Box number), point number, 2)
+        box_format: 'polyxy' or 'polyyx'
+    Return: (Box number,4,2) in 'polyxy' or 'polyyx'
+    """
+    if(len(cv_polybox.shape)==2):
+        cv_polybox = np.expand_dims(cv_polybox,0)
+    dim_0s = cv_polybox[:,:,0]
+    dim_1s = cv_polybox[:,:,1]
+    dim_0s_min = dim_0s.min(axis=-1).reshape(-1,1)
+    dim_0s_max = dim_0s.max(axis=-1).reshape(-1,1)
+    dim_1s_min = dim_1s.min(axis=-1).reshape(-1,1)
+    dim_1s_max = dim_1s.max(axis=-1).reshape(-1,1)
+
+    if(box_format.lower()=='polyyx'):
+        return np.concatenate((
+            dim_0s_min,dim_1s_min,
+            dim_0s_min,dim_1s_max,
+            dim_0s_max,dim_1s_max,
+            dim_0s_max,dim_1s_min,
+            ),axis=-1).reshape(-1,4,2)
+            
+    return np.concatenate((
+        dim_0s_min,dim_1s_min,
+        dim_0s_max,dim_1s_min,
+        dim_0s_max,dim_1s_max,
+        dim_0s_min,dim_1s_max,
+        ),axis=-1).reshape(-1,4,2)
+
+def np_polybox_rotate(cv_polybox,M):
+    """
+    Rotate polybox
+        cv_polybox: ((Box number), point number, 2) in (x,y)
+        M: (2*3) rotate matrix
+    Return: 
+        cv_polybox: ((Box number), point number, 2)
+    """
+    M = M[:2,:3]
+    if(len(cv_polybox.shape)==2):
+        cv_polybox = np.expand_dims(cv_polybox,0)
+    # (x,y)->(x,y,1)
+    cv_polybox = np.pad(cv_polybox,[(0,0),(0,0),(0,1)],constant_values=1)
+    # change axis from (boxs,points,3) to (boxs,3,points)
+    cv_polybox = np.moveaxis(cv_polybox,-1,1)
+    # (2,3) dot (boxs,3,points) = (boxs,2,points)
+    ret = M.dot(cv_polybox)
+    # change (boxs,2,points) to (boxs,points,2)
+    ret = np.moveaxis(ret,1,-1)
+    return ret
+
 def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     """
     Box transfrom in ['yxyx','xyxy','xywh','cxywh']
@@ -256,6 +308,24 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
     d = np.sqrt(dx**2+dy**2)
     g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
     return g
+
+def cv_gaussian_kernel_2d(kernel_size = (3, 3)):
+    """
+    Generate gaussian kernel
+    """
+    ky = cv2.getGaussianKernel(int(kernel_size[0]), int(kernel_size[0] / 4))
+    kx = cv2.getGaussianKernel(int(kernel_size[1]), int(kernel_size[1] / 4))
+    return np.multiply(ky, np.transpose(kx))
+
+def cv_rotate(angle, image):
+    """
+    Rotate image
+    """
+    h, w = image.shape[:-1]
+    center = (w//2, h//2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    image = cv2.warpAffine(image, M, (w, h))
+    return image, M
 
 def cv_box_overlap(boxes1,boxes2):
     """
@@ -505,9 +575,10 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, color=(255, 255, 255))
     return image
 
-def cv_heatmap(img):
+def cv_heatmap(img,clr = cv2.COLORMAP_WINTER):
+    # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
-    img = cv2.applyColorMap(img, cv2.COLORMAP_JET)
+    img = cv2.applyColorMap(img, clr)
     return img
 
 def cv_watershed(org_img, mask, viz=False):

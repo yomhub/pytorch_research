@@ -3,18 +3,11 @@ import cv2
 import numpy as np
 # from skimage import io
 from skimage import transform as TR
-from PIL import Image
+from skimage import io
 import torch
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
-from lib.utils.img_hlp import np_corp_points, to_torch
-# =========================
-try:
-    import lib.dataloader.datautils as datautils
-    # import lib.dataloader.transutils
-except:
-    from . import datautils
-    # from . import transutils
+from lib.utils.img_hlp import *
 
 RD_ONLY_MT_MEM = None
 def default_collate_fn(batch):
@@ -71,65 +64,36 @@ class SynthText(Dataset):
 
     def __len__(self):
         return self.gt["txt"].shape[0]
-
-    def resize(self, image, char_label, word_laebl):
-        w, h = image.size
-        img = np.zeros(self.image_size)
-        rate = self.image_size[2] / self.image_size[1]
-        rate_pic = w / h
-        
-        if rate_pic > rate:
-            resize_h = int(self.image_size[2] / rate_pic)
-            image = image.resize((self.image_size[2], resize_h), Image.ANTIALIAS)
-            image = np.array(image)
-            if self.image_size[0] == 3:
-                if len(image.shape) == 2:
-                    image = np.tile(image, (3, 1, 1))
-                else:
-                    image = image.transpose((2, 0, 1))
-
-            img[:,:resize_h,:] = image
-            char_label = char_label * (resize_h / h)
-            word_laebl = word_laebl * (resize_h / h)
-        else:
-            resize_w = int(rate_pic * self.image_size[1])
-            image = image.resize((resize_w, self.image_size[1]), Image.ANTIALIAS)
-            image = np.array(image)
-            if self.image_size[0] == 3:
-                if len(image.shape) == 2:
-                    image = np.tile(image, (3, 1, 1))
-                else:
-                    image = image.transpose((2, 0, 1))
-
-            img[:,:,:resize_w] = np.array(image)
-            char_label = char_label * (resize_w / w)
-            word_laebl = word_laebl * (resize_w / w)
-        return img, char_label, word_laebl
-
         
     def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
         img_name = self.gt["imnames"][idx][0]
-        image  = Image.open(os.path.join(self.data_dir_path, img_name))
-        char_label = self.gt["charBB"][idx].transpose(2, 1, 0)
-        if len(self.gt["wordBB"][idx].shape) == 3:
-            word_laebl = self.gt["wordBB"][idx].transpose(2, 1, 0)
-        else:
-            word_laebl = self.gt["wordBB"][idx].transpose(1, 0)[np.newaxis, :]
+        img = io.imread(os.path.join(self.data_dir_path, img_name))
+        org_shape = img.shape[:2]
+        char_label = self.gt["charBB"][idx].transpose(2, 1, 0).astype(np.float32)
+        char_label = np.clip(char_label,0,max(self.image_size))
         txt_label = self.gt["txt"][idx]
+        img = TR.resize(img,self.image_size,preserve_range=True)
 
-        img, char_label, word_laebl = self.resize(image, char_label, word_laebl)
+        if(org_shape!=self.image_size):
+            char_label = np_box_resize(char_label,org_shape,self.image_size,'polyxy')
 
         if self.random_rote_rate:
-            angel = random.randint(0-self.random_rote_rate, self.random_rote_rate)
-            img, M = datautils.rotate(angel, img)
+            angel = np.random.randint(0-self.random_rote_rate, self.random_rote_rate)
+            img, M = cv_rotate(angel, img)
 
-        char_gt = np.zeros((int(self.image_size[1]), int(self.image_size[2])))
-        aff_gt = np.zeros((int(self.image_size[1]), int(self.image_size[2])))
+        char_gt = np.zeros(self.image_size)
+        aff_gt = np.zeros(self.image_size)
 
-        
         line_boxes = []
         char_index = 0
         word_index = 0
+        high, width = self.image_size
+        if(self.random_rote_rate):
+            char_label = np_polybox_rotate(char_label,M)
+        char_label_xyxy = np_polybox_minrect(char_label,'polyxy')
+        dxy = char_label_xyxy[:,2]-char_label_xyxy[:,0]
         for txt in txt_label:
             for strings in txt.split("\n"):
                 for string in strings.split(" "):
@@ -137,83 +101,78 @@ class SynthText(Dataset):
                         continue
                     char_boxes = []
                     for char in string:
-                        x0, y0 = char_label[char_index][0]
-                        x1, y1 = char_label[char_index][1]
-                        x2, y2 = char_label[char_index][2]
-                        x3, y3 = char_label[char_index][3]
-                        
-                        if self.random_rote_rate:
-                            x0, y0 = datautils.rotate_point(M, x0, y0)
-                            x1, y1 = datautils.rotate_point(M, x1, y1)
-                            x2, y2 = datautils.rotate_point(M, x2, y2)
-                            x3, y3 = datautils.rotate_point(M, x3, y3)
-                        
-                        x0, y0, x1, y1, x2, y2, x3, y3 = int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)), int(round(x3)), int(round(y3))
-                        char_boxes.append([x0, y0, x1, y1, x2, y2, x3, y3])
-                        box, deta_x, deta_y = datautils.find_min_rectangle([x0, y0, x1, y1, x2, y2, x3, y3])
-                        if deta_x <= 0 or deta_x >= self.image_size[2] or deta_y <= 0 or deta_y >= self.image_size[1]:
-                            # print(idx, deta_x, deta_y)
+                        char_boxes.append(char_label[char_index])
+                        deta_x, deta_y = dxy[char_index].astype(np.int16)
+                        box = char_label_xyxy[char_index]
+                        min_x = max(int(box[0,0]),0)
+                        min_y = max(int(box[0,1]),0)
+                        if(deta_x <= 0 or deta_y <= 0):
                             char_index += 1
                             continue
+                        if(min_x+deta_x>width):
+                            deta_x = width-min_x
+                        if(min_y+deta_y>high):
+                            deta_y = high-min_y
+
                         try:
-                            gaussian = datautils.gaussian_kernel_2d_opencv(kernel_size=(deta_y, deta_x))
-                            pts = np.float32([[x0, y0], [x1, y1], [x2, y2], [x3, y3]])
-                            res = datautils.aff_gaussian(gaussian, box, pts, deta_y, deta_x)
+                            gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+                            # gaussian = np_2d_gaussian((deta_y, deta_x))
+                            res = aff_gaussian(gaussian, box, char_label[char_index], deta_y, deta_x)
+                            max_v = np.max(res)
                         except:
                             char_index += 1
                             continue
-                        
-                        min_x = min(x0, x1, x2, x3)
-                        min_y = min(y0, y1, y2, y3)
-
-                        if np.max(res) > 0:
-                            mx = 1 / np.max(res)
-                            res = mx * res
-                            gh, gw = res.shape
-                            for th in range(gh):
-                                for tw in range(gw):
-                                    if 0 < min_y+th < char_gt.shape[0] and 0 < min_x+tw < char_gt.shape[1]:
-                                        try:
-                                            char_gt[min_y+th, min_x+tw] = max(char_gt[min_y+th, min_x+tw], res[th, tw])
-                                        except:
-                                            print(idx, min_y+th, min_x+tw)
-                            
+                                                
+                        if(max_v > 0):
+                            res /= max_v
+                            sub_mask = char_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
+                            if(sub_mask.shape!=res.shape):
+                                print("{}_{}".format(sub_mask.shape,res.shape))
+                            sub_mask = np.where(sub_mask>res,sub_mask,res)
+                            char_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask                           
                         char_index += 1
                     word_index += 1
-                    line_boxes.append(char_boxes)
-        affine_boxes = []
+                    line_boxes.append(np.array(char_boxes))
         for char_boxes in line_boxes:
-            affine_boxes.extend(datautils.create_affine_boxes(char_boxes))
+            if(char_boxes.shape[0]<=1):
+                continue
+            affine_boxes = create_affine_boxes(char_boxes.reshape(-1,4,2))
             for points in affine_boxes:
-                x0, y0, x1, y1, x2, y2, x3, y3 = points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7]
-                box, deta_x, deta_y = datautils.find_min_rectangle(points)
-                if deta_x <= 0 or deta_x >= self.image_size[2] or deta_y <= 0 or deta_y >= self.image_size[1]:
+                box = np_polybox_minrect(points,'polyxy')[0]
+                deta_x,deta_y = (box[2]-box[0]).astype(np.int16)
+                min_x = max(int(box[0,0]),0)
+                min_y = max(int(box[0,1]),0)
+                if(deta_x <= 0 or deta_y <= 0):
                     continue
+                if(min_x+deta_x>width):
+                    deta_x = width-min_x
+                if(min_y+deta_y>high):
+                    deta_y = high-min_y
                 try:
-                    gaussian = datautils.gaussian_kernel_2d_opencv(kernel_size=(deta_y, deta_x))
-                    pts = np.float32([[x0, y0], [x1, y1], [x2, y2], [x3, y3]])
-                    res = datautils.aff_gaussian(gaussian, box, pts,  deta_y, deta_x)
+                    gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+                    # gaussian = np_2d_gaussian((deta_y, deta_x))
+                    res = aff_gaussian(gaussian, box, points,  deta_y, deta_x)
+                    max_v = np.max(res)
                 except:
                     continue
-                min_x = min(x0, x1, x2, x3)
-                min_y = min(y0, y1, y2, y3)
 
-                if np.max(res) > 0:
-                    mx = 1 / np.max(res)
-                    res = mx * res
-                    gh, gw = res.shape
-                    for th in range(gh):
-                        for tw in range(gw):
-                            if 0 < min_y+th < aff_gt.shape[0] and 0 < min_x+tw < aff_gt.shape[1]:
-                                try:
-                                    aff_gt[min_y+th, min_x+tw] = max(aff_gt[min_y+th, min_x+tw], res[th, tw])
-                                except:
-                                    print(idx, min_y+th, min_x+tw)
+                if(max_v > 0):
+                    res /= max_v
+                    sub_mask = aff_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
+                    if(sub_mask.shape!=res.shape):
+                        print("{}_{}".format(sub_mask.shape,res.shape))
+                    sub_mask = np.where(sub_mask>res,sub_mask,res)
+                    aff_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
+        char_gt = np.expand_dims(char_gt,-1)
+        aff_gt = np.expand_dims(aff_gt,-1)
+        # if(self.down_rate):
+        #     char_gt = TR.resize(char_gt, (int(img.shape[0]/self.down_rate), int(img.shape[1]/self.down_rate)))
+        #     aff_gt = TR.resize(aff_gt, (int(img.shape[0]/self.down_rate), int(img.shape[1]/self.down_rate)))
         sample = {
             # 'image': img if(self.transform)else self.transform(img),
-            'image': np.transpose(img,(1,2,0)),
-            'char_gt': np.expand_dims(TR.resize(char_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
-            'aff_gt': np.expand_dims(TR.resize(aff_gt, (int(self.image_size[1]/self.down_rate), int(self.image_size[2]/self.down_rate))),axis=0),
+            'image': img,
+            'char_gt': char_gt,
+            'aff_gt': aff_gt,
             # 'affine_boxes': affine_boxes,
             # 'line_boxes': line_boxes,
             # 'char_label': char_label
@@ -230,4 +189,32 @@ def y_input_function(sample,th_device):
     char_gt = sample['char_gt'] if(isinstance(sample,dict))else sample[0]
     aff_gt = sample['aff_gt'] if(isinstance(sample,dict))else sample[1]
 
-    return to_torch(char_gt,th_device), to_torch(aff_gt,th_device)
+    return to_torch(char_gt,th_device).permute(0,3,1,2), to_torch(aff_gt,th_device).permute(0,3,1,2)
+
+def create_affine_boxes(boxs):
+    """
+    boxs: (N,4,2) with (x,y)
+    return
+    """
+    sp = boxs[:-1]
+    top_center = (sp[:,1]+sp[:,0])/2.0
+    bot_center = (sp[:,3]+sp[:,2])/2.0
+    up_cent_sp = bot_center + (top_center-bot_center)*0.75
+    dw_cent_sp = bot_center + (top_center-bot_center)*0.25
+    ep = boxs[1:]
+    top_center = (ep[:,1]+ep[:,0])/2.0
+    bot_center = (ep[:,3]+ep[:,2])/2.0
+    up_cent_ep = bot_center + (top_center-bot_center)*0.75
+    dw_cent_ep = bot_center + (top_center-bot_center)*0.25
+
+    return np.stack([up_cent_sp,up_cent_ep,dw_cent_ep,dw_cent_sp],axis=1)
+
+def aff_gaussian(gaussian, box, pts, deta_x, deta_y):
+    box = box.astype(np.float32)
+    pts = pts.astype(np.float32)
+    de_x, de_y = box[0]
+    box = box - [de_x, de_y]
+    pts = pts - [de_x, de_y]
+    M = cv2.getPerspectiveTransform(box, pts)
+    res = cv2.warpPerspective(gaussian, M, (deta_y, deta_x))
+    return res

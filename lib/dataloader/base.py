@@ -35,7 +35,7 @@ class BaseDataset(Dataset):
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
         normalized: True to normalize coordinate
-        image_size: (ch,y,x),(y,x),int or float for both (y,x)
+        image_size: (y,x,ch),(y,x),int or float for both (y,x)
     Outs:
         {
             'image': (h,w,1 or 3) np array.
@@ -69,8 +69,8 @@ class BaseDataset(Dataset):
         self.gt_mask_name_lambda = gt_mask_name_lambda
         self.gt_txt_dir = gt_txt_dir
         self.gt_txt_name_lambda = gt_txt_name_lambda
-        type_list = ['jpg','png','bmp'] if(img_only)else ['jpg','png','bmp','mp4','avi']
-        self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.img_type+self.vdo_type]
+        self.type_list = ['jpg','png','bmp'] if(img_only)else ['jpg','png','bmp','mp4','avi']
+        self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.type_list]
 
         self.transform=transform
         self.ch = 3
@@ -79,8 +79,8 @@ class BaseDataset(Dataset):
         elif(not isinstance(image_size,Iterable)):
             self.image_size = (image_size,image_size)
         elif(len(image_size)==3):
-            self.image_size = image_size[1:]
-            self.ch = image_size[0]
+            self.image_size = image_size[:2]
+            self.ch = image_size[3]
         else:
             self.image_size = image_size
         self.default_collate_fn = default_collate_fn
@@ -93,7 +93,7 @@ class BaseDataset(Dataset):
         if torch.is_tensor(idx):
             idx = idx.tolist()
         sample = {}
-        if(self.img_names[idx].split('.')[-1].lower() in self.img_type):
+        if(self.img_names[idx].split('.')[-1].lower() in self.type_list):
             try:
                 img = io.imread(self.img_names[idx])
                 if(len(img.shape)==2):

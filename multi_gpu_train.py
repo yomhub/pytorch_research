@@ -16,7 +16,7 @@ from lib.dataloader.icdar import ICDAR
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
-from lib.dataloader.synthtext import SynthText
+import lib.dataloader.synthtext as syn80k
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
@@ -73,13 +73,18 @@ if __name__ == "__main__":
 
     # For Debug config
     # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm.pkl"
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    isdebug = True
-    use_net = 'craft_mob'
-    use_dataset = 'icv15'
+    # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    # isdebug = True
+    # use_net = 'craft_mob'
+    # use_dataset = 'all'
     # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
+
+    if(use_cuda):
+        for i in range(torch.cuda.device_count()):
+            torch.cuda.set_device(i)
+            torch.distributed.init_process_group()
 
     if(use_net=='craft'):
         net = CRAFT()
@@ -105,7 +110,7 @@ if __name__ == "__main__":
             os.path.join(__DEF_TTT_DIR,'Images','Train'),
             os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
             os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
-            image_size=(640, 640),)
+            image_size=(3,640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
@@ -113,12 +118,12 @@ if __name__ == "__main__":
         train_dataset = ICDAR(
             os.path.join(__DEF_IC15_DIR,'images','train'),
             os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
-            image_size=(640, 640),)
+            image_size=(3,640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=='sync'):
-        train_dataset = SynthText(__DEF_SYN_DIR, image_size=(640, 640), 
+        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
             transform=transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -126,8 +131,8 @@ if __name__ == "__main__":
             ]
         ))
         train_on_real = False
-        x_input_function=train_dataset.x_input_function
-        y_input_function=train_dataset.y_input_function
+        x_input_function=syn80k.x_input_function
+        y_input_function=syn80k.y_input_function
     elif(use_dataset=='icv15'):
         train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
         train_on_real = True
@@ -143,7 +148,6 @@ if __name__ == "__main__":
         num_workers = 0
         batch = 1
     else:
-        # Load ALL jpg/png/bmp image from dir list
         train_dataset = BaseDataset((
             os.path.join(__DEF_IC15_DIR,'images','train'),
             os.path.join(__DEF_IC19_DIR,'Train'),
@@ -151,7 +155,7 @@ if __name__ == "__main__":
             __DEF_SVT_DIR,
             # __DEF_SYN_DIR,
             ),
-            image_size=(640, 640),
+            image_size=(3,640, 640),
             img_only=True)
         train_on_real = True
         x_input_function = train_dataset.x_input_function

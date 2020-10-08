@@ -15,7 +15,7 @@ from lib.dataloader.icdar import ICDAR
 from lib.dataloader.total import Total
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.base import BaseDataset
-import lib.dataloader.synthtext as syn80k
+from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTester
 from lib.config.test_default import cfg as tcfg
@@ -92,7 +92,7 @@ if __name__ == "__main__":
             os.path.join(__DEF_TTT_DIR,'Images','Test'),
             os.path.join(__DEF_TTT_DIR,'gt_pixel','Test'),
             os.path.join(__DEF_TTT_DIR,'gt_txt','Test'),
-            image_size=(3,640, 640),)
+            image_size=(640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
@@ -100,15 +100,15 @@ if __name__ == "__main__":
         train_dataset = ICDAR(
             os.path.join(__DEF_IC15_DIR,'images','test'),
             os.path.join(__DEF_IC15_DIR,'gt_txt','test'),
-            image_size=(3,640, 640),)
+            image_size=(640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=='sync'):
-        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640))
+        train_dataset = SynthText(__DEF_SYN_DIR, image_size=(640, 640))
         train_on_real = False
-        x_input_function=syn80k.x_input_function
-        y_input_function=syn80k.y_input_function
+        x_input_function=train_dataset.x_input_function
+        y_input_function=train_dataset.y_input_function
     elif(use_dataset=='icv15'):
         train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'test'))
         train_on_real = True
@@ -123,7 +123,7 @@ if __name__ == "__main__":
             os.path.join(__DEF_TTT_DIR,'Images','Test'),
             __DEF_SVT_DIR,
             ),
-            image_size=(3,640, 640),
+            image_size=(640, 640),
             img_only=True)
         train_on_real = True
         x_input_function = train_dataset.x_input_function

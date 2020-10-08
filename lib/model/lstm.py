@@ -73,7 +73,7 @@ class BottleneckLSTMCell(nn.Module):
 		# ==================
 		return ch, cc
 
-	def init_hidden(self, batch_size, hidden, shape):
+	def init_w(self, batch_size, hidden, shape):
 		"""
 		Arguments:
 			batch_size : an int variable having value of batch size while training
@@ -92,6 +92,19 @@ class BottleneckLSTMCell(nn.Module):
 		else:
 			assert shape[0] == self.Wci.size()[2], 'Input Height Mismatched!'
 			assert shape[1] == self.Wci.size()[3], 'Input Width Mismatched!'
+
+	def init_hidden(self, batch_size, hidden, shape):
+		"""
+		Arguments:
+			batch_size : an int variable having value of batch size while training
+			hidden : an int variable having value of number of channels in hidden state
+			shape : an array containing shape of the hidden and cell state 
+		Returns:
+			cell state and hidden state
+		"""
+		for k,v in self.state_dict().items():
+			d = v
+			break
 
 		return (torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype).to(d.device),
 				torch.zeros((batch_size, hidden, shape[0], shape[1]),dtype=d.dtype).to(d.device)
