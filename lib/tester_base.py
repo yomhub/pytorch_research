@@ -89,15 +89,19 @@ class Tester():
                 if(j>=test_size):break
                 x=self._custom_x_input_function(sample,self._device)
                 y=self._custom_y_input_function(sample,self._device) if(self._custom_y_input_function!=None)else None
-                x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
+                x = x.permute(0,2,3,1)
+                # x = torch.nn.functional.pad(x,(0,0,0,0,0,640-x.shape[1]),"constant", 0)
+                x = torch_img_normalize(x).permute(0,3,1,2)
+                # noisy = torch.rand((x.shape[0],x.shape[1],640-x.shape[2],x.shape[3]),device=x.device)
+                # x = torch.cat((x,noisy),dim=2)
                 with torch.no_grad():
                     pred = self._net(x)
                 loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
                 cryt = self._criterion(pred,sample)
-                self._step_callback(x,y,pred,loss.item()if(loss!=None)else None,cryt,self._current_step,batch_size)
+                self._step_callback(sample,x,y,pred,loss.item()if(loss!=None)else None,cryt,self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
-                    self._logger(x,y,pred,loss.item() if(loss!=None)else None,cryt,self._current_step,batch_size)
+                    self._logger(sample,x,y,pred,loss.item() if(loss!=None)else None,cryt,self._current_step,batch_size)
                     if(self._file_writer!=None):self._file_writer.flush()
 
                 if(loss!=None):
@@ -117,9 +121,9 @@ class Tester():
         self._f_train_loger.flush()
         return 0
 
-    def _logger(self,x,y,pred,loss,cryt,step,batch_size):
+    def _logger(self,sample,x,y,pred,loss,cryt,step,batch_size):
         return None
-    def _step_callback(self,x,y,pred,loss,cryt,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,cryt,step,batch_size):
         return None
     def _criterion(self,pred,sample):
         return None

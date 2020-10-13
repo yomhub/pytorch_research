@@ -29,6 +29,7 @@ __DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
 __DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
 __DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
 __DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
+__DEF_MSRA_DIR = os.path.join(__DEF_DATA_DIR, 'MSRA-TD500')
 __DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
 __DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
 
@@ -70,13 +71,15 @@ if __name__ == "__main__":
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     batch = args.batch
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
+    log_step_size = args.logstp
 
     # For Debug config
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm.pkl"
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    isdebug = True
-    use_net = 'craft_mob'
-    use_dataset = 'icv15'
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_syn.pkl"
+    # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    # isdebug = True
+    # use_net = 'craft_mob'
+    # use_dataset = 'all'
+    # log_step_size = 1
     # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
@@ -118,13 +121,9 @@ if __name__ == "__main__":
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=='sync'):
-        train_dataset = SynthText(__DEF_SYN_DIR, image_size=(640, 640), 
-            transform=transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
-            ]
-        ))
+        train_dataset = SynthText(__DEF_SYN_DIR, 
+            image_size=(640, 640),
+            )
         train_on_real = False
         x_input_function=train_dataset.x_input_function
         y_input_function=train_dataset.y_input_function
@@ -148,6 +147,7 @@ if __name__ == "__main__":
             os.path.join(__DEF_IC15_DIR,'images','train'),
             os.path.join(__DEF_IC19_DIR,'Train'),
             os.path.join(__DEF_TTT_DIR,'Images','Train'),
+            os.path.join(__DEF_MSRA_DIR,'train'),
             __DEF_SVT_DIR,
             # __DEF_SYN_DIR,
             ),
@@ -171,7 +171,7 @@ if __name__ == "__main__":
         task_name=args.name if(args.name!=None)else net.__class__.__name__,
         isdebug = isdebug, use_cuda = use_cuda,
         net = net, loss = loss, opt = opt,
-        log_step_size = args.logstp,
+        log_step_size = log_step_size,
         save_step_size = args.savestep,
         lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
         custom_x_input_function=x_input_function,
@@ -190,7 +190,8 @@ if __name__ == "__main__":
         "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
         "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
         "\t Init learning rate: {}.\n".format(lr)+\
-        "\t Learning rate decay: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
+        "\t Learning rate decay rate: {}.\n".format(tcfg['OPT_DEC'] if(tcfg['OPT_DEC']>0)else "Disabled")+\
+        "\t Learning rate decay step: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
         "\t Teacher: {}.\n".format(teacher_pkl_dir)+\
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\

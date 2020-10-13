@@ -356,7 +356,7 @@ def cv_box2cvbox(boxes,image_size,box_format:str):
         image_size: (h,w)
 
     Return:
-        (N,4,2) rectangle box in CV2 coordinate.
+        (N,4,2) rectangle box in CV2 coordinate (polyxy).
         +------------> x
         | 
         | p0------p1
@@ -365,7 +365,10 @@ def cv_box2cvbox(boxes,image_size,box_format:str):
         | p3------p2
         y
     """
-    if(box_format.lower()=='polyxy'):return boxes
+    if(box_format.lower()=='polyxy'):return boxes.reshape((-1,4,2))
+    if(box_format.lower()=='polyyx'):
+        boxes = boxes.reshape((-1,4,2))
+        return np.stack([boxes[:,:,1],boxes[:,:,0]],axis=-1)
     if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes.shape)==1):boxes = np.expand_dims(boxes,0)
     boxes = np_box_transfrom(boxes[:,-4:],box_format,'xyxy')
@@ -434,7 +437,7 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     ret, IM = cv2.invert(M)
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
-def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.4):
+def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.3):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
@@ -575,11 +578,11 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, color=(255, 255, 255))
     return image
 
-def cv_heatmap(img,clr = cv2.COLORMAP_WINTER):
+def cv_heatmap(img,clr = cv2.COLORMAP_JET):
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     img = cv2.applyColorMap(img, clr)
-    return img
+    return img.astype(np.uint8)
 
 def cv_watershed(org_img, mask, viz=False):
     """
@@ -679,6 +682,7 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
 
     return np.array(matrix_list),matrix_map
 
+
 # 
 # ===============================================
 # ==================== Class ====================
@@ -709,7 +713,7 @@ class RandomScale(object):
             self.max_size = None
 
     def __call__(self, sample):
-        image = img
+        image = sample['image']
         img_size = image.shape[-3:-1]
         min_rate = np.divide(self.min_size,img_size)
         max_rate = np.divide(self.max_size,img_size) if(self.max_size!=None)else np.maximum(min_rate,(1.5,1.5))
@@ -717,7 +721,7 @@ class RandomScale(object):
         img_size *= rate
 
         s_shape = (image.shape[0],int(img_size[0]),int(img_size[1]),image.shape[-1]) if(len(image.shape)==4)else (int(img_size[0]),int(img_size[1]),image.shape[-1])
-        img = np.resize(image,s_shape)
+        sample['image'] = np.resize(image,s_shape)
 
         if('box_format' in sample):
             fmt = sample['box_format'].lower()
@@ -730,154 +734,4 @@ class RandomScale(object):
             sample['gtmask'] = sample['gtmask'].resize(s_shape)
 
         return sample
-
-class GaussianTransformer(object):
-    """
-    Text level gaussian generator.
-    Args:
-        img_size: int or tuple for (y,x)
-
-    """
-    def __init__(self, img_size=512, region_threshold=0.4,
-                 affinity_threshold=0.2):
-        
-        self.region_threshold = region_threshold
-        img_size = img_size if(isinstance(img_size,Iterable))else (img_size,img_size)
-
-        self.standardGaussianHeat = np_2d_gaussian(img_size)
-        
-        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= region_threshold)), 1, axis=0).transpose().reshape(-1, 2)
-        x, y, w, h = cv2.boundingRect(np_contours)
-        self.regionbox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.float32)
-
-        np_contours = np.roll(np.array(np.where(self.standardGaussianHeat >= affinity_threshold)), 1, axis=0).transpose().reshape(-1, 2)
-        x, y, w, h = cv2.boundingRect(np_contours)
-        self.affinitybox = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.float32)
-        # CV coordinate (x,y,1)
-        self.oribox = np.array([[0, 0, 1], [img_size[1] - 1, 0, 1], [img_size[1] - 1, img_size[0] - 1, 1], [0, img_size[0] - 1, 1]],
-                               dtype=np.float32)
-
-    def add_region_character(self, mask, cv_4p_box, regionbox=None):
-        """
-        Args:
-            mask: ndarray with shape (height, width) and value in [0,1]
-            cv_4p_box: ndarray with shape (4,2) with (x,y)
-        """
-        height, width = mask.shape[:2]
-        np.clip(cv_4p_box[:,0],0,width-1,out=cv_4p_box[:,0])
-        np.clip(cv_4p_box[:,1],0,height-1,out=cv_4p_box[:,1])
-
-        if(isinstance(regionbox,type(None))):
-            regionbox = self.regionbox
-
-        M = cv2.getPerspectiveTransform(regionbox, cv_4p_box)
-        real_target_box = cv2.perspectiveTransform(np.expand_dims(self.oribox[:,:2],0), M)[0]
-        np.clip(real_target_box[:, 0], 0, width-1, out=real_target_box[:,0])
-        np.clip(real_target_box[:, 1], 0, height-1, out=real_target_box[:,1])
-
-        if np.any(cv_4p_box[0] < real_target_box[0]) or (
-                cv_4p_box[3, 0] < real_target_box[3, 0] or cv_4p_box[3, 1] > real_target_box[3, 1]) or (
-                cv_4p_box[1, 0] > real_target_box[1, 0] or cv_4p_box[1, 1] < real_target_box[1, 1]) or (
-                cv_4p_box[2, 0] > real_target_box[2, 0] or cv_4p_box[2, 1] > real_target_box[2, 1]):
-            # if False:
-            warped = cv2.warpPerspective(self.standardGaussianHeat, M, (width, height))
-            mask = np.where(warped > mask, warped, mask)
-        else:
-            xmin = real_target_box[:, 0].min()
-            xmax = real_target_box[:, 0].max()
-            ymin = real_target_box[:, 1].min()
-            ymax = real_target_box[:, 1].max()
-
-            width = xmax - xmin
-            height = ymax - ymin
-            _target_box = cv_4p_box.copy()
-            _target_box[:, 0] -= xmin
-            _target_box[:, 1] -= ymin
-            _M = cv2.getPerspectiveTransform(regionbox, _target_box)
-            warped = cv2.warpPerspective(self.standardGaussianHeat, _M, (width, height))
-
-            if warped.shape[0] != (ymax - ymin) or warped.shape[1] != (xmax - xmin):
-                print("region (%d:%d,%d:%d) warped shape (%d,%d)" % (
-                    ymin, ymax, xmin, xmax, warped.shape[1], warped.shape[0]))
-                return mask
-            ymin,ymax,xmin,xmax = int(ymin),int(ymax),int(xmin),int(xmax)
-            mask[ymin:ymax, xmin:xmax] = np.where(warped > mask[ymin:ymax, xmin:xmax], warped,
-                                                   mask[ymin:ymax, xmin:xmax])
-        return mask
-
-    def generate_region(self, image_size, cv_4p_boxes_list:list, mask:np.ndarray=None):
-        """
-        Generate word region mask.
-        Args:
-            image_size: int or tuple (y,x)
-            cv_4p_boxes_list: LIST of N connected character box (N,4,2) with (x,y)
-            mask: None or float ndarray with shape (image_size) or (image_size,1)
-        Return: mask with value in [0,1]
-        """
-        if(not isinstance(image_size,Iterable)):image_size = (image_size,image_size)
-        if(isinstance(mask,type(None))):
-            mask = np.zeros(image_size, dtype=np.float32)
-        elif(len(mask.shape)>2):
-            mask = mask.reshape(image_size)
-
-        for word in cv_4p_boxes_list:
-            word = word.astype(np.float32)
-            for box in word:
-                mask = self.add_region_character(mask, box)
-
-        return mask
-
-    def generate_affinity(self, image_size, cv_4p_boxes_list:list, mask:np.ndarray=None):
-        """
-        Generate word affinity.
-        Args:
-            image_size: int or tuple (y,x)
-            cv_4p_boxes_list: LIST of N connected character box (N,4,2) with (x,y)
-            mask: None or float ndarray with shape (image_size) or (image_size,1)
-        Return: mask with value in [0,1]
-        """
-
-        if(not isinstance(image_size,Iterable)):image_size = (image_size,image_size)
-        if(isinstance(mask,type(None))):
-            mask = np.zeros(image_size, dtype=np.float32)
-        elif(len(mask.shape)>2):
-            mask = mask.reshape(image_size)
-
-        for word in cv_4p_boxes_list:
-            word = word.astype(np.float32)
-            if(word.shape[0]<=1):continue
-            src,dst = word[:-1],word[1:]
-            center_src, center_dst = np.mean(src, axis=1), np.mean(dst, axis=1)
-            bboxes = np.stack([
-                np.mean([src[:,0,:], src[:,1,:], center_src], axis=0), # top-left 
-                np.mean([dst[:,0,:], dst[:,1,:], center_dst], axis=0), # top-right
-                np.mean([dst[:,2,:], dst[:,3,:], center_dst], axis=0), # bottom-right
-                np.mean([src[:,2,:], src[:,3,:], center_src], axis=0), # bottom-left 
-                ],axis = 1)
-            for box in bboxes:
-                mask = self.add_region_character(mask, box, self.affinitybox)
-
-        return mask
-
-    def split_word_box(self,cv_4p_boxes,split_num):
-        """
-        Args:
-            cv_4p_boxes: word box (4,2) with (x,y)
-            split_num: int
-        Return: N connected character box (N,4,2) with (x,y)
-        """
-        if(split_num<=1):return np.expand_dims(cv_4p_boxes,0)
-        # w = (np.sum(np.sqrt(np.square(cv_4p_boxes[1]-cv_4p_boxes[0])))+np.sum(np.sqrt(np.square(cv_4p_boxes[2]-cv_4p_boxes[3]))))/2
-        dw0 = (cv_4p_boxes[1]-cv_4p_boxes[0])/split_num
-        dw1 = (cv_4p_boxes[2]-cv_4p_boxes[3])/split_num
-        # h = (np.sum(np.sqrt(np.square(cv_4p_boxes[1]-cv_4p_boxes[0])))+np.sum(np.sqrt(np.square(cv_4p_boxes[2]-cv_4p_boxes[3]))))/2
-
-        ret = []
-        for i in range(split_num):
-            ret.append([cv_4p_boxes[0]+i*dw0,
-            cv_4p_boxes[0]+(i+1)*dw0,
-            cv_4p_boxes[3]+i*dw1,
-            cv_4p_boxes[3]+(i+1)*dw1,])
-
-        return np.array(ret,dtype=cv_4p_boxes.dtype)
 

@@ -19,7 +19,6 @@ class CRAFTTrainer(Trainer):
         **params
     ):
         self.train_on_real = bool(train_on_real)
-        self.gaussianTransformer = GaussianTransformer()
         self.use_teacher = False
 
         super(CRAFTTrainer,self).__init__(**params)
@@ -35,21 +34,20 @@ class CRAFTTrainer(Trainer):
     def _logger(self,sample,x,y,pred,loss,step,batch_size):
         if(self._file_writer==None):return None
         # self._file_writer.add_scalar('Loss/train', loss, step)
-        pred = pred[0] if(isinstance(pred,tuple))else pred
+        pred = pred[0].to('cpu').detach().numpy() if(isinstance(pred,tuple))else pred.to('cpu').detach().numpy()
         ch_y, af_y = y
         if(len(ch_y.shape)==4):
             if(ch_y.shape[1]==1):
-                ch_y = ch_y[:,0,:,:].to('cpu').numpy()
-                af_y = af_y[:,0,:,:].to('cpu').numpy()
+                ch_y = ch_y[:,0,:,:]
+                af_y = af_y[:,0,:,:]
             else:
-                ch_y = ch_y[:,:,:,0].to('cpu').numpy()
-                af_y = af_y[:,:,:,0].to('cpu').numpy()
-        else:
-            ch_y = ch_y.to('cpu').numpy()
-            af_y = af_y.to('cpu').numpy()
+                ch_y = ch_y[:,:,:,0]
+                af_y = af_y[:,:,:,0]
+        ch_y = ch_y.to('cpu').detach().numpy()
+        af_y = af_y.to('cpu').detach().numpy()
         ch_p = pred[:,0,:,:]
         af_p = pred[:,1,:,:]
-        x = x.permute(0,2,3,1).to('cup').numpy()
+        x = x.permute(0,2,3,1).to('cpu').detach().numpy()
         batch_size = int(pred.shape[0])
         lines = np.ones((ch_y.shape[1],5,3),dtype=np.uint8)*255
         
@@ -57,17 +55,20 @@ class CRAFTTrainer(Trainer):
             if('image' in sample):
                 img = sample['image'][i].type(torch.uint8)
                 self._file_writer.add_image('Org:Image', img, step*batch_size+i,dataformats='HWC')
-            frame = TR.resize(x[i],af_y.shape[1:-1],preserve_range=True)*255.0
+            frame = TR.resize(x[i],af_y.shape[1:],preserve_range=True)
+            frame -= np.min(frame)
+            frame/=np.max(frame)
+            frame *= 255.0
             ch_i = cv_heatmap(ch_y[i])
             af_i = cv_heatmap(af_y[i])
             frame = frame.astype(af_i.dtype)
             lines = lines.astype(af_i.dtype)
             img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
-            self._file_writer.add_image('GT:Img|Char|Affinity', img, step*batch_size+i)     
+            self._file_writer.add_image('GT:Img|Char|Affinity', img, step*batch_size+i,dataformats='HWC')     
             ch_i = cv_heatmap(ch_p[i])
             af_i = cv_heatmap(af_p[i])
             img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
-            self._file_writer.add_image('Pred:Img|Char|Affinity', img, step*batch_size+i)
+            self._file_writer.add_image('Pred:Img|Char|Affinity', img, step*batch_size+i,dataformats='HWC')
 
         return None
 
@@ -163,14 +164,14 @@ class CRAFTTrainer(Trainer):
                 for batch in range(sample['image'].shape[0]):
                     ch_mask = np.zeros(image_size,dtype=np.float32)
                     af_mask = np.zeros(image_size,dtype=np.float32)
-                    cv_boxes = cv_box2cvbox(sample['box'][batch],image_size,sample['box_format']) if(sample['box_format']!='polyxy')else sample['box'][batch]
+                    cv_boxes = cv_box2cvbox(sample['box'][batch],image_size,sample['box_format'])
                     box_list = []
                     for i in range(cv_boxes.shape[0]):
                         box,_,_=self.inference_pursedo_bboxes(sample['image'][batch].numpy(),cv_boxes[i],sample['text'][batch][i])
                         box_list.append(box)
 
-                    ch_mask = self.gaussianTransformer.generate_region(image_size,box_list,ch_mask)
-                    af_mask = self.gaussianTransformer.generate_affinity(image_size,box_list,af_mask)
+                    # ch_mask = self.gaussianTransformer.generate_region(image_size,box_list,ch_mask)
+                    # af_mask = self.gaussianTransformer.generate_affinity(image_size,box_list,af_mask)
                     ch_mask_list.append(torch.from_numpy(np.expand_dims(ch_mask,0)))
                     af_mask_list.append(torch.from_numpy(np.expand_dims(af_mask,0)))
                 y = torch.stack(ch_mask_list,0).float().to(self._device), torch.stack(af_mask_list,0).float().to(self._device)
@@ -187,6 +188,7 @@ class CRAFTTrainer(Trainer):
                 self._net.init_state()
             except:
                 None
+            flush_stp = 10
             im_size = (sample['height'],sample['width'])
             pointsxy = sample['gt']
             p_keys = list(pointsxy.keys())
@@ -240,6 +242,7 @@ class CRAFTTrainer(Trainer):
                     dst,src = pointsxy[p_keys[idx]],pointsxy[p_keys[idx-1]]
                     src_box = []
                     dst_box = []
+                    box_cnt = 0
                     for box in dst:
                         ind = np.where(box[0]==src[:,0])[0]
                         if(ind.shape[0]):
@@ -254,7 +257,6 @@ class CRAFTTrainer(Trainer):
                         # (N,1,6,1,1)
                         aff_list = torch.tensor(np.expand_dims(aff_list,(1,3,4)).astype(np.float32),requires_grad=True)
                         loss_box = 0.0
-                        box_cnt = 0
                         odet, labels, mapper = cv_getDetCharBoxes_core(word_map[0])
                         labels = torch.from_numpy(labels)
                         for i in range(dst_box.shape[0]):
@@ -282,8 +284,8 @@ class CRAFTTrainer(Trainer):
                     # self._net.lstmc = self._net.lstmc.detach()
                     # self._net.lstmh.grad.data.zero_()
                     # self._net.lstmc.grad.data.zero_()
-                    b_wait_for_flash = bool(fm_cnt%15==0) or b_wait_for_flash
-                    if((b_wait_for_flash and box_cnt==0) or fm_cnt%30==0):
+                    b_wait_for_flash = bool(fm_cnt%flush_stp==0) or b_wait_for_flash
+                    if((b_wait_for_flash and box_cnt==0) or fm_cnt%(flush_stp*2)==0 or idx==-1 or len(src_box)==0):
                         self._net.lstmh.detach_()
                         self._net.lstmc.detach_()
                         b_wait_for_flash=False
@@ -307,29 +309,37 @@ class CRAFTTrainer(Trainer):
 
 class CRAFTTester(Tester):
     def __init__(self,**params):
-        self._box_ovlap_th = 0.2
+        # ICDAR threshold is 0.5, https://rrc.cvc.uab.es/?ch=15&com=tasks
+        self._box_ovlap_th = 0.5
         super(CRAFTTester,self).__init__(**params)
 
-    def _step_callback(self,x,y,pred,loss,cryt,step,batch_size):
+    def _step_callback(self,sample,x,y,pred,loss,cryt,step,batch_size):
         if(isinstance(pred,tuple)):
             pred = pred[0]
+        image = sample['image']
         pred = pred.to('cpu').detach().numpy()
         scale = (x.shape[2]/pred.shape[2],x.shape[3]/pred.shape[3])
         x = x.permute(0,2,3,1).to('cpu').detach().numpy().astype(np.uint8)
         if(self._file_writer==None):return None
         if(loss!=None): self._file_writer.add_scalar('Loss/test', loss, step)
-
+        if(not isinstance(cryt,type(None))):
+            recal,prec,f = np.mean(cryt,axis=0)
+            self._file_writer.add_scalar('Recall/test', recal, step)
+            self._file_writer.add_scalar('Precision/test', prec, step)
+            self._file_writer.add_scalar('F-mean/test', f, step)
         lines = np.ones((pred.shape[2],5,3))*255.0
         lines = lines.astype(x.dtype)
         wods = np.sum(pred,1)
         for batch,wod in enumerate(wods):
             odet, labels, mapper = cv_getDetCharBoxes_core(wod)
-            frame = x[batch]
+            # frame = x[batch]
+            frame = image[batch].numpy().astype(np.uint8)
+            # frame = np.pad(frame,((0,640-frame.shape[0]),(0,0),(0,0)), 'constant',constant_values=0)
             ch = cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1))
             af = cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1))
                 
             if(odet.size>0):
-                # odet = np_box_rescale(odet,scale,'polyxy')
+                odet = np_box_rescale(odet,scale,'polyxy')
                 frame = cv_draw_poly(frame,odet)
                 
             frame = cv2.resize(frame,ch.shape[:2]).astype(np.uint8)
@@ -339,37 +349,54 @@ class CRAFTTester(Tester):
         return None
 
     def _criterion(self,pred,sample):
-        if('gt' not in sample):
-            return -1
+        """
+        Given a batch prediction and sample
+        Return:
+            (batch,3) with (recall, precision, FP)
+        """
+        if('box' not in sample):
+            return np.array(((-1,-1,-1)))
         pred = pred[0] if(isinstance(pred,tuple))else pred
         pred = pred.detach().to('cpu').numpy()
         chmap = np.expand_dims(pred[:,0],-1)
         segmap = np.expand_dims(pred[:,1],-1)
+        box_format = sample['box_format'] if(isinstance(sample['box_format'],str))else sample['box_format'][0]
         miss_corr = []
+
         for bh in range(chmap.shape[0]):
             odet, labels, mapper = cv_getDetCharBoxes_core(chmap[bh],segmap[bh])
-            gtbox = sample['gt'][bh]
+            try:
+                gtbox = sample['box'][bh].numpy()
+            except:
+                gtbox = sample['box'][bh]
+
+            if('poly' not in box_format):
+                gtbox = cv_box2cvbox(gtbox,sample['image'].shape[1:-1],box_format)
+                gtbox = np_polybox_minrect(gtbox,'polyxy')
+            else:
+                gtbox = np_polybox_minrect(gtbox,box_format)
+
             ovlaps = []
             fp = 0
+            gtbox_grp = gtbox
             for i in range(odet.shape[0]):
-                ovlap = cv_box_overlap(gtbox,odet[i])
+                ovlap = cv_box_overlap(gtbox_grp,odet[i])
                 ovlap = ovlap.reshape(-1)
                 ind = np.argmax(ovlap)
                 if(ovlap[ind]>self._box_ovlap_th):
                     ovlaps.append(ovlap[ind])
-                elif(ovlap[ind]==-1.0):
+                    gtbox_grp = np.delete(gtbox_grp,ind,axis=0)
+                else:
                     fp+=1
 
-                odet = np.delete(odet,ind,axis=0)
-            tp = len(ovlaps)
-            fn = gtbox.shape[0]-tp
-            recal = tp/(tp+fn)
-            prec = tp/(tp+fp)
-            miss_corr.append((recal,prec,2*recal*prec/(recal+prec)))
+            # MLT2017 for non-discare dataset
+            prec = len(ovlaps)/odet.shape[0]
+            recal = len(ovlaps)/gtbox.shape[0]
+            miss_corr.append((recal,prec,2*recal*prec/(recal+prec) if(recal+prec>0)else 0.0))
         
         return np.array(miss_corr)
 
-    def test_on_vdo(vdo,gts):
+    def test_on_vdo(self,vdo,gts):
         net = self._net()
         net.eval()
         fm_cnt = 0

@@ -67,6 +67,16 @@ class Minetto():
             box_dict,txt_dict = read_xml(os.path.join(self._vdo_dir,self._names[idx],"groundtruth.xml"),self._out_box_format)
             sample['gt']=box_dict
             sample['txt']=txt_dict
+        elif(os.path.exists(os.path.join(self._vdo_dir,self._names[idx],"XML"))):
+            xml_list = os.listdir(os.path.join(self._vdo_dir,self._names[idx],"XML"))
+            box_dict = {}
+            txt_dict = {}
+            for o in xml_list:
+                boxi,txti = read_xml(os.path.join(self._vdo_dir,self._names[idx],"XML",o),self._out_box_format)
+                box_dict.update(boxi)
+                txt_dict.update(txti)
+            sample['gt']=box_dict
+            sample['txt']=txt_dict
         
         if(self._include_name):sample['name']=self._names[idx]
         return sample

@@ -13,10 +13,10 @@ from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize,np_img_n
 def default_collate_fn(batch):
     ret = {}
     for key,value in batch[0].items():
-        if(key.lower() in ['box','text']):
+        if(key.lower() in ['box','text'] or 'list' in key.lower()):
             ret[key]=[d[key] for d in batch]
-        elif(key.lower() in ['box_format']):
-            ret[key]=value
+        elif(key.lower() in ['box_format'] or 'sig' in key.lower()):
+            ret[key]=value[0] if(isinstance(value,list))else value
         else:
             ret[key]=torch.stack([torch.from_numpy(d[key])if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
     return ret
@@ -105,7 +105,8 @@ class BaseDataset(Dataset):
 
             org_shape = img.shape[0:2]
             # if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
-            img = transform.resize(img,self.image_size,preserve_range=True)
+            if(not isinstance(self.image_size,type(None))):
+                img = transform.resize(img,self.image_size,preserve_range=True)
             sample = {'image': img}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(self.img_names[idx])

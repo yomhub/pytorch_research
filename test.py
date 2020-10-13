@@ -69,11 +69,14 @@ if __name__ == "__main__":
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     use_dataset = args.dataset.lower()
     max_step = args.step if(not isdebug)else 10
+    image_size=(640,640)
+    batch_size = 4
 
     # For debug
-    load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob.pkl"
-    use_dataset = 'sync'
-    max_step = 10
+    load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_syn.pkl"
+    use_dataset = 'ic15'
+    max_step = 100
+    image_size=(640,640)
     # load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_MOB_Adag/20200819-010649+craft_MOB_normal_adamg.pkl"
     # num_workers=0
     # lr_decay_step_size = None
@@ -88,50 +91,52 @@ if __name__ == "__main__":
     net.float().to(device)
 
     if(use_dataset=="ttt"):
-        train_dataset = Total(
+        test_dataset = Total(
             os.path.join(__DEF_TTT_DIR,'Images','Test'),
             os.path.join(__DEF_TTT_DIR,'gt_pixel','Test'),
             os.path.join(__DEF_TTT_DIR,'gt_txt','Test'),
-            image_size=(640, 640),)
+            image_size=image_size,)
         train_on_real = True
-        x_input_function = train_dataset.x_input_function
+        x_input_function = test_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=="ic15"):
-        train_dataset = ICDAR(
+        test_dataset = ICDAR(
             os.path.join(__DEF_IC15_DIR,'images','test'),
             os.path.join(__DEF_IC15_DIR,'gt_txt','test'),
-            image_size=(640, 640),)
+            image_size=image_size,)
         train_on_real = True
-        x_input_function = train_dataset.x_input_function
+        x_input_function = test_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=='sync'):
-        train_dataset = SynthText(__DEF_SYN_DIR, image_size=(640, 640))
+        test_dataset = SynthText(__DEF_SYN_DIR, image_size=image_size, istrain=False)
         train_on_real = False
-        x_input_function=train_dataset.x_input_function
-        y_input_function=train_dataset.y_input_function
+        x_input_function=test_dataset.x_input_function
+        y_input_function=test_dataset.y_input_function
     elif(use_dataset=='icv15'):
-        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'test'))
+        test_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'test'))
         train_on_real = True
         x_input_function = None
         y_input_function = None
         num_workers = 0
-        batch = 1
+        batch_size = 1
     else:
-        train_dataset = BaseDataset((
+        test_dataset = BaseDataset((
             os.path.join(__DEF_IC15_DIR,'images','test'),
             os.path.join(__DEF_IC19_DIR,'Test'),
             os.path.join(__DEF_TTT_DIR,'Images','Test'),
             __DEF_SVT_DIR,
             ),
-            image_size=(640, 640),
+            image_size=image_size,
             img_only=True)
         train_on_real = True
-        x_input_function = train_dataset.x_input_function
+        x_input_function = test_dataset.x_input_function
         y_input_function = None
 
-    dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, 
+    dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, 
         num_workers=num_workers,
-        pin_memory=True if(num_workers>0)else False)
+        pin_memory=True if(num_workers>0)else False,
+        collate_fn=test_dataset.default_collate_fn,
+        )
     # loss = MSE_OHEM_Loss()
     loss = None
     tester = CRAFTTester
@@ -159,7 +164,7 @@ if __name__ == "__main__":
     print(summarize)
     tester.log_info(summarize)
 
-    tester.loader_test(dataloader,int(len(train_dataset)/args.batch) if(max_step<0)else max_step)
+    tester.loader_test(dataloader,int(len(test_dataset)/args.batch) if(max_step<0)else max_step)
 
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))

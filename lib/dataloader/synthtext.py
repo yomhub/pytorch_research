@@ -14,10 +14,13 @@ def default_collate_fn(batch):
     ret = {}
     for key,value in batch[0].items():
         if(key.lower() in ['box','text']):
+            # List
             ret[key]=[d[key] for d in batch]
         elif(key.lower() in ['box_format']):
-            ret[key]=value
+            # single
+            ret[key]=value[0] if(isinstance(value,list))else value
         else:
+            # stack
             ret[key]=torch.stack([torch.from_numpy(d[key])if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
     return ret
 
@@ -73,15 +76,20 @@ class SynthText(Dataset):
         org_shape = img.shape[:2]
         char_label = self.gt["charBB"][idx].transpose(2, 1, 0).astype(np.float32)
         char_label = np.clip(char_label,0,max(self.image_size))
+        word_label = self.gt["wordBB"][idx].transpose(2, 1, 0).astype(np.float32)
+        word_label = np.clip(word_label,0,max(self.image_size))
         txt_label = self.gt["txt"][idx]
         img = TR.resize(img,self.image_size,preserve_range=True)
 
         if(org_shape!=self.image_size):
             char_label = np_box_resize(char_label,org_shape,self.image_size,'polyxy')
+            word_label = np_box_resize(word_label,org_shape,self.image_size,'polyxy')
 
         if self.random_rote_rate:
             angel = np.random.randint(0-self.random_rote_rate, self.random_rote_rate)
             img, M = cv_rotate(angel, img)
+            char_label = np_polybox_rotate(char_label,M)
+            word_label = np_polybox_rotate(word_label,M)
 
         char_gt = np.zeros(self.image_size)
         aff_gt = np.zeros(self.image_size)
@@ -90,8 +98,7 @@ class SynthText(Dataset):
         char_index = 0
         word_index = 0
         high, width = self.image_size
-        if(self.random_rote_rate):
-            char_label = np_polybox_rotate(char_label,M)
+            
         char_label_xyxy = np_polybox_minrect(char_label,'polyxy')
         dxy = char_label_xyxy[:,2]-char_label_xyxy[:,0]
         for txt in txt_label:
@@ -169,13 +176,14 @@ class SynthText(Dataset):
         #     char_gt = TR.resize(char_gt, (int(img.shape[0]/self.down_rate), int(img.shape[1]/self.down_rate)))
         #     aff_gt = TR.resize(aff_gt, (int(img.shape[0]/self.down_rate), int(img.shape[1]/self.down_rate)))
         sample = {
-            # 'image': img if(self.transform)else self.transform(img),
             'image': img,
             'char_gt': char_gt,
             'aff_gt': aff_gt,
+            'box': word_label,
+            'box_format': 'polyxy',
             # 'affine_boxes': affine_boxes,
             # 'line_boxes': line_boxes,
-            # 'char_label': char_label
+            # 'char_label': char_label,
         }
 
         return sample

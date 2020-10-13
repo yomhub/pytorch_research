@@ -16,7 +16,7 @@ class Trainer():
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
         log_step_size = None, save_step_size = None, 
-        lr_decay_step_size = None, lr_decay_multi = None, auto_decay = False,
+        lr_decay_step_size = None, lr_decay_multi = 0.9, auto_decay = False,
         custom_x_input_function=None,custom_y_input_function=None,
     ):
         self._isdebug = bool(isdebug)
@@ -127,9 +127,9 @@ class Trainer():
                     except Exception as e:
                         print("Save err: {}".format(str(e)))
 
-                if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and self._current_step%self._lr_decay_step_size==0):
+                if(self._lr_decay_step_size!=None and self._lr_decay_step_size>0 and self._lr_decay_rate!=None and (self._current_step+1)%self._lr_decay_step_size==0):
                     try:
-                        self.opt_decay()
+                        self.opt_decay(self._lr_decay_rate)
                     except Exception as e:
                         print("Opt_decay err: {}".format(str(e)))
 
@@ -265,15 +265,14 @@ class Trainer():
             self._f_train_loger.write(info)
             self._f_train_loger.flush()
 
-    def opt_decay(self,decay_rate=None):
+    def opt_decay(self,decay_rate=0.9):
         if(self._opt==None):return
-        decay_rate = decay_rate if(decay_rate!=None)else self._lr_decay_rate
-        decay_rate = decay_rate if(decay_rate!=None)else 0.5
+        decay_rate = decay_rate if(decay_rate!=None)else 0.9
 
         if(self._f_train_loger!=None):
             self._f_train_loger.write(
                 "Change learning rate form {} to {}.\n".format(
                     self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*(1.0-decay_rate)))
         for param_group in self._opt.param_groups:
-            param_group['lr'] *= (1.0-decay_rate)
+            param_group['lr'] *= decay_rate
         return

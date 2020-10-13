@@ -24,15 +24,15 @@ cfg['SAVESTP'] = [100,200,500,5,-1][-2]
 # Optimizer
 cfg['OPT'] = ['sgd','adam'][1]
 # learning rate
-cfg['LR'] = [0.001,3.2768e-5][0]
+cfg['LR'] = [0.001,3.2768e-5][-1]
 # Momentum for sgd (..., momentum = cfg['MMT'])
 cfg['MMT'] = 0.8
 # For optimizer (...,weight_decay = cfg['OPT_DEC'])
 cfg['OPT_DEC'] = 5e-4
 # learning rate decrease step, 0 to disable
-cfg['LR_DEC_STP'] = [0,500][0]
-# learning rate decrease rate: current LR*(1-rt)
-cfg['LR_DEC_RT'] = [0.2,0.1][1]
+cfg['LR_DEC_STP'] = [0,500,300,150][-1]
+# learning rate decrease rate: current LR*rt
+cfg['LR_DEC_RT'] = [0.8,0.9][1]
 
 cfg['NET'] = ['craft', 'craft_mob', 'craft_lstm', 'craft_motion'][-2]
 
