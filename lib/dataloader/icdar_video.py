@@ -17,7 +17,7 @@ def read_boxs(fname:str,fm:str='xyxy'):
         for box in frame:
             # box.attrib['Transcription']=='##DONT#CARE##'
             # box.attrib['Quality']=='LOW'
-            if(fm.lower()=='poly'):
+            if('poly' in fm.lower()):
                 tmp.append(
                     (int(box.attrib['ID']),
                     int(box[0].attrib['x']),int(box[0].attrib['y']),

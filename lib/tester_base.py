@@ -96,8 +96,8 @@ class Tester():
                 # x = torch.cat((x,noisy),dim=2)
                 with torch.no_grad():
                     pred = self._net(x)
-                loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
-                cryt = self._criterion(pred,sample)
+                    loss = self._loss(pred,y) if(self._loss!=None and y!=None)else None
+                cryt = self._criterion(x,pred,sample)
                 self._step_callback(sample,x,y,pred,loss.item()if(loss!=None)else None,cryt,self._current_step,batch_size)
 
                 if(not(self._isdebug) and self._log_step_size!=None and self._log_step_size>0 and self._current_step%self._log_step_size==0):
@@ -125,7 +125,7 @@ class Tester():
         return None
     def _step_callback(self,sample,x,y,pred,loss,cryt,step,batch_size):
         return None
-    def _criterion(self,pred,sample):
+    def _criterion(self,x,pred,sample):
         return None
         
     def get_net_size(self):

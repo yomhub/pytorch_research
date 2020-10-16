@@ -6,12 +6,13 @@ import numpy as np
 import cv2
 from torch.utils.tensorboard import SummaryWriter
 from skimage import transform as TR
+from skimage import transform
+from matplotlib import path
 # =================Local=======================
 from lib.trainer_base import Trainer
 from lib.tester_base import Tester
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import save_image
-from skimage import transform
 
 class CRAFTTrainer(Trainer):
     def __init__(self,  
@@ -235,14 +236,16 @@ class CRAFTTrainer(Trainer):
                 if(len(pred_list)<10 and fm_cnt%30==0):
                     pred_list.append(pred.detach().to('cpu'))
                 loss = self._loss(pred,y)
+                box_cnt = 0
                 if(idx>0):
                     pred_aff_map = pred[:,2:].to('cpu')
                     ch,af = gt[:,0].to('cpu').numpy(),gt[:,1].to('cpu').numpy()
                     word_map = np.where(ch>af,ch,af)
+                    # dst = t, src = t-1
                     dst,src = pointsxy[p_keys[idx]],pointsxy[p_keys[idx-1]]
                     src_box = []
                     dst_box = []
-                    box_cnt = 0
+                    loss_box = 0.0
                     for box in dst:
                         ind = np.where(box[0]==src[:,0])[0]
                         if(ind.shape[0]):
@@ -251,31 +254,59 @@ class CRAFTTrainer(Trainer):
                     if(src_box):
                         src_box = np_box_resize(np.array(src_box),im_size,ch.shape[-2:],'polyxy')
                         dst_box = np_box_resize(np.array(dst_box),im_size,ch.shape[-2:],'polyxy')
+                        det_box = np.sum(np.abs(src_box-dst_box),axis=(-1,-2))
+                        if(det_box.max()>=2.0):
+                            aff_list_up, _ = cv_box_moving_vector(dst_box[:,(0,1,3)],src_box[:,(0,1,3)])
+                            aff_list_dw, _ = cv_box_moving_vector(dst_box[:,(1,2,3)],src_box[:,(1,2,3)])
+                            # aff_list = aff_list.reshape((-1,6))
+                            # N,2,3
+                            aff_list_up = aff_list_up.astype(np.float32)
+                            aff_list_dw = aff_list_dw.astype(np.float32)
+                            
+                            for i in range(dst_box.shape[0]):
+                                if(det_box[i]<=1.0):
+                                    continue
+                                x1= np.clip(dst_box[i,:,0].min(),0,ch.shape[-1]-1)
+                                x2= np.clip(dst_box[i,:,0].max(),0,ch.shape[-1])
+                                y1= np.clip(dst_box[i,:,1].min(),0,ch.shape[-2]-1)
+                                y2= np.clip(dst_box[i,:,1].max(),0,ch.shape[-2])
+                                if((int(x2)-int(x1))*(int(y2)-int(y1))<=0):
+                                    continue
+                                tri_up = path.Path(dst_box[i,(0,1,3),:])
+                                # tri_dw = path.Path(dst_box[i,(1,2,3),:])
+                                dx = np.linspace(x1,x2,int(x2)-int(x1),dtype=np.float32)
+                                dy = np.linspace(y1,y2,int(y2)-int(y1),dtype=np.float32)
+                                dx,dy = np.meshgrid(dx,dy)
+                                # (len_dy,len_dx,3)-x,y,1
+                                ds = np.stack([dx,dy,np.ones_like(dy)],-1)
+                                # (len_dy,3,len_dx)
+                                ds_t = np.moveaxis(ds,-1,-2)
+                                # (2,len_dy,len_dx)
+                                sr_up = aff_list_up[i].dot(ds_t)
+                                sr_dw = aff_list_dw[i].dot(ds_t)
+                                # (len_dy,len_dx,2)
+                                sr_up = np.moveaxis(sr_up,0,-1)
+                                sr_dw = np.moveaxis(sr_dw,0,-1)
 
-                        aff_list, _ = cv_box_moving_vector(src_box,dst_box)
-                        aff_list = aff_list.reshape((-1,6))
-                        # (N,1,6,1,1)
-                        aff_list = torch.tensor(np.expand_dims(aff_list,(1,3,4)).astype(np.float32),requires_grad=True)
-                        loss_box = 0.0
-                        odet, labels, mapper = cv_getDetCharBoxes_core(word_map[0])
-                        labels = torch.from_numpy(labels)
-                        for i in range(dst_box.shape[0]):
-                            x1= int(np.clip(dst_box[i,:,0].min(),0,ch.shape[-1]-1))
-                            x2= max(int(np.clip(dst_box[i,:,0].max(),0,ch.shape[-1])),x1+1)
-                            y1= int(np.clip(dst_box[i,:,1].min(),0,ch.shape[-2]-1))
-                            y2= max(int(np.clip(dst_box[i,:,1].max(),0,ch.shape[-2])),y1+1)
-
-                            if(torch.max(labels[y1:y2,x1:x2])>0):
-                                sub_labels = labels[y1:y2,x1:x2].reshape(-1)
-                                sub_map = pred_aff_map[0,:,y1:y2,x1:x2].permute(1,2,0).reshape((-1,6))
-                                post = torch.abs(torch.masked_select(sub_map,sub_labels.reshape((-1,1))>0).reshape((-1,6))-aff_list[i].reshape(-1))
-                                post = torch.sum(post,dim=-1)
-                                loss_box+=torch.mean(post).data
-                                box_cnt+=1
+                                gt = np.where(
+                                    tri_up.contains_points(ds[:,:,:2].reshape(-1,2)).reshape(ds.shape[0],ds.shape[1],1),
+                                    sr_up-ds[:,:,:2],sr_dw-ds[:,:,:2])
+                                x1,x2,y1,y2=int(x1),int(x2),int(y1),int(y2)
+                                gt = torch.from_numpy(gt)
+                                # (2,len_dy,len_dx)->(len_dy,len_dx,2) on cpu
+                                sub_map = pred_aff_map[0,:2,y1:y2,x1:x2].permute(1,2,0)
+                                sub_map = torch.sum(torch.abs(sub_map-gt),dim=-1)
+                                loss_box += torch.mean(sub_map)
+                                box_cnt += 1
                         if(box_cnt>0):
                             loss_box/=box_cnt
-                        if(loss_box>0.0):
-                            loss+=loss_box
+                    try:
+                        self._f_train_loger.write("Mask loss:{}, Box loss:{}.\n".format(loss,loss_box))
+                        self._f_train_loger.flush()
+                    except:
+                        None
+                    if(loss_box>0.0):
+                        loss+=loss_box
                     loss.backward(retain_graph=True)
                     loss_list.append(loss.item())
                     self._opt.step()
@@ -285,7 +316,7 @@ class CRAFTTrainer(Trainer):
                     # self._net.lstmh.grad.data.zero_()
                     # self._net.lstmc.grad.data.zero_()
                     b_wait_for_flash = bool(fm_cnt%flush_stp==0) or b_wait_for_flash
-                    if((b_wait_for_flash and box_cnt==0) or fm_cnt%(flush_stp*2)==0 or idx==-1 or len(src_box)==0):
+                    if(idx==-1 or (b_wait_for_flash and box_cnt==0) or fm_cnt%(flush_stp*2)==0 or len(src_box)==0):
                         self._net.lstmh.detach_()
                         self._net.lstmc.detach_()
                         b_wait_for_flash=False
@@ -311,44 +342,60 @@ class CRAFTTester(Tester):
     def __init__(self,**params):
         # ICDAR threshold is 0.5, https://rrc.cvc.uab.es/?ch=15&com=tasks
         self._box_ovlap_th = 0.5
+        self.score_list = []
         super(CRAFTTester,self).__init__(**params)
 
     def _step_callback(self,sample,x,y,pred,loss,cryt,step,batch_size):
         if(isinstance(pred,tuple)):
             pred = pred[0]
+        self.score_list.append(cryt)
         image = sample['image']
+        box_format = sample['box_format'] if(isinstance(sample['box_format'],str))else sample['box_format'][0]
         pred = pred.to('cpu').detach().numpy()
-        scale = (x.shape[2]/pred.shape[2],x.shape[3]/pred.shape[3])
+        scale = (pred.shape[2]/x.shape[2],pred.shape[3]/x.shape[3])
         x = x.permute(0,2,3,1).to('cpu').detach().numpy().astype(np.uint8)
-        if(self._file_writer==None):return None
         if(loss!=None): self._file_writer.add_scalar('Loss/test', loss, step)
         if(not isinstance(cryt,type(None))):
             recal,prec,f = np.mean(cryt,axis=0)
-            self._file_writer.add_scalar('Recall/test', recal, step)
-            self._file_writer.add_scalar('Precision/test', prec, step)
-            self._file_writer.add_scalar('F-mean/test', f, step)
-        lines = np.ones((pred.shape[2],5,3))*255.0
-        lines = lines.astype(x.dtype)
-        wods = np.sum(pred,1)
-        for batch,wod in enumerate(wods):
-            odet, labels, mapper = cv_getDetCharBoxes_core(wod)
-            # frame = x[batch]
-            frame = image[batch].numpy().astype(np.uint8)
-            # frame = np.pad(frame,((0,640-frame.shape[0]),(0,0),(0,0)), 'constant',constant_values=0)
-            ch = cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1))
-            af = cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1))
-                
-            if(odet.size>0):
-                odet = np_box_rescale(odet,scale,'polyxy')
-                frame = cv_draw_poly(frame,odet)
-                
-            frame = cv2.resize(frame,ch.shape[:2]).astype(np.uint8)
-            img = np.concatenate((frame,lines,ch,lines,af),axis=-2)
-            save_image(os.path.join(self._logs_path,'{:05d}_im_ch_af.jpg'.format(step*batch_size+batch)),img)
+            self._f_train_loger.write("Recall|Precision|F-mean|step: {}, {}, {}, {}\n".format(recal,prec,f,step))
+            self._f_train_loger.flush()
+            if(self._file_writer):
+                self._file_writer.add_scalar('Recall/test', recal, step)
+                self._file_writer.add_scalar('Precision/test', prec, step)
+                self._file_writer.add_scalar('F-mean/test', f, step)
+
+        if(not self._isdebug and len(os.listdir(self._logs_path))<12):
+            lines = np.ones((pred.shape[2],5,3))*255.0
+            lines = lines.astype(x.dtype)
+            wods = np.sum(pred,1)
+            for batch,wod in enumerate(wods):
+                odet, labels, mapper = cv_getDetCharBoxes_core(wod)
+                # frame = x[batch]
+                frame = image[batch].numpy().astype(np.uint8)
+                # frame = np.pad(frame,((0,640-frame.shape[0]),(0,0),(0,0)), 'constant',constant_values=0)
+                ch = cv_heatmap(np.expand_dims(pred[batch,0,:,:],-1))
+                af = cv_heatmap(np.expand_dims(pred[batch,1,:,:],-1))
+                frame = cv2.resize(frame,ch.shape[:2]).astype(np.uint8)
+
+                try:
+                    gtbox = sample['box'][batch].numpy()
+                except:
+                    gtbox = sample['box'][batch]
+
+                if('poly' not in box_format):
+                    gtbox = cv_box2cvbox(gtbox,sample['image'].shape[1:-1],box_format)
+                gtbox = np_box_rescale(gtbox,scale,'polyxy')
+
+                if(odet.size>0):
+                    frame = cv_draw_poly(frame,odet,color=(0,255,0))
+                    
+                frame = cv_draw_poly(frame,gtbox,color=(255,0,0))
+                img = np.concatenate((frame,lines,ch,lines,af),axis=-2)
+                save_image(os.path.join(self._logs_path,'{:05d}_im_ch_af.jpg'.format(step*batch_size+batch)),img)
 
         return None
 
-    def _criterion(self,pred,sample):
+    def _criterion(self,x,pred,sample):
         """
         Given a batch prediction and sample
         Return:
@@ -364,7 +411,10 @@ class CRAFTTester(Tester):
         miss_corr = []
 
         for bh in range(chmap.shape[0]):
-            odet, labels, mapper = cv_getDetCharBoxes_core(chmap[bh],segmap[bh])
+            odet, labels, mapper = cv_getDetCharBoxes_core(chmap[bh]+segmap[bh])
+            if(odet.shape[0]==0):
+                miss_corr.append((0.0,0.0,0.0))
+                continue
             try:
                 gtbox = sample['box'][bh].numpy()
             except:
@@ -376,9 +426,16 @@ class CRAFTTester(Tester):
             else:
                 gtbox = np_polybox_minrect(gtbox,box_format)
 
+            gtbox = np_box_resize(gtbox,x.shape[2:],pred.shape[2:],'polyxy')
             ovlaps = []
             fp = 0
             gtbox_grp = gtbox
+            # (gt,pred)
+            # ovlap = cv_box_overlap(gtbox,odet)
+            # ovlap = np.where(ovlap>=self._box_ovlap_th,1,0)
+            # def max_rote(cur_val,sub_mtx):
+            #     max_rote(cur_val,)
+
             for i in range(odet.shape[0]):
                 ovlap = cv_box_overlap(gtbox_grp,odet[i])
                 ovlap = ovlap.reshape(-1)
@@ -386,6 +443,8 @@ class CRAFTTester(Tester):
                 if(ovlap[ind]>self._box_ovlap_th):
                     ovlaps.append(ovlap[ind])
                     gtbox_grp = np.delete(gtbox_grp,ind,axis=0)
+                    if(gtbox_grp.shape[0]==0):
+                        break
                 else:
                     fp+=1
 

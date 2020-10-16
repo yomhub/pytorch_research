@@ -57,7 +57,7 @@ def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     """
     if(not isinstance(new_size,Iterable)):
         new_size = (int(new_size),int(new_size))
-
+    if(org_size==new_size):return box
     return np_box_rescale(box,np.divide(new_size,org_size),box_format)
 
 def np_box_rescale(box,scale,box_format:str):
@@ -130,10 +130,10 @@ def np_polybox_rotate(cv_polybox,M):
     cv_polybox = np.pad(cv_polybox,[(0,0),(0,0),(0,1)],constant_values=1)
     # change axis from (boxs,points,3) to (boxs,3,points)
     cv_polybox = np.moveaxis(cv_polybox,-1,1)
-    # (2,3) dot (boxs,3,points) = (boxs,2,points)
+    # (2,3) dot (boxs,3,points) = (2,boxs,points)
     ret = M.dot(cv_polybox)
-    # change (boxs,2,points) to (boxs,points,2)
-    ret = np.moveaxis(ret,1,-1)
+    # change (2,boxs,points) to (boxs,points,2)
+    ret = np.moveaxis(ret,0,-1)
     return ret
 
 def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
@@ -334,7 +334,7 @@ def cv_box_overlap(boxes1,boxes2):
         boxes1: ((N1),2,4) CV coordinate
         boxes1: ((N2),2,4) CV coordinate
     Return:
-        overlap: (N1,N2) array, -1 for non-overlap
+        overlap: (N1,N2) array, 0.0 for non-overlap
     """
     if(len(boxes1.shape)==2):boxes1 = np.expand_dims(boxes1,0)
     if(len(boxes2.shape)==2):boxes2 = np.expand_dims(boxes2,0)
@@ -344,7 +344,8 @@ def cv_box_overlap(boxes1,boxes2):
         p1 = Polygon(b1)
         for b2 in boxes2:
             p2 = Polygon(b2)
-            tmp.append(p1.intersection(p2).area if(p1.intersects(p2))else -1.0)
+            a = p1.intersection(p2).area
+            tmp.append(a/(p1.area+p2.area-a) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
     return np.array(ans)
 
@@ -653,14 +654,14 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
     """
     Calculate pixel level box moving vector
     Args:
-        cv_src_box: sorce boxes (t-1) in cv coordinate, (N,4,2)
-        cv_dst_box: dest boxes (t) in cv coordinate, (N,4,2)
+        cv_src_box: sorce boxes (t-1) in cv coordinate, (N,3+,2)
+        cv_dst_box: dest boxes (t) in cv coordinate, (N,3+,2)
             The shape of cv_src_box and cv_dst_box MUST be same
             and the box label is same in axis 0
         image_size: int/float or (h,w) or None
 
     Return:
-        matrix_list: list of affine matrix
+        matrix_arr: (N,2,3) array of affine matrix
         matrix_map: affine matrix in pixel level, (h,w,6)
             or None if image_size is none
     """

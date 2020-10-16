@@ -9,7 +9,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # =================Local=======================
-from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION
+from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LSTM
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import ICDAR
@@ -74,11 +74,11 @@ if __name__ == "__main__":
     log_step_size = args.logstp
 
     # For Debug config
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_syn.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
     # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
     # isdebug = True
     # use_net = 'craft_mob'
-    # use_dataset = 'all'
+    # use_dataset = 'minetto'
     # log_step_size = 1
     # use_cuda = False
     # num_workers=0
@@ -92,7 +92,9 @@ if __name__ == "__main__":
         net = CRAFT_LSTM()
     elif(use_net=='craft_motion'):
         net = CRAFT_MOTION()
-
+    elif(use_net=='craft_vgg_lstm'):
+        net = CRAFT_VGG_LSTM()
+        
     net = net.float().to("cuda:0" if(use_cuda)else "cpu")
     
     if(args.opt.lower()=='adam'):
@@ -191,7 +193,7 @@ if __name__ == "__main__":
         "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
         "\t Init learning rate: {}.\n".format(lr)+\
         "\t Learning rate decay rate: {}.\n".format(tcfg['OPT_DEC'] if(tcfg['OPT_DEC']>0)else "Disabled")+\
-        "\t Learning rate decay step: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
+        "\t Learning rate decay step: {}.\n".format(lr_decay_step_size if(lr_decay_step_size)else "Disabled")+\
         "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
         "\t Teacher: {}.\n".format(teacher_pkl_dir)+\
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\

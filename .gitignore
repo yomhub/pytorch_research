@@ -28,3 +28,6 @@ elog
 /elog
 **/elog
 !pythonenv.txt
+eval
+/eval
+**/eval

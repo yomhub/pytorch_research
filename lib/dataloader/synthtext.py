@@ -76,8 +76,13 @@ class SynthText(Dataset):
         org_shape = img.shape[:2]
         char_label = self.gt["charBB"][idx].transpose(2, 1, 0).astype(np.float32)
         char_label = np.clip(char_label,0,max(self.image_size))
-        word_label = self.gt["wordBB"][idx].transpose(2, 1, 0).astype(np.float32)
+
+        if(len(self.gt["wordBB"][idx].shape)==3):
+            word_label = self.gt["wordBB"][idx].transpose(2, 1, 0).astype(np.float32)
+        else:
+            word_label = np.expand_dims(self.gt["wordBB"][idx],-1).transpose(2, 1, 0).astype(np.float32)
         word_label = np.clip(word_label,0,max(self.image_size))
+
         txt_label = self.gt["txt"][idx]
         img = TR.resize(img,self.image_size,preserve_range=True)
 

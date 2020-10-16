@@ -18,17 +18,27 @@ def read_xml(xml_dir,target_fmt:str = 'xywh'):
         box_list = []
         txt_list = []
         for box in frame[2]:
-            box_list.append([
-                    float(box.attrib['id']),
-                    float(box.attrib['x']),
-                    float(box.attrib['y']),
-                    float(box.attrib['w']),
-                    float(box.attrib['h']),
-                ])
+            if('poly' in target_fmt.lower()):
+                box_list.append([
+                        float(box.attrib['id']),
+                        float(box.attrib['x']),float(box.attrib['y']),
+                        float(box.attrib['x'])+float(box.attrib['w']),float(box.attrib['y']),
+                        float(box.attrib['x'])+float(box.attrib['w']),float(box.attrib['y'])+float(box.attrib['h']),
+                        float(box.attrib['x']),float(box.attrib['y'])+float(box.attrib['h']),
+                    ])
+            else:
+                box_list.append([
+                        float(box.attrib['id']),
+                        float(box.attrib['x']),
+                        float(box.attrib['y']),
+                        float(box.attrib['w']),
+                        float(box.attrib['h']),
+                    ])
             txt_list.append(box.attrib['text'])
         box_list = np.asarray(box_list,dtype=np.float32)
-        if(target_fmt.lower()!='xywh'):
+        if('poly' not in target_fmt.lower()):
             box_list = np_box_transfrom(box_list,'xywh',target_fmt.lower())
+        
         box_dict[fid] = box_list
         txt_dict[fid] = txt_list
     return box_dict,txt_dict
@@ -37,7 +47,7 @@ def default_collate_fn(batch):
     return batch[0]
 
 class Minetto():
-    def __init__(self, vdo_dir, out_box_format='xywh'):
+    def __init__(self, vdo_dir, out_box_format='polyxy',include_name=True):
         self._vdo_dir = vdo_dir
         self._names = [o for o in os.listdir(self._vdo_dir) if os.path.exists(os.path.join(self._vdo_dir,o,'PNG'))]
         self._include_name = bool(include_name)

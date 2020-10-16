@@ -8,6 +8,7 @@ from datetime import datetime
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
+import numpy as np
 # =================Local=======================
 from lib.model.craft import CRAFT,CRAFT_MOB
 from lib.loss.mseloss import MSE_OHEM_Loss
@@ -56,9 +57,10 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt/ic15.', default=tcfg['DATASET'])
     parser.add_argument('--datax', type=int, help='Dataset output width.',default=tcfg['IMG_SIZE'][0])
     parser.add_argument('--datay', type=int, help='Dataset output height.',default=tcfg['IMG_SIZE'][1])
-    parser.add_argument('--step', type=int, help='Step size.',default=5)
+    parser.add_argument('--step', type=int, help='Step size.',default=-1)
     parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
     parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=1)
+    parser.add_argument('--batch', type=int, help='Batch size.',default=4)
 
     args = parser.parse_args()
     load_dir = args.load
@@ -68,19 +70,18 @@ if __name__ == "__main__":
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     use_dataset = args.dataset.lower()
-    max_step = args.step if(not isdebug)else 10
+    max_step = args.step
     image_size=(640,640)
-    batch_size = 4
+    batch_size = args.batch
 
     # For debug
-    load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_syn.pkl"
-    use_dataset = 'ic15'
-    max_step = 100
-    image_size=(640,640)
+    # isdebug = True
+    # load_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_syn.pkl"
+    # use_dataset = 'sync'
+    # max_step = 10
     # load_dir = "/BACKUP/yom_backup/saved_model/CRAFT_MOB_Adag/20200819-010649+craft_MOB_normal_adamg.pkl"
     # num_workers=0
     # lr_decay_step_size = None
-    # isdebug = True
 
     if(load_dir and os.path.exists(load_dir)):
         net = torch.load(load_dir)
@@ -164,8 +165,10 @@ if __name__ == "__main__":
     print(summarize)
     tester.log_info(summarize)
 
-    tester.loader_test(dataloader,int(len(test_dataset)/args.batch) if(max_step<0)else max_step)
-
+    tester.loader_test(dataloader,len(test_dataset)//args.batch if(max_step<0)else max_step)
+    score = np.array(tester.score_list)
+    score = np.mean(score,axis=0)
+    tester.log_info("AVG R|P|F: {}\n".format(score))
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
     time_usage = time_usage - time_start
