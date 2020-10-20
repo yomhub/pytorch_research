@@ -214,23 +214,6 @@ def np_box_nor(box:np.ndarray,image_size:tuple,box_format:str)->np.ndarray:
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
-def np_corp_points(points:np.ndarray,ret_cod_len:int=4):
-    """
-    Corp 4 points to rectangle box
-    Args:
-        points: (N,4,2) numpy with (x,y) coordinate
-    Return:
-        boxes: (N,4,2) numpy with (x,y) with ret_cod_len=2
-        boxes: (N,4) numpy with (x1,y1,x2,y2) with ret_cod_len=4
-    """
-    points = points.copy()
-    minx = np.min(points[:,:,0],keepdims=0)
-    miny = np.min(points[:,:,1],keepdims=0)
-    maxx = np.max(points[:,:,0],keepdims=0)
-    maxy = np.max(points[:,:,1],keepdims=0)
-    return np.array([minx,miny,maxx,maxy]) if(ret_cod_len==4)else \
-        np.array([[minx,miny],[maxx,miny],[maxx,maxy],[minx,maxy]])
-
 def np_img_resize(img:np.ndarray,new_size=None,base_divisor=None):
     """
     Resize and crop image
@@ -316,6 +299,43 @@ def cv_gaussian_kernel_2d(kernel_size = (3, 3)):
     ky = cv2.getGaussianKernel(int(kernel_size[0]), int(kernel_size[0] / 4))
     kx = cv2.getGaussianKernel(int(kernel_size[1]), int(kernel_size[1] / 4))
     return np.multiply(ky, np.transpose(kx))
+
+def cv_fill_by_box(img, src_box, dst_box, out_size):
+    """
+    Fill image from source box region to destination box region
+    Args:
+        img: (h,w) image
+        src_box: (4,2) in (x,y) coordnate
+        dst_box: (4,2) in (x,y) coordnate
+        out_size: (new_h,new_w)
+    Return:
+        img: (new_h,new_w) image
+    """
+    src_box = src_box.astype(np.float32)
+    dst_box = dst_box.astype(np.float32)
+    det = src_box[0].copy()
+    M = cv2.getPerspectiveTransform(src_box-det, dst_box-det)
+    res = cv2.warpPerspective(img, M, (int(out_size[1]), int(out_size[0])))
+    return res
+
+def cv_create_affine_boxes(boxs):
+    """
+    boxs: (N,4,2) with (x,y)
+    Return:
+        affin boxes: (N-1,4,2)
+    """
+    sp = boxs[:-1]
+    top_center = (sp[:,1]+sp[:,0])/2.0
+    bot_center = (sp[:,3]+sp[:,2])/2.0
+    up_cent_sp = bot_center + (top_center-bot_center)*0.75
+    dw_cent_sp = bot_center + (top_center-bot_center)*0.25
+    ep = boxs[1:]
+    top_center = (ep[:,1]+ep[:,0])/2.0
+    bot_center = (ep[:,3]+ep[:,2])/2.0
+    up_cent_ep = bot_center + (top_center-bot_center)*0.75
+    dw_cent_ep = bot_center + (top_center-bot_center)*0.25
+
+    return np.stack([up_cent_sp,up_cent_ep,dw_cent_ep,dw_cent_sp],axis=1)
 
 def cv_rotate(angle, image):
     """
@@ -579,6 +599,28 @@ def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, color=(255, 255, 255))
     return image
 
+def cv_mask_image(image,mask,rate:float=0.7):
+    """
+    Mask single image.
+    Args:
+        image: (h1,w1,3 or 1) in np.int8
+        mask: (h2,w2,(1)) np.float or (h2,w2,3) in np.int8
+    Return:
+        image: (h2,w2,3 or 1)
+    """
+    rate = min(max(0.1,rate),0.9)
+    if(image.shape[-1]==1):
+        image = np.broadcast_to(image,(image.shape[0],image.shape[1],3))
+    if(len(mask.shape)==2 or mask.dtype!=np.uint8):
+        mask = cv_heatmap(mask)
+    
+    image = image.astype(np.uint8)
+    mask = mask.astype(np.uint8)
+    if(image.shape!=mask.shape):
+        image = cv2.resize(image,(mask.shape[1],mask.shape[0])).astype(np.uint8)
+
+    return cv2.addWeighted(image,rate,mask,1.0-rate,0)
+
 def cv_heatmap(img,clr = cv2.COLORMAP_JET):
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
@@ -683,7 +725,143 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
 
     return np.array(matrix_list),matrix_map
 
+def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
+    """
+    Generate text level gaussian distribution
+    Parameters:
+        cv_boxes: ((box number),points number,2) in (x,y). Points number MUST be even
+        texts: list of str
+        img_size: tuple of (h,w)
+        ch_mask: if not None, generator will add the gaussian distribution on mask
+        af_mask: if not None, generator will add the gaussian distribution on mask
+        affin: True to generate af_mask
+    Return:
+        ch_mask, af_mask: (h,w) mask on np.float32
+        ch_boxes_list: list of character level box [(k,4,2) or None], same lenth with texts
+        aff_boxes_list: list of character level affin box [(k-1,4,2) or None], same lenth with texts
+    """
+    if(len(cv_boxes.shape)==2):
+        cv_boxes = np.expand_dims(cv_boxes,0)
+    assert cv_boxes.shape[1]%2==0
+    if(not isinstance(img_size,Iterable)):
+        img_size = (int(img_size),int(img_size))
+    if(isinstance(ch_mask,type(None))):
+        ch_mask = np.zeros(img_size,dtype=np.float32)
+    elif(len(ch_mask.shape)==3):
+        ch_mask = ch_mask[:,:,0]
+    if(affin):
+        if(isinstance(af_mask,type(None))):
+            af_mask = np.zeros(img_size,dtype=np.float32)
+        elif(len(af_mask.shape)==3):
+            af_mask = af_mask[:,:,0]
+    cv_boxes = cv_boxes.copy()
+    ch_boxes_list = []
+    aff_boxes_list = []
 
+    for bxi in range(cv_boxes.shape[0]):
+        box = cv_boxes[bxi]
+        txt = texts[bxi].strip()
+        total_len = len(txt)
+        ch_boxes = [] # (k,4,2)
+        # Generate character level boxes
+        if(box.shape[0]==4):
+            # rectangle
+            up_dxy = np.linspace(box[0],box[1],total_len+1)
+            dw_dxy = np.linspace(box[3],box[2],total_len+1)
+            for txi in range(total_len):
+                if(txt[txi] in ' '):
+                    continue
+                elif(txt[txi] in '._,'):
+                    # 
+                    ch_boxes.append(((up_dxy[txi]+dw_dxy[txi])/2,(up_dxy[txi+1]+dw_dxy[txi+1])/2,dw_dxy[txi+1],dw_dxy[txi]))
+                else:
+                    ch_boxes.append((up_dxy[txi],up_dxy[txi+1],dw_dxy[txi+1],dw_dxy[txi]))
+        else:
+            det_list = []
+            total_det = 0
+            # calculate center line length
+            for j in range(box.shape[0]//2-1):
+                up = box[j+1] - box[j]
+                dw = box[-j-1] - box[-j]
+                det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
+                total_det+=max(det)
+                det_list.append(det)
+            # single text lenth
+            single_len = total_det/total_len
+            txi = 0
+            last_length = 0.0
+            last_ps = None
+            for j in range(len(det_list)):
+                # Skip small segment 
+                if(det_list[j]+last_length<=single_len):
+                    last_length+=det_list[j]
+                    if(not isinstance(last_ps,type(None))):
+                        last_ps = np.array((box[j],box[-j]))
+                    continue
+                
+                if(last_length>0.0):
+                    bx_len
+                else:
+                    bx_len = det_list[j]
+                divs = int(bx_len/single_len)
+                res += bx_len - single_len*divs
+                perc = 1-res/bx_len
+                up_line = box[j+1] - box[j]
+                dw_line = box[-j-1] - box[-j]
+                # (2,2) last points
+                last_ps = np.array((up_line*perc,dw_line*perc))
+                up_dxy = np.linspace(box[0],box[1],total_len+1)
+                last_length = res
+
+        ch_boxes = np.array(ch_boxes) # (k,4,2)
+        if(ch_boxes.shape[0]==0):
+            ch_boxes_list.append(None)
+            aff_boxes_list.append(None)
+            continue
+        ch_boxes_list.append(ch_boxes)
+
+        # draw gaussian mask
+        ch_boxes_rec = np_polybox_minrect(ch_boxes,'polyxy')
+        dxy = ch_boxes_rec[:,2]-ch_boxes_rec[:,0]
+        # Generate chmask
+        for chi in range(ch_boxes.shape[0]):
+            deta_x, deta_y = dxy[chi].astype(np.int16)
+            min_x = max(int(ch_boxes_rec[chi,0,0]),0)
+            min_y = max(int(ch_boxes_rec[chi,0,1]),0)
+
+            gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            res = cv_fill_by_box(gaussian, ch_boxes_rec[chi], ch_boxes[chi],(deta_y,deta_x))
+            max_v = np.max(res)
+            if(max_v > 0):
+                res/=max_v
+                sub_mask = ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
+                sub_mask = np.where(sub_mask>res,sub_mask,res)
+                ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
+        # Affin mask
+        if(not affin):
+            continue
+        if(ch_boxes.shape[0]<=1):
+            aff_boxes_list.append(None)
+            continue
+        aff_boxes = cv_create_affine_boxes(ch_boxes)
+        aff_boxes_list.append(aff_boxes)
+        aff_boxes_rec = np_polybox_minrect(aff_boxes,'polyxy')
+        dxy = aff_boxes_rec[:,2]-aff_boxes_rec[:,0]
+        for afi in range(aff_boxes.shape[0]):
+            deta_x, deta_y = dxy[afi].astype(np.int16)
+            min_x = max(int(aff_boxes_rec[afi,0,0]),0)
+            min_y = max(int(aff_boxes_rec[afi,0,1]),0)
+
+            gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            res = cv_fill_by_box(gaussian, aff_boxes_rec[afi], aff_boxes[afi],(deta_y, deta_x))
+            max_v = np.max(res)
+            if(max_v > 0):
+                res/=max_v
+                sub_mask = af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
+                sub_mask = np.where(sub_mask>res,sub_mask,res)
+                af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
+    
+    return ch_mask,af_mask,ch_boxes_list,aff_boxes_list
 # 
 # ===============================================
 # ==================== Class ====================

@@ -298,10 +298,10 @@ class CRAFTTrainer(Trainer):
                                 sub_map = torch.sum(torch.abs(sub_map-gt),dim=-1)
                                 loss_box += torch.mean(sub_map)
                                 box_cnt += 1
-                        if(box_cnt>0):
-                            loss_box/=box_cnt
+                        # if(box_cnt>0):
+                        #     loss_box/=box_cnt
                     try:
-                        self._f_train_loger.write("Mask loss:{}, Box loss:{}.\n".format(loss,loss_box))
+                        self._f_train_loger.write("Mask loss:{}, Box loss:{}, Frame: {}.\n".format(loss,loss_box,fm_cnt+1))
                         self._f_train_loger.flush()
                     except:
                         None
@@ -315,11 +315,13 @@ class CRAFTTrainer(Trainer):
                     # self._net.lstmc = self._net.lstmc.detach()
                     # self._net.lstmh.grad.data.zero_()
                     # self._net.lstmc.grad.data.zero_()
-                    b_wait_for_flash = bool(fm_cnt%flush_stp==0) or b_wait_for_flash
-                    if(idx==-1 or (b_wait_for_flash and box_cnt==0) or fm_cnt%(flush_stp*2)==0 or len(src_box)==0):
+                    b_wait_for_flash = bool((fm_cnt+1)%flush_stp==0) or b_wait_for_flash
+                    if(idx==-1 or (b_wait_for_flash and box_cnt==0) or (fm_cnt+1)%(flush_stp*2)==0 or len(src_box)==0):
                         self._net.lstmh.detach_()
                         self._net.lstmc.detach_()
                         b_wait_for_flash=False
+                        self._f_train_loger.write("Delete gradient.")
+                        self._f_train_loger.flush()
                 except:
                     None
                 fm_cnt += 1

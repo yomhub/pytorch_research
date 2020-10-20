@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
 from skimage import transform as TR
-from lib.utils.img_hlp import np_corp_points, to_torch
+from lib.utils.img_hlp import to_torch
 try:
     import datautils
 except:

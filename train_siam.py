@@ -3,13 +3,17 @@ import sys
 import platform
 import torch
 import argparse
+from tqdm import tqdm
 from datetime import datetime
 # =================Torch=======================
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
+from skimage import transform
+import cv2
 # =================Local=======================
 from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LSTM
+from lib.model.siamfc import conv2d_dw_group
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import ICDAR
@@ -17,7 +21,7 @@ from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
 from lib.dataloader.synthtext import SynthText
-from lib.utils.img_hlp import RandomScale
+from lib.utils.img_hlp import *
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
@@ -36,6 +40,128 @@ __DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
 if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
+
+def train_siam(loader,net,opt,criteria,device,train_size,img_size = (640,640)):
+    with tqdm(total=train_size) as pbar:
+        for batch,sample in enumerate(loader):
+            im_size = (sample['height'],sample['width'])
+            pxy_dict = sample['gt']
+            txt_dict = sample['txt']
+            p_keys = list(pxy_dict.keys())
+            p_keys.sort()
+            vdo = sample['video']
+            fm_cnt = 0
+
+            # for character level tracking candidate
+            wd_img_txt_box_dict = {} # dict[obj_id] = [img_tensor, word, box]
+            obj_dict = {} # obj_dict[obj_id] = [start frame, end frame]
+            for frame_id in p_keys:
+                obj_ids = pxy_dict[frame_id][:,0].astype(np.int16)
+                for oid in obj_ids:
+                    if(oid in obj_dict):
+                        obj_dict[oid][-1] = frame_id
+                    else:
+                        obj_dict[oid] = [frame_id,frame_id]
+            
+
+            while(vdo.isOpened()):
+                ret, x = vdo.read()
+                if(ret==False):
+                    break
+                if(fm_cnt<p_keys[0] or fm_cnt not in pxy_dict):
+                    # skip the initial or non text frams
+                    fm_cnt+=1
+                    continue
+
+                boxes = pxy_dict[fm_cnt][:,1:].reshape(-1,4,2)
+                obj_ids = pxy_dict[fm_cnt][:,0].astype(np.int16)
+                wrd_list = txt_dict[fm_cnt]
+                rect_boxes = np_polybox_minrect(boxes,'polyxy')
+
+                # x = cv2.resize(x,img_size,preserve_range=True)
+                xnor = np_img_normalize(x)
+                if(len(xnor.shape)==3): 
+                    xnor = np.expand_dims(xnor,0)
+                xnor = torch.from_numpy(xnor).float().permute(0,3,1,2)
+                opt.zero_grad()
+                pred,feat = net(xnor.to(device))
+
+                ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
+                    np_box_resize(boxes,x.shape[:-1],pred.shape[2:],'polyxy'),
+                    wrd_list,pred.shape[2:])
+
+                ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
+                af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
+
+                # tracking
+                sub_ch_loss = 0.0
+                cnt = 0
+                for o in wd_img_txt_box_dict:
+                    if(obj_dict[o][-1]<fm_cnt):
+                        # if the object will not appear later
+                        wd_img_txt_box_dict.pop(o)
+                        continue
+                    if(o not in obj_ids):
+                        continue
+                    subx = wd_img_txt_box_dict[o][0]
+                    nid = np.where(obj_ids==o)[0][0]
+                    wd_old = wd_img_txt_box_dict[o][1]
+                    wd_now = wrd_list[nid]
+                    if(len(wd_old)<len(wd_now)):
+                        # Need update 
+                        # Simply delete old word and it will update later
+                        wd_img_txt_box_dict.pop(o)
+                        continue
+                    elif(len(wd_old)>len(wd_now)):
+                        # occlusion happen, cutting old image
+                        try:
+                            sp = wd_old.index(wd_now)
+                            ep = sp+len(wd_now)
+                            h,w = subx.shape[2:]
+                            sp/=len(wd_old)
+                            ep/=len(wd_old)
+                            if(w>=h):
+                                sp = int(w*sp)
+                                ep = int(w*ep)
+                                subx = subx[:,:,:,sp:ep]
+                            else:
+                                sp = int(h*sp)
+                                ep = int(h*ep)
+                                subx = subx[:,:,sp:ep,:]
+                        except:
+                            continue
+                    if(subx.shape[-1]<8 or subx.shape[-2]<8):
+                        continue
+                    subx = np.expand_dims(np_img_normalize(subx),0)
+                    obj_map,obj_feat = net(torch.from_numpy(subx).float().permute(0,3,1,2).to(device))
+                    match_map,_ = net.match(obj_feat,feat)
+                    
+                    sub_ch_mask, _,_,_ = cv_gen_gaussian(
+                        np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy'),
+                        [wd_now],match_map.shape[2:],affin=False)
+                    tracking_loss = criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
+                    sub_ch_loss += tracking_loss
+                    cnt+=1
+                if(cnt>0):
+                    sub_ch_loss /= cnt
+                loss = ch_loss + af_loss + sub_ch_loss
+                loss.backward()
+                opt.step()
+
+                # AFTER tracking, update new objects
+                for box,obj_id,wrd in zip(boxes,obj_ids,wrd_list):
+                    if(obj_id in wd_img_txt_box_dict):
+                        continue
+                    sub_ch_img = cv_crop_image_by_bbox(x,box)
+                    # sub_ch_img = cv_crop_image_by_bbox(x,box,32,32)
+                    # (1,3,h,w)
+                    sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
+                    wd_img_txt_box_dict[obj_id] = [sub_ch_img,wrd,box]
+
+                # end of single frame
+                fm_cnt+=1
+            pbar.update()
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -106,60 +232,12 @@ if __name__ == "__main__":
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
 
-        
-    if(use_dataset=="ttt"):
-        train_dataset = Total(
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
-            image_size=(640, 640),)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
-    elif(use_dataset=="ic15"):
-        train_dataset = ICDAR(
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
-            image_size=(640, 640),)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
-    elif(use_dataset=='sync'):
-        train_dataset = SynthText(__DEF_SYN_DIR, 
-            image_size=(640, 640),
-            )
-        train_on_real = False
-        x_input_function=train_dataset.x_input_function
-        y_input_function=train_dataset.y_input_function
-    elif(use_dataset=='icv15'):
-        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
-        train_on_real = True
-        x_input_function = None
-        y_input_function = None
-        num_workers = 0
-        batch = 1
-    elif(use_dataset in ['minetto','mine']):
-        train_dataset = Minetto(__DEF_MINE_DIR)
-        train_on_real = True
-        x_input_function = None
-        y_input_function = None
-        num_workers = 0
-        batch = 1
-    else:
-        # Load ALL jpg/png/bmp image from dir list
-        train_dataset = BaseDataset((
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC19_DIR,'Train'),
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            os.path.join(__DEF_MSRA_DIR,'train'),
-            __DEF_SVT_DIR,
-            # __DEF_SYN_DIR,
-            ),
-            image_size=(640, 640),
-            img_only=True)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
+    train_dataset = Minetto(__DEF_MINE_DIR)
+    train_on_real = True
+    x_input_function = None
+    y_input_function = None
+    num_workers = 0
+    batch = 1
 
     dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
         num_workers=num_workers,

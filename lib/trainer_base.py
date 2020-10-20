@@ -223,6 +223,19 @@ class Trainer():
         torch.save(self._net,save_dir)
         return 
         
+    def save_opt(self,save_dir=None):
+        if(self._opt==None):return
+        file_name = "{}_opt.pkl".format(self._task_name if(self._task_name!=None)else "save")
+        if(save_dir==None):
+            save_dir = os.path.join(self._model_path,file_name)
+        elif(len(save_dir.split('.'))==1): 
+            save_dir = os.path.join(save_dir,file_name)
+        elif(os.path.dirname(save_dir)==''):
+            save_dir = os.path.join(self._model_path,save_dir)
+        torch.save(self._opt,save_dir)
+        print("Save optimizer at {}".format(save_dir))
+        return
+
     def load(self,load_dir=None):
         """
         save_dir:
