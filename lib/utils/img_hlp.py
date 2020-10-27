@@ -89,31 +89,34 @@ def np_polybox_minrect(cv_polybox,box_format:str):
     Find minimum rectangle for cv ploy box
         cv_polybox: ((Box number), point number, 2)
         box_format: 'polyxy' or 'polyyx'
-    Return: (Box number,4,2) in 'polyxy' or 'polyyx'
+    Return: ((Box number),4,2) in 'polyxy' or 'polyyx'
     """
+    single_box = False
     if(len(cv_polybox.shape)==2):
         cv_polybox = np.expand_dims(cv_polybox,0)
+        single_box = True
     dim_0s = cv_polybox[:,:,0]
     dim_1s = cv_polybox[:,:,1]
     dim_0s_min = dim_0s.min(axis=-1).reshape(-1,1)
     dim_0s_max = dim_0s.max(axis=-1).reshape(-1,1)
     dim_1s_min = dim_1s.min(axis=-1).reshape(-1,1)
     dim_1s_max = dim_1s.max(axis=-1).reshape(-1,1)
-
+    
     if(box_format.lower()=='polyyx'):
-        return np.concatenate((
+        ret = np.concatenate((
             dim_0s_min,dim_1s_min,
             dim_0s_min,dim_1s_max,
             dim_0s_max,dim_1s_max,
             dim_0s_max,dim_1s_min,
             ),axis=-1).reshape(-1,4,2)
-            
-    return np.concatenate((
-        dim_0s_min,dim_1s_min,
-        dim_0s_max,dim_1s_min,
-        dim_0s_max,dim_1s_max,
-        dim_0s_min,dim_1s_max,
+    else:    
+        ret = np.concatenate((
+            dim_0s_min,dim_1s_min,
+            dim_0s_max,dim_1s_min,
+            dim_0s_max,dim_1s_max,
+            dim_0s_min,dim_1s_max,
         ),axis=-1).reshape(-1,4,2)
+    return ret[0] if(single_box)else ret
 
 def np_polybox_rotate(cv_polybox,M):
     """
@@ -269,13 +272,16 @@ def torch_img_normalize(img,mean=(0.485, 0.456, 0.406), variance=(0.229, 0.224, 
     img /= torch.mul(torch.tensor(variance,dtype=torch.float32),255.0).float().to(img.device)
     return img
     
-def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.0,mu:float=0.0):
+def np_2d_gaussian(img_size,x_range=(-1.5,1.5),y_range=(-1.5,1.5),sigma:float=0.9,mu:float=0.0):
     """
     Generate gaussian distribution.
     Args: 
         x_range/y_range: tuple, (a,b) or float for (-a,a), 
         sigma/mu: float
         img_size: tuple, (y,x) or int for both yx, 
+        Default range 1.5, sigma 0.9, mu 0.0, the value will be 
+            above 0.5 at centered 70% 
+            above 0.3 at centered 90% 
     Return 2d gaussian distribution in numpy.
     """
     if(not isinstance(img_size,Iterable)):
@@ -284,6 +290,7 @@ def np_2d_gaussian(img_size,x_range=(-1.0,1.0),y_range=(-1.0,1.0),sigma:float=1.
         x_range = (-x_range,x_range)
     if(not isinstance(y_range,Iterable)):
         y_range = (-y_range,y_range)
+
     dx, dy = np.meshgrid(
         np.linspace(x_range[0],x_range[1],img_size[1]), 
         np.linspace(y_range[0],y_range[1],img_size[0]))
@@ -418,7 +425,7 @@ def cv_cvbox2box(cv_4p_boxes,box_format:str):
 
     return np_box_transfrom(np.stack([minx,miny,maxx,maxy],axis=-1),'xyxy',box_format)
 
-def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
+def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None):
     """
     Crop image by box, using cv2.
     Args:
@@ -426,11 +433,12 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None):
         box: shape (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
         w_multi: final width will be k*w_multi
         h_multi: final height will be k*h_multi
-
+        w_min: final width will greater than w_min
+        h_min: final height will greater than h_min
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
-    w = (int)(np.linalg.norm(box[0] - box[1]))
-    h = (int)(np.linalg.norm(box[0] - box[3]))
+    w = max((int)(np.linalg.norm(box[0] - box[1])),w_min)
+    h = max((int)(np.linalg.norm(box[0] - box[3])),h_min)
     width = max(1,w//int(w_multi))*int(w_multi) if(w_multi!=None and w_multi>0)else w
     height = max(1,h//int(h_multi))*int(h_multi) if(w_multi!=None and w_multi>0)else h
     if h > w * 1.5:
@@ -540,7 +548,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
     image = image.astype(np.uint8)
 
     if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
-    if(len(boxes)==2):
+    if(len(boxes.shape)==2):
         boxes=boxes.reshape((1,-1,2))
     if(isinstance(text,np.ndarray)):
         text = text.reshape((-1))        
@@ -730,7 +738,7 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
     Generate text level gaussian distribution
     Parameters:
         cv_boxes: ((box number),points number,2) in (x,y). Points number MUST be even
-        texts: list of str
+        texts: list of str, set None to disable text level split
         img_size: tuple of (h,w)
         ch_mask: if not None, generator will add the gaussian distribution on mask
         af_mask: if not None, generator will add the gaussian distribution on mask
@@ -760,12 +768,19 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
 
     for bxi in range(cv_boxes.shape[0]):
         box = cv_boxes[bxi]
-        txt = texts[bxi].strip()
-        total_len = len(txt)
+        if(texts):
+            txt = texts[bxi].strip()
+            total_len = len(txt)
+        else:
+            # diasble split
+            total_len = -1
         ch_boxes = [] # (k,4,2)
         # Generate character level boxes
         if(box.shape[0]==4):
             # rectangle
+            if(total_len<0):
+                ch_boxes.append(box)
+                continue
             up_dxy = np.linspace(box[0],box[1],total_len+1)
             dw_dxy = np.linspace(box[3],box[2],total_len+1)
             for txi in range(total_len):
@@ -776,13 +791,18 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                     ch_boxes.append(((up_dxy[txi]+dw_dxy[txi])/2,(up_dxy[txi+1]+dw_dxy[txi+1])/2,dw_dxy[txi+1],dw_dxy[txi]))
                 else:
                     ch_boxes.append((up_dxy[txi],up_dxy[txi+1],dw_dxy[txi+1],dw_dxy[txi]))
+        elif(total_len<0):
+            # polygon
+            # for j in range(box.shape[0]//2-1):
+            #     ch_boxes.append((box[j],box[j+1],box[-j-2],box[-j-1]))
+            ch_boxes.append((box[0],box[box.shape[0]//2-1],box[-box.shape[0]//2],box[-1]))
         else:
             det_list = []
             total_det = 0
             # calculate center line length
             for j in range(box.shape[0]//2-1):
                 up = box[j+1] - box[j]
-                dw = box[-j-1] - box[-j]
+                dw = box[-j-2] - box[-j-1]
                 det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
                 total_det+=max(det)
                 det_list.append(det)
@@ -813,6 +833,7 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                 up_dxy = np.linspace(box[0],box[1],total_len+1)
                 last_length = res
 
+        # draw boxes from ch_boxes
         ch_boxes = np.array(ch_boxes) # (k,4,2)
         if(ch_boxes.shape[0]==0):
             ch_boxes_list.append(None)
@@ -829,11 +850,12 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
             min_x = max(int(ch_boxes_rec[chi,0,0]),0)
             min_y = max(int(ch_boxes_rec[chi,0,1]),0)
 
-            gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            # gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            gaussian = np_2d_gaussian((deta_y, deta_x))
             res = cv_fill_by_box(gaussian, ch_boxes_rec[chi], ch_boxes[chi],(deta_y,deta_x))
             max_v = np.max(res)
             if(max_v > 0):
-                res/=max_v
+                # res/=max_v
                 sub_mask = ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
                 sub_mask = np.where(sub_mask>res,sub_mask,res)
                 ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
@@ -852,11 +874,12 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
             min_x = max(int(aff_boxes_rec[afi,0,0]),0)
             min_y = max(int(aff_boxes_rec[afi,0,1]),0)
 
-            gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            # gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+            gaussian = np_2d_gaussian((deta_y, deta_x))
             res = cv_fill_by_box(gaussian, aff_boxes_rec[afi], aff_boxes[afi],(deta_y, deta_x))
             max_v = np.max(res)
             if(max_v > 0):
-                res/=max_v
+                # res/=max_v
                 sub_mask = af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
                 sub_mask = np.where(sub_mask>res,sub_mask,res)
                 af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask

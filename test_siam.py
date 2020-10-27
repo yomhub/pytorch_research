@@ -11,7 +11,6 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 from skimage import transform
 import cv2
-from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LSTM
 from lib.model.siamfc import *
@@ -42,8 +41,8 @@ if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\S
 elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
 
-def train_siam(loader,net,opt,criteria,device,train_size,logger):
-    
+@torch.no_grad
+def train_siam(loader,net,criteria,device,train_size):
     for batch,sample in enumerate(loader):
         im_size = (sample['height'],sample['width'])
         pxy_dict = sample['gt']
@@ -95,9 +94,7 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
 
             ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
             af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
-            
-            img = cv_mask_image(x,pred[0,0].to('cpu').detach().numpy())
-            logger.add_image('Batch {} image'.format(batch), img, fm_cnt,dataformats='HWC')
+
             # tracking
             sub_ch_loss = torch.zeros_like(ch_loss)
             cnt = 0
@@ -139,45 +136,29 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
                         continue
                 if(subx.shape[-1]<8 or subx.shape[-2]<8):
                     continue
-                np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
+                
                 obj_map,obj_feat = net(torch_img_normalize(subx.permute(0,2,3,1)).permute(0,3,1,2).to(device))
                 match_map,_ = net.match(obj_feat,feat)
                 
                 sub_ch_mask, _,_,_ = cv_gen_gaussian(
                     np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy'),
-                    None,match_map.shape[2:],affin=False)
+                    [wd_now],match_map.shape[2:],affin=False)
                 tracking_loss = criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
                 sub_ch_loss += tracking_loss
-
-                # np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
-                x[0:np_subx.shape[0],0:np_subx.shape[1],:]=np_subx
-                img = cv_draw_poly(x,np_box_resize(boxes[nid],x.shape[:-1],img.shape[:-1],'polyxy'))
-                img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
-                logger.add_image('Batch {}, id {}, prediction'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
-                img_msk = cv_mask_image(img,sub_ch_mask)
-                logger.add_image('Batch {}, id {}, GT'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
                 cnt+=1
             for o in pops:
                 wd_img_txt_box_dict.pop(o)
             if(cnt>0):
                 sub_ch_loss /= cnt
-            loss = ch_loss + af_loss + sub_ch_loss
-
-            # logger.add_scalar('Batch {} ch_loss'.format(batch), ch_loss.item(), fm_cnt)
-            # logger.add_scalar('Batch {} af_loss'.format(batch), af_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} sub_ch_loss'.format(batch), sub_ch_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} total loss'.format(batch), loss.item(), fm_cnt)
-            logger.flush()
             print("Loss at batch {} step {}\t ch_loss={}\t af_loss={}\t sub_ch_loss={}\t\n".format(batch,fm_cnt,ch_loss.item(),af_loss.item(),sub_ch_loss.item()))
             
-            loss.backward()
-            opt.step()
+            loss = ch_loss + af_loss + sub_ch_loss
 
             # AFTER tracking, update new objects
             for box,obj_id,wrd in zip(boxes,obj_ids,wrd_list):
                 if(obj_id in wd_img_txt_box_dict):
                     continue
-                sub_ch_img,_ = cv_crop_image_by_bbox(x,box,w_min=16*3,h_min=16*3)
+                sub_ch_img,_ = cv_crop_image_by_bbox(x,box,w_min=32,h_min=32)
                 # sub_ch_img = cv_crop_image_by_bbox(x,box,32,32)
                 # (1,3,h,w)
                 sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
@@ -185,7 +166,6 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
 
             # end of single frame
             fm_cnt+=1
-
     
 
 if __name__ == "__main__":
@@ -237,20 +217,8 @@ if __name__ == "__main__":
     # lr_decay_step_size = None
 
     dev = 'cuda' if(use_cuda)else 'cpu'
-    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev)
-    # net = SiameseCRAFT(base_net=basenet,feature_chs=32)
-    # net = net.float().to(dev)
-    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft3.pkl').float().to(dev)
-    # if(os.path.exists(args.opt)):
-    #     opt = torch.load(args.opt)
-    # elif(args.opt.lower()=='adam'):
-    opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    # elif(args.opt.lower() in ['adag','adagrad']):
-    #     opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    # else:
-    # opt = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
-    # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft.pkl_opt.pkl')
-    # opt.add_param_group(net.parameters())
+    net = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev).eval()
+
     train_dataset = Minetto(__DEF_MINE_DIR)
     train_on_real = True
     x_input_function = None
@@ -272,7 +240,6 @@ if __name__ == "__main__":
         "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,batch)+\
         "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
         "\t Network: {}.\n".format(net.__class__.__name__)+\
-        "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
         "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
         "\t Init learning rate: {}.\n".format(lr)+\
         "\t Learning rate decay rate: {}.\n".format(tcfg['OPT_DEC'] if(tcfg['OPT_DEC']>0)else "Disabled")+\
@@ -285,18 +252,12 @@ if __name__ == "__main__":
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
-    logger = SummaryWriter(os.path.join(work_dir,'log','siam'))
 
-    # try:
-    train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger)
-    # except Exception as e:
-    #     print(e)
+    try:
+        train_siam(dataloader,net,loss,dev,len(train_dataset))
+    except Exception as e:
+        print(e)
         
-    print("Saving model...")
-    torch.save(net,sav_dir)
-    print("Saving optimizer...")
-    torch.save(opt,sav_dir+'_opt.pkl')
-
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
     time_usage = time_usage - time_start

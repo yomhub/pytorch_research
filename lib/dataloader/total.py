@@ -37,7 +37,7 @@ class Total(base.BaseDataset):
     """
     def __init__(self, img_dir, gt_mask_dir, gt_txt_dir,
         **params):
-        in_box_format = 'yxyx'
+        in_box_format = 'polyxy'
         gt_txt_name_lambda = lambda x: "poly_gt_%s.txt"%x
         gt_mask_name_lambda = None
 
@@ -67,7 +67,7 @@ class Total(base.BaseDataset):
             ys = [int(o) for o in parts[1].split('[[')[-1].split(']]')[0].split()]
             txt = parts[3].split()[-1][3:-2]
             if('poly' in self.out_box_format):
-                boxs.append([(xi,yi) for xi,yi in zip(xs,ys)])
+                boxs.append(np.asarray([(xi,yi) for xi,yi in zip(xs,ys)]))
             else:
                 boxs.append([int(1), min(ys), min(xs),max(ys), max(xs)])
             txts.append(txt)

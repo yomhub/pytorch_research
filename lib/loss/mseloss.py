@@ -108,3 +108,51 @@ class MSE_OHEM_Loss(nn.Module):
             
         return torch.stack(loss_every_sample, 0).mean()
         
+
+class MSE_2d_Loss(nn.Module):
+    def __init__(self,positive_mult = 3):
+        super(MSE_2d_Loss, self).__init__()
+        self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
+        self._positive_mult = float(positive_mult)
+    
+    def mse_loss_single(self,x,y):
+        positive_mask = y > 0
+        sample_loss = self.mse_loss(x, y)
+
+        num_positive = torch.sum(positive_mask).item()
+
+        k = int(num_positive * self._positive_mult)
+        num_all = x.shape[0]
+        if k + num_positive > num_all:
+            k = int(num_all - num_positive)
+        if k < 10:
+            avg_sample_loss = sample_loss.mean()
+        else:
+            positive_loss = torch.masked_select(sample_loss, positive_mask)
+            negative_loss = torch.masked_select(sample_loss, y <= 0.0)
+            negative_loss_topk, _ = torch.topk(negative_loss, k)
+            avg_sample_loss = positive_loss.mean() + negative_loss_topk.mean()
+
+        return avg_sample_loss
+
+    def forward(self, x, y):
+        """
+        Args:
+            x: prediction (batch,(ch),h,w)
+            y: true value (batch,(ch),h,w)
+        """
+        if(isinstance(x,tuple)):
+            x = x[0]
+        if(len(x.shape)==3):
+            x = x.reshape((x.shape[0],1,x.shape[1],x.shape[2]))
+        if(len(y.shape)==3):
+            y = y.reshape((y.shape[0],1,y.shape[1],y.shape[2]))
+
+        y = F.interpolate(y,size=x.shape[2:], mode='bilinear', align_corners=False)
+        x = x.reshape(x.shape[0],-1)
+        y = y.reshape(y.shape[0],-1)
+        loss_every_sample = []
+        for i in range(x.shape[0]):
+            loss_every_sample.append(self.mse_loss_single(x[i],y[i]))
+            
+        return torch.stack(loss_every_sample, 0).mean()

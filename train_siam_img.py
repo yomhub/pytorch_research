@@ -23,6 +23,7 @@ from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *
+from lib.utils.log_hlp import save_image
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
@@ -43,150 +44,82 @@ elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yo
 else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
 
 def train_siam(loader,net,opt,criteria,device,train_size,logger):
-    
+    maxh,maxw = 600,1200
     for batch,sample in enumerate(loader):
-        im_size = (sample['height'],sample['width'])
-        pxy_dict = sample['gt']
-        txt_dict = sample['txt']
-        p_keys = list(pxy_dict.keys())
-        p_keys.sort()
-        vdo = sample['video']
-        fm_cnt = 0
-
-        # for character level tracking candidate
-        wd_img_txt_box_dict = {} # dict[obj_id] = [img_tensor, word, box]
-        obj_dict = {} # obj_dict[obj_id] = [start frame, end frame]
-        for frame_id in p_keys:
-            if(pxy_dict[frame_id].shape[0]==0):
-                continue
-            obj_ids = pxy_dict[frame_id][:,0].astype(np.int16)
-            for oid in obj_ids:
-                if(oid in obj_dict):
-                    obj_dict[oid][-1] = frame_id
-                else:
-                    obj_dict[oid] = [frame_id,frame_id]
-        
-
-        while(vdo.isOpened()):
-            ret, x = vdo.read()
-            if(ret==False):
-                break
-            if(fm_cnt<p_keys[0] or fm_cnt not in pxy_dict or pxy_dict[fm_cnt].shape[0]==0):
-                # skip the initial or non text frams
-                fm_cnt+=1
-                continue
-
-            boxes = pxy_dict[fm_cnt][:,1:].reshape(-1,4,2)
-            obj_ids = pxy_dict[fm_cnt][:,0].astype(np.int16)
-            wrd_list = txt_dict[fm_cnt]
-            rect_boxes = np_polybox_minrect(boxes,'polyxy')
-
-            # x = cv2.resize(x,img_size,preserve_range=True)
-            xnor = np_img_normalize(x)
-            if(len(xnor.shape)==3): 
-                xnor = np.expand_dims(xnor,0)
-            xnor = torch.from_numpy(xnor).float().permute(0,3,1,2)
+        assert('box' in sample and 'image' in sample)
+        xs = sample['image']
+        boxes_bth = sample['box']
+        bxf = sample['box_format']
+        batch_size = int(xs.shape[0])
+        if('text' in sample):
+            words_bth = sample['text']
+        for i in range(batch_size):
+            x = xs[i]
+            img_size = x.shape[0:-1]
+            x_nor = torch_img_normalize(x)
+            if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
+                x_nor = transform.resize(x_nor,(min(x_nor.shape[-3],maxh),min(x_nor.shape[-2],maxw),x_nor.shape[-1]),preserve_range=True)
+                x_nor = torch.from_numpy(x_nor)
+            x_nor = x_nor.reshape((1,x_nor.shape[0],x_nor.shape[1],x_nor.shape[2]))
+            boxes = boxes_bth[i]
+            if('poly' not in sample['box_format']):
+                boxes = cv_box2cvbox(boxes,img_size,sample['box_format'])
             opt.zero_grad()
-            pred,feat = net(xnor.to(device))
-
-            ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
-                np_box_resize(boxes,x.shape[:-1],pred.shape[2:],'polyxy'),
-                wrd_list,pred.shape[2:])
-
-            ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
-            af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
-            
-            img = cv_mask_image(x,pred[0,0].to('cpu').detach().numpy())
-            logger.add_image('Batch {} image'.format(batch), img, fm_cnt,dataformats='HWC')
-            # tracking
-            sub_ch_loss = torch.zeros_like(ch_loss)
+            x_nor = x_nor.float().permute(0,3,1,2).to(device)
+            pred,feat = net(x_nor)
+            sub_ch_loss = torch.zeros_like(pred[0,0,0,0])
             cnt = 0
-            pops = []
-            for o in wd_img_txt_box_dict:
-                if(obj_dict[o][-1]<fm_cnt):
-                    # if the object will not appear later
-                    pops.append(o)
+            for box in boxes:
+                # if(img_size!=x_nor.shape[1:-1]):
+                #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
+                sub_img,_ = cv_crop_image_by_bbox(
+                    x.numpy(),np_polybox_minrect(box,'polyxy'),w_min=16*3,h_min=16*3)
+                sub_img_nor = np_img_normalize(sub_img)
+                sub_img_nor = np.expand_dims(sub_img_nor,0)
+                sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
+                try:
+                    obj_map,obj_feat = net(sub_img_nor)
+                    match_map,_ = net.match(obj_feat,feat)
+                    sub_ch_mask, _,_,_ = cv_gen_gaussian(
+                        np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
+                        None,match_map.shape[2:],affin=False)
+                    y = torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device)
+                    sub_ch_loss += criteria(match_map[:,0],y)
+                    cnt+=1
+                except:
                     continue
-                if(o not in obj_ids):
-                    continue
-                # tensor (batch,3,h,w)
-                subx = wd_img_txt_box_dict[o][0]
-                nid = np.where(obj_ids==o)[0][0]
-                wd_old = wd_img_txt_box_dict[o][1]
-                wd_now = wrd_list[nid]
-                if(len(wd_old)<len(wd_now)):
-                    # Need update 
-                    # Simply delete old word and it will update later
-                    pops.append(o)
-                    continue
-                elif(len(wd_old)>len(wd_now)):
-                    # occlusion happen, cutting old image
-                    try:
-                        sp = wd_old.index(wd_now)
-                        ep = sp+len(wd_now)
-                        h,w = subx.shape[2:]
-                        sp/=len(wd_old)
-                        ep/=len(wd_old)
-                        if(w>=h):
-                            sp = int(w*sp)
-                            ep = int(w*ep)
-                            subx = subx[:,:,:,sp:ep]
-                        else:
-                            sp = int(h*sp)
-                            ep = int(h*ep)
-                            subx = subx[:,:,sp:ep,:]
-                    except:
-                        continue
-                if(subx.shape[-1]<8 or subx.shape[-2]<8):
-                    continue
-                np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
-                obj_map,obj_feat = net(torch_img_normalize(subx.permute(0,2,3,1)).permute(0,3,1,2).to(device))
-                match_map,_ = net.match(obj_feat,feat)
-                
-                sub_ch_mask, _,_,_ = cv_gen_gaussian(
-                    np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy'),
-                    None,match_map.shape[2:],affin=False)
-                tracking_loss = criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
-                sub_ch_loss += tracking_loss
+            if(sub_ch_loss==0.0):
+                continue
+            if(cnt):
+                sub_ch_loss/=cnt
+                try:
+                    img = x.numpy().astype(np.uint8)
+                    sub_img = sub_img.astype(np.uint8)
+                    img[0:sub_img.shape[0],0:sub_img.shape[1],:]=sub_img
+                    img = cv_draw_poly(img,np_box_resize(box,x.shape[:-1],img.shape[:-1],'polyxy'))
 
-                # np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
-                x[0:np_subx.shape[0],0:np_subx.shape[1],:]=np_subx
-                img = cv_draw_poly(x,np_box_resize(boxes[nid],x.shape[:-1],img.shape[:-1],'polyxy'))
-                img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
-                logger.add_image('Batch {}, id {}, prediction'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
-                img_msk = cv_mask_image(img,sub_ch_mask)
-                logger.add_image('Batch {}, id {}, GT'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
-                cnt+=1
-            for o in pops:
-                wd_img_txt_box_dict.pop(o)
-            if(cnt>0):
-                sub_ch_loss /= cnt
-            loss = ch_loss + af_loss + sub_ch_loss
-
-            # logger.add_scalar('Batch {} ch_loss'.format(batch), ch_loss.item(), fm_cnt)
-            # logger.add_scalar('Batch {} af_loss'.format(batch), af_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} sub_ch_loss'.format(batch), sub_ch_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} total loss'.format(batch), loss.item(), fm_cnt)
-            logger.flush()
-            print("Loss at batch {} step {}\t ch_loss={}\t af_loss={}\t sub_ch_loss={}\t\n".format(batch,fm_cnt,ch_loss.item(),af_loss.item(),sub_ch_loss.item()))
+                    img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
+                    logger.add_image('Tracking result', img_msk, batch*batch_size+i,dataformats='HWC')
+                    img_msk = cv_mask_image(img,sub_ch_mask)
+                    logger.add_image('Tracking GT', img_msk, batch*batch_size+i,dataformats='HWC')
+                except:
+                    None
             
+            loss = sub_ch_loss
+            logger.add_scalar('sub_ch_loss', sub_ch_loss.item(), batch*batch_size+i)
+            logger.flush()
+            print("sub_ch_loss {}, in step {}.".format(sub_ch_loss.item(),batch*batch_size+i))
             loss.backward()
             opt.step()
-
-            # AFTER tracking, update new objects
-            for box,obj_id,wrd in zip(boxes,obj_ids,wrd_list):
-                if(obj_id in wd_img_txt_box_dict):
-                    continue
-                sub_ch_img,_ = cv_crop_image_by_bbox(x,box,w_min=16*3,h_min=16*3)
-                # sub_ch_img = cv_crop_image_by_bbox(x,box,32,32)
-                # (1,3,h,w)
-                sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
-                wd_img_txt_box_dict[obj_id] = [sub_ch_img,wrd,box]
-
-            # end of single frame
-            fm_cnt+=1
-
-    
+            del pred
+            del feat
+            del obj_map
+            del obj_feat
+            del match_map
+            del y
+            del x_nor
+            del sub_img_nor
+            del sample
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -227,7 +160,7 @@ if __name__ == "__main__":
     # For Debug config
     lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
     teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft.pkl"
+    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
     isdebug = True
     # use_net = 'craft_mob'
     use_dataset = 'minetto'
@@ -240,21 +173,27 @@ if __name__ == "__main__":
     # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev)
     # net = SiameseCRAFT(base_net=basenet,feature_chs=32)
     # net = net.float().to(dev)
-    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft3.pkl').float().to(dev)
+    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft2.pkl').float().to(dev)
     # if(os.path.exists(args.opt)):
     #     opt = torch.load(args.opt)
     # elif(args.opt.lower()=='adam'):
-    opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
+    #     opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     # elif(args.opt.lower() in ['adag','adagrad']):
     #     opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     # else:
-    # opt = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
-    # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft.pkl_opt.pkl')
+    #     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
+    opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
     # opt.add_param_group(net.parameters())
-    train_dataset = Minetto(__DEF_MINE_DIR)
-    train_on_real = True
-    x_input_function = None
-    y_input_function = None
+    # train_dataset = Total(
+    #     os.path.join(__DEF_TTT_DIR,'Images','Train'),
+    #     os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
+    #     os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
+    #     out_box_format='polyxy',
+    #     )
+    train_dataset = ICDAR(
+        os.path.join(__DEF_IC15_DIR,'images','train'),
+        os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
+        out_box_format='polyxy',)
     num_workers = 0
     batch = 1
 
@@ -286,6 +225,7 @@ if __name__ == "__main__":
         ""
     print(summarize)
     logger = SummaryWriter(os.path.join(work_dir,'log','siam'))
+    # logger = None
 
     # try:
     train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger)

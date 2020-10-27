@@ -45,4 +45,4 @@ class ICDAR(base.BaseDataset):
                     tmp+=ch.strip('\n')
             text.append(tmp)
 
-        return np.array(boxes,dtype=np.uint8).reshape(-1,4,2),text
+        return np.array(boxes,dtype=np.uint8).reshape(-1,4,2).reshape(-1,4,2),text
