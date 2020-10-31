@@ -7,7 +7,8 @@ import torch
 import math
 from collections import Iterable
 import Polygon as plg
-from shapely.geometry import Polygon
+from PIL import Image, ImageDraw
+from shapely.geometry import Polygon, Point
 # ======================
 from . import log_hlp
 
@@ -84,7 +85,7 @@ def np_box_rescale(box,scale,box_format:str):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
-def np_polybox_minrect(cv_polybox,box_format:str):
+def np_polybox_minrect(cv_polybox,box_format:str='polyxy'):
     """
     Find minimum rectangle for cv ploy box
         cv_polybox: ((Box number), point number, 2)
@@ -95,12 +96,27 @@ def np_polybox_minrect(cv_polybox,box_format:str):
     if(len(cv_polybox.shape)==2):
         cv_polybox = np.expand_dims(cv_polybox,0)
         single_box = True
-    dim_0s = cv_polybox[:,:,0]
-    dim_1s = cv_polybox[:,:,1]
-    dim_0s_min = dim_0s.min(axis=-1).reshape(-1,1)
-    dim_0s_max = dim_0s.max(axis=-1).reshape(-1,1)
-    dim_1s_min = dim_1s.min(axis=-1).reshape(-1,1)
-    dim_1s_max = dim_1s.max(axis=-1).reshape(-1,1)
+    if(cv_polybox.dtype==np.object):
+        dim_0s_min = []
+        dim_0s_max = []
+        dim_1s_min = []
+        dim_1s_max = []
+        for bxs in cv_polybox:
+            dim_0s_min.append(bxs[:,0].min())
+            dim_0s_max.append(bxs[:,0].max())
+            dim_1s_min.append(bxs[:,1].min())
+            dim_1s_max.append(bxs[:,1].max())
+        dim_0s_min = np.array(dim_0s_min).reshape(-1,1)
+        dim_0s_max = np.array(dim_0s_max).reshape(-1,1)
+        dim_1s_min = np.array(dim_1s_min).reshape(-1,1)
+        dim_1s_max = np.array(dim_1s_max).reshape(-1,1)
+    else:
+        dim_0s = cv_polybox[:,:,0]
+        dim_1s = cv_polybox[:,:,1]
+        dim_0s_min = dim_0s.min(axis=-1).reshape(-1,1)
+        dim_0s_max = dim_0s.max(axis=-1).reshape(-1,1)
+        dim_1s_min = dim_1s.min(axis=-1).reshape(-1,1)
+        dim_1s_max = dim_1s.max(axis=-1).reshape(-1,1)
     
     if(box_format.lower()=='polyyx'):
         ret = np.concatenate((
@@ -307,6 +323,59 @@ def cv_gaussian_kernel_2d(kernel_size = (3, 3)):
     kx = cv2.getGaussianKernel(int(kernel_size[1]), int(kernel_size[1] / 4))
     return np.multiply(ky, np.transpose(kx))
 
+from scipy import ndimage
+# For masked polygon distance 
+def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:float=1.5,sigma:float=0.9):
+    """
+    Generate gaussian map by polygon
+    Args:
+        cv_box: (k,2) polygon box 
+        img_size: (y,x) output mask shape, if None, use minium box rectangle
+        centralize: whether to centralize the polygon
+        v_range: MAX distance of gaussian 
+        sigma: sigma
+    Return:
+        gaussian mask for polygon
+    """
+    box_rect = np_polybox_minrect(cv_box)
+    if(not img_size):
+        x0,y0 = box_rect[0]
+        x1,y1 = box_rect[2]
+        x0 = max(0,int(x0))
+        y0 = max(0,int(y0))
+        img_size = (int(y1-y0),int(x1-x0))
+    elif(not isinstance(img_size,Iterable)):
+        img_size = (int(img_size),int(img_size))
+
+    pts = cv_box-box_rect[0] if(centralize)else cv_box
+
+    # Generate polygon mask, 2 for outline, 1 for inside pixels
+    blmask = Image.new('L', (img_size[1],img_size[0]), 0)
+    ImageDraw.Draw(blmask).polygon(pts.reshape(-1).tolist(), outline=2, fill=1)
+    blmask = np.array(blmask)
+
+    # use scipy.ndimage.morphology.distance_transform_edt to calculate distence
+    # inside pixels is 1, outline and background is 0
+    insides = np.where(blmask==1,1,0)
+    # calculate distence with NEAREST BG pixel
+    dst_mask = ndimage.distance_transform_edt(insides).astype(np.float32)
+    # map value from [1,max distance] to [v_range,0]
+    min_dst = 1.0 # min pixel distense
+    # map to (0,maxv)
+    dst_mask -= min_dst
+    max_dst = np.max(dst_mask)
+    # map to (0,1)
+    dst_mask /= max_dst
+    # map to (1,0)
+    dst_mask = 1.0-dst_mask
+    # map to (v_range,0)
+    dst_mask *= v_range
+    # apply gaussian
+    dst_mask = np.exp(-( (dst_mask)**2 / ( 2.0 * sigma**2 ) ) )
+    dst_mask = np.where(blmask==1,dst_mask,0.0)
+    
+    return dst_mask
+
 def cv_fill_by_box(img, src_box, dst_box, out_size):
     """
     Fill image from source box region to destination box region
@@ -461,7 +530,7 @@ def cv_cvbox2box(cv_4p_boxes,box_format:str):
 
 def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None):
     """
-    Crop image by box, using cv2.
+    Crop image by box.
     Args:
         image: numpy with shape (h,w,3)
         box: shape (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
@@ -474,8 +543,12 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
         M: mapping matrix
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
-    w = max((int)(np.linalg.norm(box[0] - box[1])),w_min)
-    h = max((int)(np.linalg.norm(box[0] - box[3])),h_min)
+    w = (int)(np.linalg.norm(box[0] - box[1]))
+    h = (int)(np.linalg.norm(box[0] - box[3]))
+    if(w_min!=None):
+        w = max(w,w_min)
+    if(h_min!=None):
+        h = max(h,h_min)
     width = max(1,w//int(w_multi))*int(w_multi) if(w_multi!=None and w_multi>0)else w
     height = max(1,h//int(h_multi))*int(h_multi) if(w_multi!=None and w_multi>0)else h
     if h > w * 1.5:
@@ -490,6 +563,33 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
     warped = cv2.warpPerspective(image, M, (width, height))
     return warped, M
 
+def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None):
+    """
+    Crop image by polygon.
+    Args:
+        image: numpy with shape (h,w,3)
+        box: shape (k,2) with (x,y)
+        w_multi: final width will be k*w_multi
+        h_multi: final height will be k*h_multi
+        w_min: final width will greater than w_min
+        h_min: final height will greater than h_min
+    Return:
+        subimg: (h,w,3)
+        M: mapping matrix
+    """
+    box_rect = np_polybox_minrect(box)
+    w,h = (box_rect[2]-box_rect[0]).astype(np.int16)
+    sub_img,M = cv_crop_image_by_bbox(image, box_rect, w_multi, h_multi,w_min, h_min)
+    pts = box-box_rect[0]
+    pts = np_box_resize(pts,(h,w),sub_img.shape[:-1],'polyxy')
+    # Generate polygon mask, 2 for outline, 1 for inside pixels
+    blmask = Image.new('L', (sub_img.shape[1],sub_img.shape[0]), 0)
+    ImageDraw.Draw(blmask).polygon(pts.reshape(-1).tolist(), outline=1, fill=1)
+    blmask = np.array(blmask)
+    blmask = np.expand_dims(blmask,-1)
+    sub_img = np.where(blmask,sub_img,0)
+    return sub_img,M
+
 def cv_uncrop_image(sub_image, M, width:int, height:int):
     """
     UNDO cv_crop_image_by_bbox
@@ -502,6 +602,7 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     """
     ret, IM = cv2.invert(M)
     return cv2.warpPerspective(sub_image, IM, (width, height))
+
 
 def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.3):
     """
@@ -924,6 +1025,7 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                 af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
     
     return ch_mask,af_mask,ch_boxes_list,aff_boxes_list
+
 # 
 # ===============================================
 # ==================== Class ====================

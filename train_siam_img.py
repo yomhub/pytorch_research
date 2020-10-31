@@ -44,6 +44,7 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
             words_bth = sample['text']
         for i in range(batch_size):
             try:
+            # if(1):
                 x = xs[i]
                 wrd_list = sample['text'][i]
                 img_size = x.shape[0:-1]
@@ -60,14 +61,14 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
                 x_nor = x_nor.float().permute(0,3,1,2).to(device)
                 pred,feat = net(x_nor)
 
-                ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
-                    np_box_resize(boxes,img_size,pred.shape[2:],'polyxy'),
-                    wrd_list,pred.shape[2:])
+                # ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
+                #     np_box_resize(boxes,img_size,pred.shape[2:],'polyxy'),
+                #     wrd_list,pred.shape[2:])
 
-                ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
-                af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
+                # ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
+                # af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
 
-                sub_ch_loss = torch.zeros_like(ch_loss)
+                sub_ch_loss = 0.0
                 cnt = 0
                 
                 # Select top max_boxes biggest boxes 
@@ -80,8 +81,8 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
                 for bxi,box in enumerate(boxes):
                     # if(img_size!=x_nor.shape[1:-1]):
                     #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
-                    sub_img,_ = cv_crop_image_by_bbox(
-                        x.numpy(),recbox[bxi],w_min=16*3,h_min=16*3)
+                    sub_img,_ = cv_crop_image_by_polygon(
+                        x.numpy(),boxes[bxi],w_min=16*3,h_min=16*3)
                     sub_img_nor = np_img_normalize(sub_img)
                     sub_img_nor = np.expand_dims(sub_img_nor,0)
                     sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
@@ -119,12 +120,13 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
                     except:
                         None
                 
-                    loss = sub_ch_loss+ch_loss+af_loss
+                    loss = sub_ch_loss
                     if(logger):
                         logger.add_scalar('sub_ch_loss', sub_ch_loss.item(), batch*batch_size+i)
-                        logger.add_scalar('total loss'.format(batch), loss.item(), batch*batch_size+i)
+                        # logger.add_scalar('total loss'.format(batch), loss.item(), batch*batch_size+i)
                         logger.flush()
-                    print("step {}, sub_ch_loss {}, chloss {}, afloss {}.".format(batch*batch_size+i,sub_ch_loss.item(),ch_loss.item(),af_loss.item()))
+                    # print("step {}, sub_ch_loss {}, chloss {}, afloss {}.".format(batch*batch_size+i,sub_ch_loss.item(),ch_loss.item(),af_loss.item()))
+                    print("step {}, sub_ch_loss {}.".format(batch*batch_size+i,sub_ch_loss.item()))
 
                     loss.backward()
                     opt.step()
@@ -177,8 +179,8 @@ if __name__ == "__main__":
     log_step_size = args.logstp
 
     # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
-    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
+    # sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
     # isdebug = True
     # use_net = 'craft_mob'
     # use_dataset = 'minetto'
@@ -188,10 +190,10 @@ if __name__ == "__main__":
     # lr_decay_step_size = None
 
     dev = 'cuda' if(use_cuda)else 'cpu'
-    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
-    # net = SiameseCRAFT(base_net=basenet,feature_chs=32).float().to(dev)
+    basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
+    net = SiameseCRAFT(base_net=basenet,feature_chs=32).float().to(dev)
     # net = net.float().to(dev)
-    net = torch.load(lod_dir).float().to(dev)
+    # net = torch.load(lod_dir).float().to(dev)
     # if(os.path.exists(args.opt)):
     #     opt = torch.load(args.opt)
     # elif(args.opt.lower()=='adam'):
@@ -202,18 +204,18 @@ if __name__ == "__main__":
     #     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
     # opt.add_param_group(net.parameters())
-    # train_dataset = Total(
-    #     os.path.join(__DEF_TTT_DIR,'images','train'),
-    #     os.path.join(__DEF_TTT_DIR,'gt_pixel','train'),
-    #     os.path.join(__DEF_TTT_DIR,'gt_txt','train'),
-    #     out_box_format='polyxy',
-    #     )
-    train_dataset = ICDAR13(
-        os.path.join(DEF_IC13_DIR,'images','train'),
-        os.path.join(DEF_IC13_DIR,'gt_txt','train'),
+    train_dataset = Total(
+        os.path.join(DEF_TTT_DIR,'images','train'),
+        os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
+        os.path.join(DEF_TTT_DIR,'gt_txt','train'),
         out_box_format='polyxy',
-        max_image_size=(720,1280),
         )
+    # train_dataset = ICDAR13(
+    #     os.path.join(DEF_IC13_DIR,'images','train'),
+    #     os.path.join(DEF_IC13_DIR,'gt_txt','train'),
+    #     out_box_format='polyxy',
+    #     max_image_size=(720,1280),
+    #     )
     num_workers = 0
     batch = 1
 
@@ -244,8 +246,8 @@ if __name__ == "__main__":
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
-    logger = SummaryWriter(work_dir)
-    # logger = None
+    # logger = SummaryWriter(work_dir)
+    logger = None
 
     # try:
     train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger,work_dir)
