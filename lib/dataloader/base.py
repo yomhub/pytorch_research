@@ -11,9 +11,10 @@ from torchvision import transforms, utils
 from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize,np_img_normalize
 
 def default_collate_fn(batch):
+    # batch: list of dict
     ret = {}
     for key,value in batch[0].items():
-        if(key.lower() in ['box','text'] or 'list' in key.lower()):
+        if(key.lower() in ['box','text','name'] or 'list' in key.lower()):
             ret[key]=[d[key] for d in batch]
         elif(key.lower() in ['box_format'] or 'sig' in key.lower()):
             ret[key]=value[0] if(isinstance(value,list))else value
@@ -35,7 +36,7 @@ class BaseDataset(Dataset):
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
         normalized: True to normalize coordinate
-        image_size: (y,x,ch),(y,x),int or float for both (y,x)
+        max_image_size/image_size: (y,x),int or float for both (y,x)
     Outs:
         {
             'image': (h,w,1 or 3) np array.
@@ -58,7 +59,7 @@ class BaseDataset(Dataset):
     def __init__(self, img_dir, gt_mask_dir=None, gt_txt_dir=None, in_box_format:str=None,
         gt_mask_name_lambda=None, gt_txt_name_lambda=None, 
         out_box_format:str='cxywh', normalized=False, transform=None,
-        image_size=None,img_only = False):
+        image_size=None, max_image_size=None, img_only = False):
 
         self.in_box_format = in_box_format.lower() if(in_box_format!=None)else None
         self.out_box_format = out_box_format.lower()
@@ -73,16 +74,20 @@ class BaseDataset(Dataset):
         self.img_names = [os.path.join(path,o) for fld in self.imgdir for path,dir_list,file_list in os.walk(fld) for o in file_list if o.lower().split('.')[-1] in self.type_list]
 
         self.transform=transform
-        self.ch = 3
         if(isinstance(image_size,type(None))):
             self.image_size = None
         elif(not isinstance(image_size,Iterable)):
             self.image_size = (image_size,image_size)
-        elif(len(image_size)==3):
-            self.image_size = image_size[:2]
-            self.ch = image_size[3]
         else:
             self.image_size = image_size
+
+        if(isinstance(max_image_size,type(None))):
+            self.max_image_size = None
+        elif(not isinstance(max_image_size,Iterable)):
+            self.max_image_size = (max_image_size,max_image_size)
+        else:
+            self.max_image_size = max_image_size
+
         self.default_collate_fn = default_collate_fn
         self.x_input_function = default_x_input_function
 
@@ -107,12 +112,16 @@ class BaseDataset(Dataset):
             # if(not isinstance(self.image_size,type(None)) and img.shape[0:2]!=self.image_size):
             if(not isinstance(self.image_size,type(None))):
                 img = transform.resize(img,self.image_size,preserve_range=True)
+            elif(not isinstance(self.max_image_size,type(None)) and (org_shape[0]>self.max_image_size[0] or org_shape[1]>self.max_image_size[1])):
+                img = transform.resize(img,(min(org_shape[0],self.max_image_size[0]),min(org_shape[1],self.max_image_size[1])),preserve_range=True)
+
             sample = {'image': img}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(self.img_names[idx])
             sample = {'video': vfile}
 
         img_nm = os.path.basename(self.img_names[idx]).split('.')[0]
+        sample['name'] = img_nm
         if(self.gt_txt_dir!=None):
             assert(self.in_box_format!=None)
             ytdir = os.path.join(self.gt_txt_dir,self.gt_txt_name_lambda(img_nm)) if(self.gt_txt_name_lambda)else os.path.join(self.gt_txt_dir,img_nm)
@@ -124,8 +133,8 @@ class BaseDataset(Dataset):
                 
             if(not isinstance(boxs,type(None))):
                 if(self.normalize): boxs = np_box_nor(boxs,org_shape,self.in_box_format)
-                elif(not isinstance(self.image_size,type(None)) and sample['image'].shape[0:2]!=org_shape):
-                    boxs = np_box_resize(boxs,org_shape,self.image_size,self.in_box_format)
+                elif(sample['image'].shape[0:2]!=org_shape):
+                    boxs = np_box_resize(boxs,org_shape,sample['image'].shape[0:2],self.in_box_format)
                 if(self.in_box_format!=self.out_box_format):
                     boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
                 sample['box']= boxs

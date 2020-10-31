@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.craft import CRAFT
 from lib.utils.img_hlp import cv_getDetCharBoxes_core
+from lib.utils.net_hlp import init_weights
 
 class SiameseNet(nn.Module):
     """ The basic siamese network joining network, that takes the outputs of
@@ -99,6 +100,7 @@ class SiameseCRAFT(nn.Module):
             nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=1), nn.ReLU(inplace=True),
             nn.Conv2d(feature_chs//4, 1, kernel_size=1),
         )
+        init_weights(self.map_conv)
     def forward(self, x):
         return self.base_net(x)
     def match(self,obj,search):

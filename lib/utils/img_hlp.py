@@ -268,8 +268,8 @@ def torch_img_normalize(img,mean=(0.485, 0.456, 0.406), variance=(0.229, 0.224, 
     if(not isinstance(mean,Iterable)):mean = [mean]*chs
     if(not isinstance(variance,Iterable)):variance = [variance]*chs
     img = img.float()
-    img -= torch.mul(torch.tensor(mean,dtype=torch.float32),255.0).float().to(img.device)
-    img /= torch.mul(torch.tensor(variance,dtype=torch.float32),255.0).float().to(img.device)
+    img -= torch.mul(torch.tensor(mean,dtype=img.dtype),255.0).to(img.device)
+    img /= torch.mul(torch.tensor(variance,dtype=img.dtype),255.0).to(img.device)
     return img
     
 def np_2d_gaussian(img_size,x_range=(-1.5,1.5),y_range=(-1.5,1.5),sigma:float=0.9,mu:float=0.0):
@@ -292,8 +292,8 @@ def np_2d_gaussian(img_size,x_range=(-1.5,1.5),y_range=(-1.5,1.5),sigma:float=0.
         y_range = (-y_range,y_range)
 
     dx, dy = np.meshgrid(
-        np.linspace(x_range[0],x_range[1],img_size[1]), 
-        np.linspace(y_range[0],y_range[1],img_size[0]))
+        np.linspace(x_range[0],x_range[1],img_size[1],dtype=np.float32), 
+        np.linspace(y_range[0],y_range[1],img_size[0],dtype=np.float32))
 
     d = np.sqrt(dx**2+dy**2)
     g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
@@ -358,8 +358,8 @@ def cv_box_overlap(boxes1,boxes2):
     """
     Calculate box overlap in CV coordinate
     Args:
-        boxes1: ((N1),2,4) CV coordinate
-        boxes1: ((N2),2,4) CV coordinate
+        boxes1: ((N1),2,4 or k) CV coordinate
+        boxes1: ((N2),2,4 or k) CV coordinate
     Return:
         overlap: (N1,N2) array, 0.0 for non-overlap
     """
@@ -375,6 +375,40 @@ def cv_box_overlap(boxes1,boxes2):
             tmp.append(a/(p1.area+p2.area-a) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
     return np.array(ans)
+
+def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
+    """
+    Box match algorithm
+    Args:
+        pred: ((N1),2,4) CV coordinate
+        gt: ((N2),2,4) CV coordinate
+        bg: optional, ((N3),2,4) CV coordinate
+        ovth: overlap threshold, default is 0.5
+    Return:
+        id_list: id list of matched, non-negative for gt boxes, negative for bg boxes if have.
+        Usage e.g. 
+            if(id_list[i] and id_list[i]>=0):gt[id_list[i]]
+            if(id_list[i] and id_list[i]<0):bg[id_list[i]]
+    """
+    pred = pred.reshape((-1,4,2))
+    id_list = [None for i in range(pred.shape[0])]
+    if(not isinstance(bg,type(None))):
+        bg = bg.reshape((-1,4,2))
+        ovs = cv_box_overlap(pred,bg)
+        for i in range(pred.shape[0]):
+            imax = np.argmax(ovs[i])
+            if(ovs[i,imax]>=ovth):
+                id_list[i] = -1-int(imax)
+
+    ovs = cv_box_overlap(pred,gt)
+    for i in range(pred.shape[0]):
+        if(id_list[i]!=None):
+            continue
+        imax = np.argmax(ovs[i])
+        if(ovs[i,imax]>=ovth):
+            id_list[i] = imax
+            
+    return id_list
 
 def cv_box2cvbox(boxes,image_size,box_format:str):
     """
@@ -435,6 +469,9 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
         h_multi: final height will be k*h_multi
         w_min: final width will greater than w_min
         h_min: final height will greater than h_min
+    Return:
+        subimg: (h,w,3)
+        M: mapping matrix
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
     w = max((int)(np.linalg.norm(box[0] - box[1])),w_min)
@@ -774,13 +811,20 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
         else:
             # diasble split
             total_len = -1
+
         ch_boxes = [] # (k,4,2)
         # Generate character level boxes
-        if(box.shape[0]==4):
-            # rectangle
-            if(total_len<0):
+        if(total_len<0):
+            # diasble split
+            if(box.shape[0]==4):
                 ch_boxes.append(box)
-                continue
+            else:
+                # polygon
+                # for j in range(box.shape[0]//2-1):
+                #     ch_boxes.append((box[j],box[j+1],box[-j-2],box[-j-1]))
+                ch_boxes.append((box[0],box[box.shape[0]//2-1],box[-box.shape[0]//2],box[-1]))
+        elif(box.shape[0]==4):
+            # rectangle
             up_dxy = np.linspace(box[0],box[1],total_len+1)
             dw_dxy = np.linspace(box[3],box[2],total_len+1)
             for txi in range(total_len):
@@ -791,11 +835,6 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                     ch_boxes.append(((up_dxy[txi]+dw_dxy[txi])/2,(up_dxy[txi+1]+dw_dxy[txi+1])/2,dw_dxy[txi+1],dw_dxy[txi]))
                 else:
                     ch_boxes.append((up_dxy[txi],up_dxy[txi+1],dw_dxy[txi+1],dw_dxy[txi]))
-        elif(total_len<0):
-            # polygon
-            # for j in range(box.shape[0]//2-1):
-            #     ch_boxes.append((box[j],box[j+1],box[-j-2],box[-j-1]))
-            ch_boxes.append((box[0],box[box.shape[0]//2-1],box[-box.shape[0]//2],box[-1]))
         else:
             det_list = []
             total_det = 0
@@ -857,7 +896,7 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
             if(max_v > 0):
                 # res/=max_v
                 sub_mask = ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
-                sub_mask = np.where(sub_mask>res,sub_mask,res)
+                sub_mask = np.where(sub_mask>res[0:sub_mask.shape[0],0:sub_mask.shape[1]],sub_mask,res[0:sub_mask.shape[0],0:sub_mask.shape[1]])
                 ch_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
         # Affin mask
         if(not affin):

@@ -23,6 +23,7 @@ from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *
+from lib.utils.log_hlp import save_image
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
 
@@ -96,8 +97,9 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
             ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
             af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
             
-            img = cv_mask_image(x,pred[0,0].to('cpu').detach().numpy())
-            logger.add_image('Batch {} image'.format(batch), img, fm_cnt,dataformats='HWC')
+            # img = cv_mask_image(x,pred[0,0].to('cpu').detach().numpy())
+            # if(logger):
+            #     logger.add_image('Batch {} image'.format(batch), img, fm_cnt,dataformats='HWC')
             # tracking
             sub_ch_loss = torch.zeros_like(ch_loss)
             cnt = 0
@@ -109,8 +111,10 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
                     continue
                 if(o not in obj_ids):
                     continue
-                # tensor (batch,3,h,w)
+
+                # numpy (h,w3)
                 subx = wd_img_txt_box_dict[o][0]
+
                 nid = np.where(obj_ids==o)[0][0]
                 wd_old = wd_img_txt_box_dict[o][1]
                 wd_now = wrd_list[nid]
@@ -119,55 +123,60 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
                     # Simply delete old word and it will update later
                     pops.append(o)
                     continue
-                elif(len(wd_old)>len(wd_now)):
+                elif(len(wd_old)>len(wd_now)+1):
                     # occlusion happen, cutting old image
                     try:
                         sp = wd_old.index(wd_now)
                         ep = sp+len(wd_now)
-                        h,w = subx.shape[2:]
+                        h,w = subx.shape[:-1]
                         sp/=len(wd_old)
                         ep/=len(wd_old)
                         if(w>=h):
                             sp = int(w*sp)
                             ep = int(w*ep)
-                            subx = subx[:,:,:,sp:ep]
+                            subx = subx[:,sp:ep]
                         else:
                             sp = int(h*sp)
                             ep = int(h*ep)
-                            subx = subx[:,:,sp:ep,:]
+                            subx = subx[sp:ep]
                     except:
                         continue
-                if(subx.shape[-1]<8 or subx.shape[-2]<8):
+                if(subx.shape[-2]<8 or subx.shape[-3]<8):
                     continue
-                np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
-                obj_map,obj_feat = net(torch_img_normalize(subx.permute(0,2,3,1)).permute(0,3,1,2).to(device))
-                match_map,_ = net.match(obj_feat,feat)
                 
-                sub_ch_mask, _,_,_ = cv_gen_gaussian(
-                    np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy'),
-                    None,match_map.shape[2:],affin=False)
+                nor_subx = np.expand_dims(np_img_normalize(subx),0)
+                nor_subx = torch.from_numpy(nor_subx).float().permute(0,3,1,2).to(device)
+                obj_map,obj_feat = net(nor_subx)
+                match_map,_ = net.match(obj_feat,feat)
+                trk_box = np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy')
+                sub_ch_mask, _,_,_ = cv_gen_gaussian(trk_box,None,match_map.shape[2:],affin=False)
                 tracking_loss = criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
                 sub_ch_loss += tracking_loss
 
-                # np_subx = subx.permute(0,2,3,1).to('cpu').detach().numpy()[0].astype(x.dtype)
+                np_subx = subx.astype(x.dtype)
                 x[0:np_subx.shape[0],0:np_subx.shape[1],:]=np_subx
-                img = cv_draw_poly(x,np_box_resize(boxes[nid],x.shape[:-1],img.shape[:-1],'polyxy'))
+                img = cv_draw_poly(x,boxes[nid])
                 img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
-                logger.add_image('Batch {}, id {}, prediction'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
+                if(logger):
+                    logger.add_image('Batch {}, id {}, prediction'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
                 img_msk = cv_mask_image(img,sub_ch_mask)
-                logger.add_image('Batch {}, id {}, GT'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
+                if(logger):
+                    logger.add_image('Batch {}, id {}, GT'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
                 cnt+=1
+
             for o in pops:
+                # delete old tracking target
                 wd_img_txt_box_dict.pop(o)
             if(cnt>0):
                 sub_ch_loss /= cnt
             loss = ch_loss + af_loss + sub_ch_loss
-
-            # logger.add_scalar('Batch {} ch_loss'.format(batch), ch_loss.item(), fm_cnt)
-            # logger.add_scalar('Batch {} af_loss'.format(batch), af_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} sub_ch_loss'.format(batch), sub_ch_loss.item(), fm_cnt)
-            logger.add_scalar('Batch {} total loss'.format(batch), loss.item(), fm_cnt)
-            logger.flush()
+            
+            if(logger):
+                # logger.add_scalar('Batch {} ch_loss'.format(batch), ch_loss.item(), fm_cnt)
+                # logger.add_scalar('Batch {} af_loss'.format(batch), af_loss.item(), fm_cnt)
+                logger.add_scalar('Batch {} sub_ch_loss'.format(batch), sub_ch_loss.item(), fm_cnt)
+                logger.add_scalar('Batch {} total loss'.format(batch), loss.item(), fm_cnt)
+                logger.flush()
             print("Loss at batch {} step {}\t ch_loss={}\t af_loss={}\t sub_ch_loss={}\t\n".format(batch,fm_cnt,ch_loss.item(),af_loss.item(),sub_ch_loss.item()))
             
             loss.backward()
@@ -177,11 +186,11 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger):
             for box,obj_id,wrd in zip(boxes,obj_ids,wrd_list):
                 if(obj_id in wd_img_txt_box_dict):
                     continue
-                sub_ch_img,_ = cv_crop_image_by_bbox(x,box,w_min=16*3,h_min=16*3)
+                sub_ch_img_np,_ = cv_crop_image_by_bbox(x,box,w_min=16*3,h_min=16*3)
                 # sub_ch_img = cv_crop_image_by_bbox(x,box,32,32)
                 # (1,3,h,w)
-                sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
-                wd_img_txt_box_dict[obj_id] = [sub_ch_img,wrd,box]
+                # sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
+                wd_img_txt_box_dict[obj_id] = [sub_ch_img_np,wrd,box]
 
             # end of single frame
             fm_cnt+=1
@@ -240,7 +249,7 @@ if __name__ == "__main__":
     # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev)
     # net = SiameseCRAFT(base_net=basenet,feature_chs=32)
     # net = net.float().to(dev)
-    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft3.pkl').float().to(dev)
+    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft2.pkl').float().to(dev)
     # if(os.path.exists(args.opt)):
     #     opt = torch.load(args.opt)
     # elif(args.opt.lower()=='adam'):
@@ -286,6 +295,7 @@ if __name__ == "__main__":
         ""
     print(summarize)
     logger = SummaryWriter(os.path.join(work_dir,'log','siam'))
+    # logger = None
 
     # try:
     train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger)

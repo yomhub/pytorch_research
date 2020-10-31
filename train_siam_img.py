@@ -17,7 +17,7 @@ from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LS
 from lib.model.siamfc import *
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
-from lib.dataloader.icdar import ICDAR
+from lib.dataloader.icdar import *
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
@@ -26,101 +26,119 @@ from lib.utils.img_hlp import *
 from lib.utils.log_hlp import save_image
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
+from dirs import *
 
 
-__DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
-__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
-__DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
-__DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
-__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
-__DEF_MSRA_DIR = os.path.join(__DEF_DATA_DIR, 'MSRA-TD500')
-__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
-__DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
-
-if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
-elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
-else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
-
-def train_siam(loader,net,opt,criteria,device,train_size,logger):
+def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
     maxh,maxw = 600,1200
+    max_boxes = 5
     for batch,sample in enumerate(loader):
         assert('box' in sample and 'image' in sample)
         xs = sample['image']
         boxes_bth = sample['box']
         bxf = sample['box_format']
+        
         batch_size = int(xs.shape[0])
+        words_bth = None
         if('text' in sample):
             words_bth = sample['text']
         for i in range(batch_size):
-            x = xs[i]
-            img_size = x.shape[0:-1]
-            x_nor = torch_img_normalize(x)
-            if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
-                x_nor = transform.resize(x_nor,(min(x_nor.shape[-3],maxh),min(x_nor.shape[-2],maxw),x_nor.shape[-1]),preserve_range=True)
-                x_nor = torch.from_numpy(x_nor)
-            x_nor = x_nor.reshape((1,x_nor.shape[0],x_nor.shape[1],x_nor.shape[2]))
-            boxes = boxes_bth[i]
-            if('poly' not in sample['box_format']):
-                boxes = cv_box2cvbox(boxes,img_size,sample['box_format'])
-            opt.zero_grad()
-            x_nor = x_nor.float().permute(0,3,1,2).to(device)
-            pred,feat = net(x_nor)
-            sub_ch_loss = torch.zeros_like(pred[0,0,0,0])
-            cnt = 0
-            for box in boxes:
-                # if(img_size!=x_nor.shape[1:-1]):
-                #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
-                sub_img,_ = cv_crop_image_by_bbox(
-                    x.numpy(),np_polybox_minrect(box,'polyxy'),w_min=16*3,h_min=16*3)
-                sub_img_nor = np_img_normalize(sub_img)
-                sub_img_nor = np.expand_dims(sub_img_nor,0)
-                sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
-                try:
-                    obj_map,obj_feat = net(sub_img_nor)
-                    match_map,_ = net.match(obj_feat,feat)
-                    sub_ch_mask, _,_,_ = cv_gen_gaussian(
-                        np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
-                        None,match_map.shape[2:],affin=False)
-                    y = torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device)
-                    sub_ch_loss += criteria(match_map[:,0],y)
-                    cnt+=1
-                except:
+            try:
+                x = xs[i]
+                wrd_list = sample['text'][i]
+                img_size = x.shape[0:-1]
+                x_nor = torch_img_normalize(x)
+                if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
+                    x_nor = transform.resize(x_nor,(min(x_nor.shape[-3],maxh),min(x_nor.shape[-2],maxw),x_nor.shape[-1]),preserve_range=True)
+                    x_nor = torch.from_numpy(x_nor)
+                x_nor = x_nor.reshape((1,x_nor.shape[0],x_nor.shape[1],x_nor.shape[2]))
+                boxes = boxes_bth[i]
+                if('poly' not in sample['box_format']):
+                    boxes = cv_box2cvbox(boxes,img_size,sample['box_format'])
+
+                opt.zero_grad()
+                x_nor = x_nor.float().permute(0,3,1,2).to(device)
+                pred,feat = net(x_nor)
+
+                ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
+                    np_box_resize(boxes,img_size,pred.shape[2:],'polyxy'),
+                    wrd_list,pred.shape[2:])
+
+                ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
+                af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
+
+                sub_ch_loss = torch.zeros_like(ch_loss)
+                cnt = 0
+                
+                # Select top max_boxes biggest boxes 
+                recbox = np_polybox_minrect(boxes,'polyxy')
+                ws = np.linalg.norm(recbox[:,0]-recbox[:,1],axis=-1)
+                hs = np.linalg.norm(recbox[:,0]-recbox[:,3],axis=-1)
+                inds = np.argsort(ws*hs)[::-1]
+                boxes = boxes[inds[:max_boxes]]
+                recbox = recbox[inds[:max_boxes]]
+                for bxi,box in enumerate(boxes):
+                    # if(img_size!=x_nor.shape[1:-1]):
+                    #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
+                    sub_img,_ = cv_crop_image_by_bbox(
+                        x.numpy(),recbox[bxi],w_min=16*3,h_min=16*3)
+                    sub_img_nor = np_img_normalize(sub_img)
+                    sub_img_nor = np.expand_dims(sub_img_nor,0)
+                    sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
+                    try:
+                        obj_map,obj_feat = net(sub_img_nor)
+                        match_map,_ = net.match(obj_feat,feat)
+                        sub_ch_mask, _,_,_ = cv_gen_gaussian(
+                            np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
+                            None,match_map.shape[2:],affin=False)
+
+                        sub_ch_loss += criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
+                        match_map_np = match_map.detach().to('cpu').numpy()
+                        cnt+=1
+                    except:
+                        continue
+                if(sub_ch_loss==0.0):
                     continue
-            if(sub_ch_loss==0.0):
-                continue
-            if(cnt):
-                sub_ch_loss/=cnt
-                try:
-                    img = x.numpy().astype(np.uint8)
-                    sub_img = sub_img.astype(np.uint8)
-                    img[0:sub_img.shape[0],0:sub_img.shape[1],:]=sub_img
-                    img = cv_draw_poly(img,np_box_resize(box,x.shape[:-1],img.shape[:-1],'polyxy'))
+                if(cnt):
+                    sub_ch_loss/=cnt
+                    try:
+                        img = x.numpy().astype(np.uint8)
+                        sub_img = sub_img.astype(np.uint8)
+                        img[0:sub_img.shape[0],0:sub_img.shape[1],:]=sub_img
+                        img = cv_draw_poly(img,np_box_resize(box,x.shape[:-1],img.shape[:-1],'polyxy'))
 
-                    img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
-                    logger.add_image('Tracking result', img_msk, batch*batch_size+i,dataformats='HWC')
-                    img_msk = cv_mask_image(img,sub_ch_mask)
-                    logger.add_image('Tracking GT', img_msk, batch*batch_size+i,dataformats='HWC')
-                except:
-                    None
-            
-            loss = sub_ch_loss
-            logger.add_scalar('sub_ch_loss', sub_ch_loss.item(), batch*batch_size+i)
-            logger.flush()
-            print("sub_ch_loss {}, in step {}.".format(sub_ch_loss.item(),batch*batch_size+i))
-            loss.backward()
-            opt.step()
-            del pred
-            del feat
-            del obj_map
-            del obj_feat
-            del match_map
-            del y
-            del x_nor
-            del sub_img_nor
-            del sample
+                        img_msk = cv_mask_image(img,match_map_np[0,0])
+                        if(logger):
+                            # save_image(os.path.join(work_dir,'images','pred_tracking_'+sample['name'][i]),img_msk)
+                            logger.add_image('Tracking result', img_msk, batch*batch_size+i,dataformats='HWC')
+                            
+                        img_msk = cv_mask_image(img,sub_ch_mask)
+                        if(logger):
+                            # save_image(os.path.join(work_dir,'images','gt_tracking_'+sample['name'][i]),img_msk)
+                            logger.add_image('Tracking GT', img_msk, batch*batch_size+i,dataformats='HWC')
+                    except:
+                        None
+                
+                    loss = sub_ch_loss+ch_loss+af_loss
+                    if(logger):
+                        logger.add_scalar('sub_ch_loss', sub_ch_loss.item(), batch*batch_size+i)
+                        logger.add_scalar('total loss'.format(batch), loss.item(), batch*batch_size+i)
+                        logger.flush()
+                    print("step {}, sub_ch_loss {}, chloss {}, afloss {}.".format(batch*batch_size+i,sub_ch_loss.item(),ch_loss.item(),af_loss.item()))
 
+                    loss.backward()
+                    opt.step()
+                del pred
+                del feat
+                del obj_map
+                del obj_feat
+                del match_map
+                del x_nor
+                del sub_img_nor
+                del sample
+                del sub_ch_loss
+            except Exception as e:
+                print("Faild in training image {}, step {}, err: {}".format(sample['name'][i],batch*batch_size+i,e))
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
 
@@ -154,46 +172,48 @@ if __name__ == "__main__":
     lr_decay_step_size = tcfg['LR_DEC_STP']
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     batch = args.batch
-    work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
+    work_dir = DEF_WORK_DIR
+    work_dir = os.path.join(work_dir,'log','siam_img')
     log_step_size = args.logstp
 
     # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
     sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
-    isdebug = True
+    # isdebug = True
     # use_net = 'craft_mob'
-    use_dataset = 'minetto'
+    # use_dataset = 'minetto'
     # log_step_size = 1
     # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
 
     dev = 'cuda' if(use_cuda)else 'cpu'
-    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev)
-    # net = SiameseCRAFT(base_net=basenet,feature_chs=32)
+    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
+    # net = SiameseCRAFT(base_net=basenet,feature_chs=32).float().to(dev)
     # net = net.float().to(dev)
-    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft2.pkl').float().to(dev)
+    net = torch.load(lod_dir).float().to(dev)
     # if(os.path.exists(args.opt)):
     #     opt = torch.load(args.opt)
     # elif(args.opt.lower()=='adam'):
-    #     opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
+    opt = optim.Adam(net.parameters(), lr=0.001, weight_decay=tcfg['OPT_DEC'])
     # elif(args.opt.lower() in ['adag','adagrad']):
     #     opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     # else:
     #     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
+    # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
     # opt.add_param_group(net.parameters())
     # train_dataset = Total(
-    #     os.path.join(__DEF_TTT_DIR,'Images','Train'),
-    #     os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
-    #     os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
+    #     os.path.join(__DEF_TTT_DIR,'images','train'),
+    #     os.path.join(__DEF_TTT_DIR,'gt_pixel','train'),
+    #     os.path.join(__DEF_TTT_DIR,'gt_txt','train'),
     #     out_box_format='polyxy',
     #     )
-    train_dataset = ICDAR(
-        os.path.join(__DEF_IC15_DIR,'images','train'),
-        os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
-        out_box_format='polyxy',)
+    train_dataset = ICDAR13(
+        os.path.join(DEF_IC13_DIR,'images','train'),
+        os.path.join(DEF_IC13_DIR,'gt_txt','train'),
+        out_box_format='polyxy',
+        max_image_size=(720,1280),
+        )
     num_workers = 0
     batch = 1
 
@@ -224,11 +244,11 @@ if __name__ == "__main__":
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
-    logger = SummaryWriter(os.path.join(work_dir,'log','siam'))
+    logger = SummaryWriter(work_dir)
     # logger = None
 
     # try:
-    train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger)
+    train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger,work_dir)
     # except Exception as e:
     #     print(e)
         

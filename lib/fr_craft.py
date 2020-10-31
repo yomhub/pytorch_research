@@ -431,7 +431,7 @@ class CRAFTTester(Tester):
             gtbox = np_box_resize(gtbox,x.shape[2:],pred.shape[2:],'polyxy')
             ovlaps = []
             fp = 0
-            gtbox_grp = gtbox
+            gtbox_grp = gtbox.copy()
             # (gt,pred)
             # ovlap = cv_box_overlap(gtbox,odet)
             # ovlap = np.where(ovlap>=self._box_ovlap_th,1,0)
