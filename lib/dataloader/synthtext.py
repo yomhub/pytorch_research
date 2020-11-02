@@ -92,7 +92,7 @@ class SynthText(Dataset):
 
         if self.random_rote_rate:
             angel = np.random.randint(0-self.random_rote_rate, self.random_rote_rate)
-            img, M = cv_rotate(angel, img)
+            img, M = cv_rotate(img,angel)
             char_label = np_polybox_rotate(char_label,M)
             word_label = np_polybox_rotate(word_label,M)
 

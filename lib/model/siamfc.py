@@ -95,16 +95,18 @@ class SiameseCRAFT(nn.Module):
     def __init__(self, base_net, feature_chs):
         super(SiameseCRAFT, self).__init__()
         self.base_net = base_net
+        self.match_batchnorm = nn.BatchNorm2d(feature_chs)
         self.map_conv = nn.Sequential(
             nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=1), nn.ReLU(inplace=True),
             nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=1), nn.ReLU(inplace=True),
             nn.Conv2d(feature_chs//4, 1, kernel_size=1),
         )
-        init_weights(self.map_conv)
+        # init_weights(self.map_conv)
     def forward(self, x):
         return self.base_net(x)
     def match(self,obj,search):
         match_map = conv2d_dw_group(search,obj)
+        match_map = self.match_batchnorm(match_map)
         return self.map_conv(match_map),match_map
 
 def conv2d_dw_group(x, kernel):

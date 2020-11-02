@@ -110,11 +110,12 @@ class MSE_OHEM_Loss(nn.Module):
         
 
 class MSE_2d_Loss(nn.Module):
-    def __init__(self,positive_mult = 3):
+    def __init__(self,positive_mult = 3,pixel_sum:bool=True):
         super(MSE_2d_Loss, self).__init__()
         self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
         self._positive_mult = float(positive_mult)
-    
+        self._pixel_sum = bool(pixel_sum)
+
     def mse_loss_single(self,x,y):
         positive_mask = y > 0
         sample_loss = self.mse_loss(x, y)
@@ -126,14 +127,17 @@ class MSE_2d_Loss(nn.Module):
         if k + num_positive > num_all:
             k = int(num_all - num_positive)
         if k < 10:
-            avg_sample_loss = sample_loss.mean()
+            sample_loss = torch.sum(sample_loss) if(self._pixel_sum)else torch.mean(sample_loss)
         else:
             positive_loss = torch.masked_select(sample_loss, positive_mask)
             negative_loss = torch.masked_select(sample_loss, y <= 0.0)
             negative_loss_topk, _ = torch.topk(negative_loss, k)
-            avg_sample_loss = positive_loss.mean() + negative_loss_topk.mean()
+            if(self._pixel_sum):
+                sample_loss = torch.sum(positive_loss) + torch.sum(negative_loss_topk)
+            else:
+                sample_loss = torch.mean(positive_loss) + torch.mean(negative_loss_topk)
 
-        return avg_sample_loss
+        return sample_loss
 
     def forward(self, x, y):
         """

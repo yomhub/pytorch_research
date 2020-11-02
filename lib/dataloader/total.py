@@ -63,6 +63,9 @@ class Total(base.BaseDataset):
                 line = line + ' ' + lines[i].strip()
             i += 1
             parts = line.split(',')
+            if(parts[2].split()[-1][3]=='#'):
+                # skip Orientation = #
+                continue
             xs = [int(o) for o in parts[0].split('[[')[-1].split(']]')[0].split()]
             ys = [int(o) for o in parts[1].split('[[')[-1].split(']]')[0].split()]
             txt = parts[3].split()[-1][3:-2]

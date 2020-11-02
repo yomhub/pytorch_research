@@ -71,6 +71,9 @@ def np_box_rescale(box,scale,box_format:str):
             'polyxy','polyyx' for polygon
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
+    if(box.dtype==np.object):
+        tmp = [np_box_rescale(o,scale,box_format) for o in box]
+        return np.array(tmp)
     if(box[:,-(box.shape[-1]//2*2):].max()<=1.0): 
         return box # no need for normalized coordinate
     if(not isinstance(scale,Iterable)):scale = (scale,scale)
@@ -143,8 +146,14 @@ def np_polybox_rotate(cv_polybox,M):
         cv_polybox: ((Box number), point number, 2)
     """
     M = M[:2,:3]
+    len2 = False
     if(len(cv_polybox.shape)==2):
         cv_polybox = np.expand_dims(cv_polybox,0)
+        len2 = True
+    elif(cv_polybox.dtype==np.object):
+        tmp = [np_polybox_rotate(o,M) for o in cv_polybox]
+        return np.array(tmp)
+            
     # (x,y)->(x,y,1)
     cv_polybox = np.pad(cv_polybox,[(0,0),(0,0),(0,1)],constant_values=1)
     # change axis from (boxs,points,3) to (boxs,3,points)
@@ -153,7 +162,7 @@ def np_polybox_rotate(cv_polybox,M):
     ret = M.dot(cv_polybox)
     # change (2,boxs,points) to (boxs,points,2)
     ret = np.moveaxis(ret,0,-1)
-    return ret
+    return ret if(not len2)else ret[0]
 
 def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     """
@@ -364,6 +373,8 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
     # map to (0,maxv)
     dst_mask -= min_dst
     max_dst = np.max(dst_mask)
+    if(max_dst==0.0):
+        return (dst_mask+1.0)*0.5
     # map to (0,1)
     dst_mask /= max_dst
     # map to (1,0)
@@ -413,13 +424,21 @@ def cv_create_affine_boxes(boxs):
 
     return np.stack([up_cent_sp,up_cent_ep,dw_cent_ep,dw_cent_sp],axis=1)
 
-def cv_rotate(angle, image):
+def cv_rotate(image,angle,change_shape:bool=False):
     """
     Rotate image
     """
     h, w = image.shape[:-1]
     center = (w//2, h//2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    if(change_shape):
+        orgbox = np.array(((0,0),(w,0),(w,h),(0,h)))
+        orgbox = np_polybox_rotate(orgbox,M)
+        orgbox = np_polybox_minrect(orgbox)
+        new_w,new_h = (orgbox[2]-orgbox[0])
+        M[0,-1]+=(new_w-w)/2
+        M[1,-1]+=(new_h-h)/2
+        h, w = int(new_h), int(new_w)
     image = cv2.warpAffine(image, M, (w, h))
     return image, M
 
@@ -532,7 +551,7 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
     """
     Crop image by box.
     Args:
-        image: numpy with shape (h,w,3)
+        image: numpy with shape (h,w,(3 or 1))
         box: shape (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
         w_multi: final width will be k*w_multi
         h_multi: final height will be k*h_multi
@@ -871,12 +890,12 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
 
     return np.array(matrix_list),matrix_map
 
-def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
+def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
     """
     Generate text level gaussian distribution
     Parameters:
         cv_boxes: ((box number),points number,2) in (x,y). Points number MUST be even
-        texts: list of str, set None to disable text level split
+        texts: list with len((box number)) or str (for single box), set None to disable text level split
         img_size: tuple of (h,w)
         ch_mask: if not None, generator will add the gaussian distribution on mask
         af_mask: if not None, generator will add the gaussian distribution on mask
@@ -888,7 +907,8 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
     """
     if(len(cv_boxes.shape)==2):
         cv_boxes = np.expand_dims(cv_boxes,0)
-    assert cv_boxes.shape[1]%2==0
+    if(not isinstance(texts,list)):
+        texts = [texts]
     if(not isinstance(img_size,Iterable)):
         img_size = (int(img_size),int(img_size))
     if(isinstance(ch_mask,type(None))):
@@ -912,7 +932,8 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
         else:
             # diasble split
             total_len = -1
-
+        if(total_len==1):
+            total_len = -1
         ch_boxes = [] # (k,4,2)
         # Generate character level boxes
         if(total_len<0):
@@ -937,6 +958,7 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                 else:
                     ch_boxes.append((up_dxy[txi],up_dxy[txi+1],dw_dxy[txi+1],dw_dxy[txi]))
         else:
+            # box: (2k,2) for polygon xy
             det_list = []
             total_det = 0
             # calculate center line length
@@ -944,8 +966,9 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                 up = box[j+1] - box[j]
                 dw = box[-j-2] - box[-j-1]
                 det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
-                total_det+=max(det)
+                total_det+=det
                 det_list.append(det)
+
             # single text lenth
             single_len = total_det/total_len
             txi = 0
@@ -956,23 +979,42 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
                 if(det_list[j]+last_length<=single_len):
                     last_length+=det_list[j]
                     if(not isinstance(last_ps,type(None))):
+                        # Don't have last remnant
                         last_ps = np.array((box[j],box[-j]))
                     continue
                 
                 if(last_length>0.0):
-                    bx_len
+                    bx_len = det_list[j] + last_length
                 else:
                     bx_len = det_list[j]
+                # total splited box number
                 divs = int(bx_len/single_len)
-                res += bx_len - single_len*divs
-                perc = 1-res/bx_len
-                up_line = box[j+1] - box[j]
-                dw_line = box[-j-1] - box[-j]
-                # (2,2) last points
-                last_ps = np.array((up_line*perc,dw_line*perc))
-                up_dxy = np.linspace(box[0],box[1],total_len+1)
-                last_length = res
 
+                up_line = box[j+1] - box[j]
+                dw_line = box[-j-2] - box[-j-1]
+                up_sp,dw_sp = box[j],box[-j-1]
+                sp_len = single_len - last_length
+                up_last,dw_last = up_sp + up_line*sp_len/det_list[j],dw_sp + dw_line*sp_len/det_list[j]
+                # add 1st box
+                if(not isinstance(last_ps,type(None))):
+                    ch_boxes.append((last_ps[0],up_last,dw_last,last_ps[1]))
+                else:
+                    ch_boxes.append((up_sp,up_last,dw_last,dw_sp))
+                
+                up_dxy = np.linspace(box[0],box[1],total_len+1)
+                # add 2nd~end boxes
+                for sub_bxi in range(divs-1):
+                    # append single polygon
+                    new_up_last,new_dw_last = up_last + up_line*single_len/det_list[j],dw_last + dw_line*single_len/det_list[j]
+                    ch_boxes.append((up_last,new_up_last,new_dw_last,dw_last))
+                    up_last,dw_last = new_up_last,new_dw_last
+
+                # remain lenth for next last_length
+                last_length = bx_len - single_len*divs
+                last_ps = np.array((up_last,dw_last))
+            if(last_length>=0.6*single_len):
+                bxi = box.shape[0]//2-1
+                ch_boxes.append((up_last,box[bxi],box[-bxi-1],dw_last))
         # draw boxes from ch_boxes
         ch_boxes = np.array(ch_boxes) # (k,4,2)
         if(ch_boxes.shape[0]==0):
@@ -987,6 +1029,8 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
         # Generate chmask
         for chi in range(ch_boxes.shape[0]):
             deta_x, deta_y = dxy[chi].astype(np.int16)
+            if(deta_x*deta_y<=0):
+                continue
             min_x = max(int(ch_boxes_rec[chi,0,0]),0)
             min_y = max(int(ch_boxes_rec[chi,0,1]),0)
 
@@ -1011,6 +1055,8 @@ def cv_gen_gaussian(cv_boxes,texts:list,img_size,ch_mask:np.ndarray=None,af_mask
         dxy = aff_boxes_rec[:,2]-aff_boxes_rec[:,0]
         for afi in range(aff_boxes.shape[0]):
             deta_x, deta_y = dxy[afi].astype(np.int16)
+            if(deta_x*deta_y<=0):
+                continue
             min_x = max(int(aff_boxes_rec[afi,0,0]),0)
             min_y = max(int(aff_boxes_rec[afi,0,1]),0)
 
