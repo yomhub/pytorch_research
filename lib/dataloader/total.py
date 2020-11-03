@@ -63,7 +63,8 @@ class Total(base.BaseDataset):
                 line = line + ' ' + lines[i].strip()
             i += 1
             parts = line.split(',')
-            if(parts[2].split()[-1][3]=='#'):
+            ort = parts[2].split()[-1]
+            if(len(ort)>4 and ort[3]=='#'):
                 # skip Orientation = #
                 continue
             xs = [int(o) for o in parts[0].split('[[')[-1].split(']]')[0].split()]

@@ -19,7 +19,7 @@ def default_collate_fn(batch):
         elif(key.lower() in ['box_format'] or 'sig' in key.lower()):
             ret[key]=value[0] if(isinstance(value,list))else value
         else:
-            ret[key]=torch.stack([torch.from_numpy(d[key])if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
+            ret[key]=torch.stack([torch.from_numpy(d[key].copy())if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
     return ret
 
 def default_x_input_function(sample,th_device): 

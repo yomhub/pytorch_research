@@ -92,22 +92,30 @@ class SiameseNet(nn.Module):
         return match_map
 
 class SiameseCRAFT(nn.Module):
-    def __init__(self, base_net, feature_chs):
+    def __init__(self, base_net, feature_chs, lock_basenet:bool=True):
         super(SiameseCRAFT, self).__init__()
         self.base_net = base_net
+        if(lock_basenet):
+            for i in self.base_net.parameters():
+                i.requires_grad=False
         self.match_batchnorm = nn.BatchNorm2d(feature_chs)
         self.map_conv = nn.Sequential(
-            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(inplace=True),
+            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(inplace=True),
             nn.Conv2d(feature_chs//4, 1, kernel_size=1),
         )
+        # self.final_act_fun = lambda x: torch.exp(-x*x/1.62)
+        self.final_act_fun = lambda x: x
+        
         # init_weights(self.map_conv)
     def forward(self, x):
         return self.base_net(x)
     def match(self,obj,search):
         match_map = conv2d_dw_group(search,obj)
         match_map = self.match_batchnorm(match_map)
-        return self.map_conv(match_map),match_map
+        score = self.map_conv(match_map)
+        score = self.final_act_fun(score)
+        return score,match_map
 
 def conv2d_dw_group(x, kernel):
     batch, channel = kernel.shape[:2]

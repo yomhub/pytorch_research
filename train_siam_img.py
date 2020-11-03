@@ -29,9 +29,12 @@ from lib.config.train_default import cfg as tcfg
 from dirs import *
 
 
-def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
+def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector=False):
     maxh,maxw = 600,1200
     max_boxes = 3
+    for o in net.state_dict().values():
+        device = o.device
+        break
     for batch,sample in enumerate(loader):
         assert('box' in sample and 'image' in sample)
         xs = sample['image']
@@ -62,35 +65,36 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
                 opt.zero_grad()
                 x_nor = x_nor.float().permute(0,3,1,2).to(device)
                 pred,feat = net(x_nor)
-                resized_boxes = np_box_resize(boxes,img_size,pred.shape[2:],'polyxy')
-                resized_recbox = np_polybox_minrect(resized_boxes)
-                pred_ch_mask = pred[0,0].to('cpu').detach().numpy()
-                pred_af_mask = pred[0,1].to('cpu').detach().numpy()
-                ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(resized_boxes,wrd_list,pred.shape[2:])
-                for bxi in range(resized_recbox.shape[0]):
-                    spx,spy = resized_recbox[bxi][0].astype(np.int16)
-                    sub_ch_mask,_ = cv_crop_image_by_bbox(pred_ch_mask,resized_recbox[bxi])
-                    sub_af_mask,_ = cv_crop_image_by_bbox(pred_af_mask,resized_recbox[bxi])
-                    subh,subw = sub_ch_mask.shape
-                    nLabels, labels = cv2.connectedComponents(
-                        np.logical_and(sub_ch_mask>=0.4,sub_ch_mask>sub_af_mask).astype(np.uint8),
-                        connectivity=4)
-                    if(nLabels<len(wrd_list[bxi])//2):
-                        ch_mask[spy:subh+spy,spx:subw+spx] = pred_ch_mask[spy:subh+spy,spx:subw+spx]
-                        af_mask[spy:subh+spy,spx:subw+spx] = pred_af_mask[spy:subh+spy,spx:subw+spx]
+                if(train_detector):
+                    resized_boxes = np_box_resize(boxes,img_size,pred.shape[2:],'polyxy')
+                    resized_recbox = np_polybox_minrect(resized_boxes)
+                    pred_ch_mask = pred[0,0].to('cpu').detach().numpy()
+                    pred_af_mask = pred[0,1].to('cpu').detach().numpy()
+                    ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(resized_boxes,wrd_list,pred.shape[2:])
+                    for bxi in range(resized_recbox.shape[0]):
+                        spx,spy = resized_recbox[bxi][0].astype(np.int16)
+                        sub_ch_mask,_ = cv_crop_image_by_bbox(pred_ch_mask,resized_recbox[bxi])
+                        sub_af_mask,_ = cv_crop_image_by_bbox(pred_af_mask,resized_recbox[bxi])
+                        subh,subw = sub_ch_mask.shape
+                        nLabels, labels = cv2.connectedComponents(
+                            np.logical_and(sub_ch_mask>=0.4,sub_ch_mask>sub_af_mask).astype(np.uint8),
+                            connectivity=4)
+                        if(nLabels<len(wrd_list[bxi])//2):
+                            ch_mask[spy:subh+spy,spx:subw+spx] = pred_ch_mask[spy:subh+spy,spx:subw+spx]
+                            af_mask[spy:subh+spy,spx:subw+spx] = pred_af_mask[spy:subh+spy,spx:subw+spx]
 
-                if(work_dir):
-                    img_msk = cv_mask_image(x.numpy(),ch_mask)
-                    save_image(os.path.join(work_dir,'images','gt_ch_mask_'+sample['name'][i]),img_msk)
-                    img_msk = cv_mask_image(x.numpy(),pred_ch_mask)
-                    save_image(os.path.join(work_dir,'images','pred_ch_mask_'+sample['name'][i]),img_msk)
-                    img_msk = cv_mask_image(x.numpy(),af_mask)
-                    save_image(os.path.join(work_dir,'images','gt_af_mask_'+sample['name'][i]),img_msk)
-                    img_msk = cv_mask_image(x.numpy(),pred_af_mask)
-                    save_image(os.path.join(work_dir,'images','pred_af_mask_'+sample['name'][i]),img_msk)
+                    if(work_dir):
+                        img_msk = cv_mask_image(x.numpy(),ch_mask)
+                        save_image(os.path.join(work_dir,'images','gt_ch_mask_'+sample['name'][i]),img_msk)
+                        img_msk = cv_mask_image(x.numpy(),pred_ch_mask)
+                        save_image(os.path.join(work_dir,'images','pred_ch_mask_'+sample['name'][i]),img_msk)
+                        img_msk = cv_mask_image(x.numpy(),af_mask)
+                        save_image(os.path.join(work_dir,'images','gt_af_mask_'+sample['name'][i]),img_msk)
+                        img_msk = cv_mask_image(x.numpy(),pred_af_mask)
+                        save_image(os.path.join(work_dir,'images','pred_af_mask_'+sample['name'][i]),img_msk)
 
-                loss_dict['ch_loss'] = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
-                loss_dict['af_loss'] = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
+                    loss_dict['ch_loss'] = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
+                    loss_dict['af_loss'] = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
                 loss_dict['sub_ch_loss'] = 0.0
                 cnt = 0
                 
@@ -140,13 +144,13 @@ def train_siam(loader,net,opt,criteria,device,train_size,logger,work_dir):
                         if(logger):
                             logger.add_image('Tracking result', img_msk, batch*batch_size+i,dataformats='HWC')
                         if(work_dir):
-                            save_image(os.path.join(work_dir,'images','pred_tracking_'+sample['name'][i]),img_msk)
+                            save_image(os.path.join(work_dir,'images','tracking','pred','pred_tracking_'+sample['name'][i]),img_msk)
                             
                         img_msk = cv_mask_image(img,sub_ch_mask)
                         if(logger):
                             logger.add_image('Tracking GT', img_msk, batch*batch_size+i,dataformats='HWC')
                         if(work_dir):
-                            save_image(os.path.join(work_dir,'images','gt_tracking_'+sample['name'][i]),img_msk)
+                            save_image(os.path.join(work_dir,'images','tracking','gt','gt_tracking_'+sample['name'][i]),img_msk)
                     except:
                         None
 
@@ -217,8 +221,8 @@ if __name__ == "__main__":
     log_step_size = args.logstp
 
     # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
-    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img.pkl"
+    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img"
+    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img2"
     # isdebug = True
     # use_net = 'craft_mob'
     # use_dataset = 'minetto'
@@ -230,6 +234,8 @@ if __name__ == "__main__":
     dev = 'cuda' if(use_cuda)else 'cpu'
     basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
     net = SiameseCRAFT(base_net=basenet,feature_chs=32).float().to(dev)
+    if(lod_dir):
+        net.load_state_dict(torch.load(lod_dir+'.pth'))
     # net = net.float().to(dev)
     # net = torch.load(lod_dir).float().to(dev)
     # if(os.path.exists(args.opt)):
@@ -255,7 +261,7 @@ if __name__ == "__main__":
     #     max_image_size=(720,1280),
     #     )
     num_workers = 0
-    batch = 1
+    batch = 2
 
     dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
         num_workers=num_workers,
@@ -286,16 +292,16 @@ if __name__ == "__main__":
     print(summarize)
     logger = None
     logger = SummaryWriter(work_dir)
-    img_dir = os.path.join(work_dir,train_dataset.__class__.__name__)
-    # img_dir = None
+    # img_dir = os.path.join(work_dir,train_dataset.__class__.__name__)
+    img_dir = None
     # try:
-    ret = train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger,img_dir)
+    ret = train_siam(dataloader,net,opt,loss,len(train_dataset),logger,img_dir)
     # except Exception as e:
     #     print(e)
     
-    if(ret==0):
+    if(ret==0 and sav_dir):
         print("Saving model...")
-        torch.save(net,sav_dir)
+        torch.save(net.state_dict(),sav_dir+'.pth')
         print("Saving optimizer...")
         torch.save(opt,sav_dir+'_opt.pkl')
 

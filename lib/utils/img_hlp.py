@@ -570,14 +570,14 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
         h = max(h,h_min)
     width = max(1,w//int(w_multi))*int(w_multi) if(w_multi!=None and w_multi>0)else w
     height = max(1,h//int(h_multi))*int(h_multi) if(w_multi!=None and w_multi>0)else h
-    if h > w * 1.5:
-        width = h
-        height = w
-        M = cv2.getPerspectiveTransform(np.float32(box),
-                                        np.float32(np.array([[width, 0], [width, height], [0, height], [0, 0]])))
-    else:
-        M = cv2.getPerspectiveTransform(np.float32(box),
-                                        np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
+    # if h > w * 1.5:
+    #     width = h
+    #     height = w
+    #     M = cv2.getPerspectiveTransform(np.float32(box),
+    #                                     np.float32(np.array([[width, 0], [width, height], [0, height], [0, 0]])))
+    # else:
+    M = cv2.getPerspectiveTransform(np.float32(box),
+                                    np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
 
     warped = cv2.warpPerspective(image, M, (width, height))
     return warped, M
