@@ -24,7 +24,7 @@ cfg['SAVESTP'] = [100,200,500,5,-1][-2]
 # Optimizer
 cfg['OPT'] = ['sgd','adam'][1]
 # learning rate
-cfg['LR'] = [0.001,3.2768e-5][-1]
+cfg['LR'] = [0.001,3.2768e-5][0]
 # Momentum for sgd (..., momentum = cfg['MMT'])
 cfg['MMT'] = 0.8
 # For optimizer (...,weight_decay = cfg['OPT_DEC'])

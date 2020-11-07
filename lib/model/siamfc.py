@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.craft import CRAFT
 from lib.utils.img_hlp import cv_getDetCharBoxes_core
-from lib.utils.net_hlp import init_weights
+from lib.utils.net_hlp import init_weights,Swish_act
 
 class SiameseNet(nn.Module):
     """ The basic siamese network joining network, that takes the outputs of
@@ -99,18 +99,22 @@ class SiameseCRAFT(nn.Module):
             for i in self.base_net.parameters():
                 i.requires_grad=False
         self.match_batchnorm = nn.BatchNorm2d(feature_chs)
+        self.search_norm = nn.BatchNorm2d(feature_chs)
+        self.obj_norm = nn.BatchNorm2d(feature_chs)
         self.map_conv = nn.Sequential(
-            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(inplace=True),
-            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(inplace=True),
+            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(),#Swish_act()
+            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(),#nn.ReLU
             nn.Conv2d(feature_chs//4, 1, kernel_size=1),
         )
-        # self.final_act_fun = lambda x: torch.exp(-x*x/1.62)
-        self.final_act_fun = lambda x: x
+        self.final_act_fun = lambda x: torch.exp(-x*x/1.62)
+        # self.final_act_fun = lambda x: x
         
         # init_weights(self.map_conv)
     def forward(self, x):
         return self.base_net(x)
     def match(self,obj,search):
+        search = self.search_norm(search)
+        obj = self.obj_norm(obj)
         match_map = conv2d_dw_group(search,obj)
         match_map = self.match_batchnorm(match_map)
         score = self.map_conv(match_map)

@@ -30,7 +30,7 @@ from dirs import *
 
 
 def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector=False):
-    maxh,maxw = 600,1200
+    # maxh,maxw = 600,1200
     max_boxes = 3
     for o in net.state_dict().values():
         device = o.device
@@ -46,15 +46,15 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
         if('text' in sample):
             words_bth = sample['text']
         for i in range(batch_size):
-            # try:
-            if(1):
+            try:
+            # if(1):
                 x = xs[i]
                 wrd_list = sample['text'][i]
                 img_size = x.shape[0:-1]
                 x_nor = torch_img_normalize(x)
-                if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
-                    x_nor = transform.resize(x_nor,(min(x_nor.shape[-3],maxh),min(x_nor.shape[-2],maxw),x_nor.shape[-1]),preserve_range=True)
-                    x_nor = torch.from_numpy(x_nor)
+                # if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
+                #     x_nor = transform.resize(x_nor,(min(x_nor.shape[-3],maxh),min(x_nor.shape[-2],maxw),x_nor.shape[-1]),preserve_range=True)
+                #     x_nor = torch.from_numpy(x_nor)
                 x_nor = x_nor.reshape((1,x_nor.shape[0],x_nor.shape[1],x_nor.shape[2]))
                 boxes = boxes_bth[i]
                 
@@ -108,12 +108,12 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                 for bxi,box in enumerate(boxes):
                     # if(img_size!=x_nor.shape[1:-1]):
                     #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
-                    sub_img,_ = cv_crop_image_by_polygon(
-                        x.numpy(),boxes[bxi],w_min=16*3,h_min=16*3)
+                    sub_img,_ = cv_crop_image_by_polygon(x.numpy(),boxes[bxi])
                     sub_img_nor = np_img_normalize(sub_img)
                     sub_img_nor = np.expand_dims(sub_img_nor,0)
                     sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
                     try:
+                    # if(1):
                         obj_map,obj_feat = net(sub_img_nor)
                         # obj_feat*=obj_map[:,0].reshape(obj_feat.shape[0],1,obj_feat.shape[2],obj_feat.shape[3])
                         match_map,_ = net.match(obj_feat,feat)
@@ -128,7 +128,10 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                         loss_dict['sub_ch_loss'] += criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
                         match_map_np = match_map.detach().to('cpu').numpy()
                         cnt+=1
-                    except:
+                    except Exception as e:
+                        sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'],x_nor.shape,sub_img_nor.shape))
+                        sys.stdout.write(e)
+                        sys.stdout.flush()
                         continue
                 if(loss_dict['sub_ch_loss']==0.0):
                     continue
@@ -165,7 +168,8 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                         logger.add_scalar('Loss/total loss'.format(batch), loss.item(), batch*batch_size+i)
                         logger.flush()
                     # print("step {}, sub_ch_loss {}, chloss {}, afloss {}.".format(batch*batch_size+i,sub_ch_loss.item(),ch_loss.item(),af_loss.item()))
-                    print(loss_log)
+                    sys.stdout.write(loss_log+'\n')
+                    sys.stdout.flush()
                     if(torch.isnan(loss)):
                         return -1
                     loss.backward()
@@ -180,8 +184,9 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                 del sample
                 del loss_dict
                 del loss
-            # except Exception as e:
-            #     print("Faild in training image {}, step {}, err: {}".format(sample['name'][i],batch*batch_size+i,e))
+            except Exception as e:
+                sys.stdout.write("Faild in training image {}, step {}, err: {}\n".format(sample['name'][i],batch*batch_size+i,e))
+                sys.stdout.flush()
     return 0
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -217,12 +222,15 @@ if __name__ == "__main__":
     num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
     batch = args.batch
     work_dir = DEF_WORK_DIR
-    work_dir = os.path.join(work_dir,'log','siam_img')
+    work_dir = os.path.join(work_dir,'log')
+    if(args.name):
+        work_dir = os.path.join(work_dir,args.name)
     log_step_size = args.logstp
+    sav_dir = args.save
+    lod_dir = args.load
 
     # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img"
-    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img2"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_img2"
     # isdebug = True
     # use_net = 'craft_mob'
     # use_dataset = 'minetto'
@@ -233,19 +241,21 @@ if __name__ == "__main__":
 
     dev = 'cuda' if(use_cuda)else 'cpu'
     basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
-    net = SiameseCRAFT(base_net=basenet,feature_chs=32).float().to(dev)
+    net = SiameseCRAFT(base_net=basenet,feature_chs=32,lock_basenet=True).float().to(dev)
     if(lod_dir):
+        sys.stdout.write("Load model at {}\n".format(lod_dir+'.pth'))
+        sys.stdout.flush()
         net.load_state_dict(torch.load(lod_dir+'.pth'))
     # net = net.float().to(dev)
     # net = torch.load(lod_dir).float().to(dev)
-    # if(os.path.exists(args.opt)):
-    #     opt = torch.load(args.opt)
-    # elif(args.opt.lower()=='adam'):
-    opt = optim.Adam(net.parameters(), lr=0.001, weight_decay=tcfg['OPT_DEC'])
-    # elif(args.opt.lower() in ['adag','adagrad']):
-    #     opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    # else:
-    #     opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
+    if(os.path.exists(args.opt)):
+        opt = torch.load(args.opt)
+    elif(args.opt.lower()=='adam'):
+        opt = optim.Adam(net.parameters(), lr=0.001, weight_decay=tcfg['OPT_DEC'])
+    elif(args.opt.lower() in ['adag','adagrad']):
+        opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
+    else:
+        opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
     # opt.add_param_group(net.parameters())
     train_dataset = Total(
@@ -261,7 +271,7 @@ if __name__ == "__main__":
     #     max_image_size=(720,1280),
     #     )
     num_workers = 0
-    batch = 2
+    batch = 1
 
     dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
         num_workers=num_workers,
@@ -269,7 +279,7 @@ if __name__ == "__main__":
         collate_fn=train_dataset.default_collate_fn,
         )
 
-    loss = MSE_2d_Loss()
+    loss = MSE_2d_Loss(pixel_sum=False)
 
     summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(work_dir)+\
@@ -289,7 +299,9 @@ if __name__ == "__main__":
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
-    print(summarize)
+        
+    sys.stdout.write(summarize)
+    sys.stdout.flush()
     logger = None
     logger = SummaryWriter(work_dir)
     # img_dir = os.path.join(work_dir,train_dataset.__class__.__name__)
@@ -300,9 +312,9 @@ if __name__ == "__main__":
     #     print(e)
     
     if(ret==0 and sav_dir):
-        print("Saving model...")
+        print("Saving model at {}...".format(sav_dir+'.pth'))
         torch.save(net.state_dict(),sav_dir+'.pth')
-        print("Saving optimizer...")
+        print("Saving optimizer at {}...".format(sav_dir+'_opt.pkl'))
         torch.save(opt,sav_dir+'_opt.pkl')
 
     time_usage = datetime.now()

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 
 def init_weights(modules):
     for m in modules:
@@ -23,3 +24,11 @@ def adjust_learning_rate(optimizer, gamma):
     """
     for param_group in optimizer.param_groups:
         param_group['lr'] *= gamma
+
+class Swish_act(nn.Module):
+    def __init__(self):
+        super(Swish_act, self).__init__()
+ 
+    def forward(self, x):
+        x = x * F.sigmoid(x)
+        return x
