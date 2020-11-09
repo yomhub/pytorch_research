@@ -4,7 +4,7 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.craft import CRAFT
-from lib.utils.img_hlp import cv_getDetCharBoxes_core
+from lib.utils.img_hlp import cv_get_box_from_mask
 from lib.utils.net_hlp import init_weights,Swish_act
 
 class SiameseNet(nn.Module):

@@ -133,212 +133,215 @@ class CRAFTTrainer(Trainer):
 
         return pursedo_bboxes, ch_mask, confidence
 
-    def _train_act(self,sample):
-        if('video' not in sample):
-            x=self._custom_x_input_function(sample,self._device)
+    def train_image(self,sample):
+        x=self._custom_x_input_function(sample,self._device)
+        try:
+            self._net.init_state()
+        except:
+            None
+        if(self.use_teacher):
             try:
-                self._net.init_state()
+                img = sample['image'].numpy()
             except:
-                None
-            if(self.use_teacher):
-                try:
-                    img = sample['image'].numpy()
-                except:
-                    img = sample['image']
-                img = np_img_normalize(img)
-                with torch.no_grad():
-                    gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self.teacher_device))
-                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
-                # gt = torch.from_numpy(gt).to(self._device)
-                chmap = torch.unsqueeze(gt[:,0,:,:],1)
-                afmap = torch.unsqueeze(gt[:,1,:,:],1)
-                # chmap -= torch.min(chmap)
-                # chmap /= torch.max(chmap)
-                # afmap -= torch.min(afmap)
-                # afmap /= torch.max(afmap)
-                y=chmap,afmap
+                img = sample['image']
+            img = np_img_normalize(img)
+            with torch.no_grad():
+                gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self.teacher_device))
+            gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
+            # gt = torch.from_numpy(gt).to(self._device)
+            chmap = torch.unsqueeze(gt[:,0,:,:],1)
+            afmap = torch.unsqueeze(gt[:,1,:,:],1)
+            # chmap -= torch.min(chmap)
+            # chmap /= torch.max(chmap)
+            # afmap -= torch.min(afmap)
+            # afmap /= torch.max(afmap)
+            y=chmap,afmap
 
-            elif(self.train_on_real):
-                image_size = sample['image'].shape[1:3]
-                ch_mask_list = []
-                af_mask_list = []
-                for batch in range(sample['image'].shape[0]):
-                    ch_mask = np.zeros(image_size,dtype=np.float32)
-                    af_mask = np.zeros(image_size,dtype=np.float32)
+        elif(self.train_on_real):
+            image_size = sample['image'].shape[1:3]
+            ch_mask_list = []
+            af_mask_list = []
+            for batch in range(sample['image'].shape[0]):
+                if(sample['box_format']!='polyxy'):
                     cv_boxes = cv_box2cvbox(sample['box'][batch],image_size,sample['box_format'])
-                    box_list = []
-                    for i in range(cv_boxes.shape[0]):
-                        box,_,_=self.inference_pursedo_bboxes(sample['image'][batch].numpy(),cv_boxes[i],sample['text'][batch][i])
-                        box_list.append(box)
-
-                    # ch_mask = self.gaussianTransformer.generate_region(image_size,box_list,ch_mask)
-                    # af_mask = self.gaussianTransformer.generate_affinity(image_size,box_list,af_mask)
-                    ch_mask_list.append(torch.from_numpy(np.expand_dims(ch_mask,0)))
-                    af_mask_list.append(torch.from_numpy(np.expand_dims(af_mask,0)))
-                y = torch.stack(ch_mask_list,0).float().to(self._device), torch.stack(af_mask_list,0).float().to(self._device)
-            else:
-                y = self._custom_y_input_function(sample,self._device)
-            x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
-            self._opt.zero_grad()
-            pred = self._net(x)
-            loss = self._loss(pred[0] if(isinstance(pred,tuple))else pred,y)
-            loss.backward()
-            self._opt.step()
+                
+                ch_mask,af_mask,_,_ = cv_gen_gaussian(cv_boxes,sample['text'][batch],image_size)
+                ch_mask_list.append(torch.from_numpy(ch_mask))
+                af_mask_list.append(torch.from_numpy(af_mask))
+            y = torch.stack(ch_mask_list,0).float().to(self._device), torch.stack(af_mask_list,0).float().to(self._device)
         else:
+            y = self._custom_y_input_function(sample,self._device)
+
+        x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
+        self._opt.zero_grad()
+        pred = self._net(x)
+        
+        loss = self._loss(pred[0] if(isinstance(pred,tuple))else pred,y)
+        loss.backward()
+        self._opt.step()
+        return x,y,pred,loss
+
+    def train_video(self,sample):
+        try:
+            self._net.init_state()
+        except:
+            None
+        flush_stp = 10
+        im_size = (sample['height'],sample['width'])
+        pointsxy = sample['gt']
+        p_keys = list(pointsxy.keys())
+        p_keys.sort()
+        st_fram = p_keys[0]
+        vdo = sample['video']
+        fm_cnt = 0
+        loss_list = []
+        x_list = []
+        y_ch_list = []
+        y_af_list = []
+        pred_list = []
+        b_wait_for_flash = False
+        while(vdo.isOpened()):
+            ret, x = vdo.read()
+            if(ret==False):
+                break
+            if(fm_cnt<st_fram):
+                # skip the initial non text frams
+                fm_cnt+=1
+                continue
+            x = transform.resize(x,(640,640),preserve_range=True)
+            if(len(x.shape)==3): 
+                x = np.expand_dims(x,0)
+            if(len(x_list)<10 and fm_cnt%30==0):
+                x_list.append(torch.from_numpy(x))
+            xnor = torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2)
+            with torch.no_grad():
+                gt,_ = self.teacher(xnor.to(self.teacher_device))
+            gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
+            if(len(y_ch_list)<10 and fm_cnt%30==0):
+                y_ch_list.append(torch.unsqueeze(gt[:,0],1).to('cpu'))
+                y_af_list.append(torch.unsqueeze(gt[:,1],1).to('cpu'))
+
+            y = torch.unsqueeze(gt[:,0],1),torch.unsqueeze(gt[:,1],1)
+
             try:
-                self._net.init_state()
+                idx = p_keys.index(fm_cnt)
             except:
-                None
-            flush_stp = 10
-            im_size = (sample['height'],sample['width'])
-            pointsxy = sample['gt']
-            p_keys = list(pointsxy.keys())
-            p_keys.sort()
-            st_fram = p_keys[0]
-            vdo = sample['video']
-            fm_cnt = 0
-            loss_list = []
-            x_list = []
-            y_ch_list = []
-            y_af_list = []
-            pred_list = []
-            b_wait_for_flash = False
-            while(vdo.isOpened()):
-                ret, x = vdo.read()
-                if(ret==False):
-                    break
-                if(fm_cnt<st_fram):
-                    # skip the initial non text frams
-                    fm_cnt+=1
-                    continue
-                x = transform.resize(x,(640,640),preserve_range=True)
-                if(len(x.shape)==3): 
-                    x = np.expand_dims(x,0)
-                if(len(x_list)<10 and fm_cnt%30==0):
-                    x_list.append(torch.from_numpy(x))
-                xnor = torch.from_numpy(np_img_normalize(x)).float().permute(0,3,1,2)
-                with torch.no_grad():
-                    gt,_ = self.teacher(xnor.to(self.teacher_device))
-                gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
-                if(len(y_ch_list)<10 and fm_cnt%30==0):
-                    y_ch_list.append(torch.unsqueeze(gt[:,0],1).to('cpu'))
-                    y_af_list.append(torch.unsqueeze(gt[:,1],1).to('cpu'))
+                idx = -1
 
-                y = torch.unsqueeze(gt[:,0],1),torch.unsqueeze(gt[:,1],1)
+            self._opt.zero_grad()
+            pred,_ = self._net(xnor.to(self._device))
+            if(len(pred_list)<10 and fm_cnt%30==0):
+                pred_list.append(pred.detach().to('cpu'))
+            loss = self._loss(pred,y)
+            box_cnt = 0
+            if(idx>0):
+                pred_aff_map = pred[:,2:].to('cpu')
+                ch,af = gt[:,0].to('cpu').numpy(),gt[:,1].to('cpu').numpy()
+                word_map = np.where(ch>af,ch,af)
+                # dst = t, src = t-1
+                dst,src = pointsxy[p_keys[idx]],pointsxy[p_keys[idx-1]]
+                src_box = []
+                dst_box = []
+                loss_box = 0.0
+                for box in dst:
+                    ind = np.where(box[0]==src[:,0])[0]
+                    if(ind.shape[0]):
+                        src_box.append(src[ind[0]][1:].reshape((4,2)))
+                        dst_box.append(box[1:].reshape((4,2)))
+                if(src_box):
+                    src_box = np_box_resize(np.array(src_box),im_size,ch.shape[-2:],'polyxy')
+                    dst_box = np_box_resize(np.array(dst_box),im_size,ch.shape[-2:],'polyxy')
+                    det_box = np.sum(np.abs(src_box-dst_box),axis=(-1,-2))
+                    if(det_box.max()>=2.0):
+                        aff_list_up, _ = cv_box_moving_vector(dst_box[:,(0,1,3)],src_box[:,(0,1,3)])
+                        aff_list_dw, _ = cv_box_moving_vector(dst_box[:,(1,2,3)],src_box[:,(1,2,3)])
+                        # aff_list = aff_list.reshape((-1,6))
+                        # N,2,3
+                        aff_list_up = aff_list_up.astype(np.float32)
+                        aff_list_dw = aff_list_dw.astype(np.float32)
+                        
+                        for i in range(dst_box.shape[0]):
+                            if(det_box[i]<=1.0):
+                                continue
+                            x1= np.clip(dst_box[i,:,0].min(),0,ch.shape[-1]-1)
+                            x2= np.clip(dst_box[i,:,0].max(),0,ch.shape[-1])
+                            y1= np.clip(dst_box[i,:,1].min(),0,ch.shape[-2]-1)
+                            y2= np.clip(dst_box[i,:,1].max(),0,ch.shape[-2])
+                            if((int(x2)-int(x1))*(int(y2)-int(y1))<=0):
+                                continue
+                            tri_up = path.Path(dst_box[i,(0,1,3),:])
+                            # tri_dw = path.Path(dst_box[i,(1,2,3),:])
+                            dx = np.linspace(x1,x2,int(x2)-int(x1),dtype=np.float32)
+                            dy = np.linspace(y1,y2,int(y2)-int(y1),dtype=np.float32)
+                            dx,dy = np.meshgrid(dx,dy)
+                            # (len_dy,len_dx,3)-x,y,1
+                            ds = np.stack([dx,dy,np.ones_like(dy)],-1)
+                            # (len_dy,3,len_dx)
+                            ds_t = np.moveaxis(ds,-1,-2)
+                            # (2,len_dy,len_dx)
+                            sr_up = aff_list_up[i].dot(ds_t)
+                            sr_dw = aff_list_dw[i].dot(ds_t)
+                            # (len_dy,len_dx,2)
+                            sr_up = np.moveaxis(sr_up,0,-1)
+                            sr_dw = np.moveaxis(sr_dw,0,-1)
 
+                            gt = np.where(
+                                tri_up.contains_points(ds[:,:,:2].reshape(-1,2)).reshape(ds.shape[0],ds.shape[1],1),
+                                sr_up-ds[:,:,:2],sr_dw-ds[:,:,:2])
+                            x1,x2,y1,y2=int(x1),int(x2),int(y1),int(y2)
+                            gt = torch.from_numpy(gt)
+                            # (2,len_dy,len_dx)->(len_dy,len_dx,2) on cpu
+                            sub_map = pred_aff_map[0,:2,y1:y2,x1:x2].permute(1,2,0)
+                            sub_map = torch.sum(torch.abs(sub_map-gt),dim=-1)
+                            loss_box += torch.mean(sub_map)
+                            box_cnt += 1
+                    # if(box_cnt>0):
+                    #     loss_box/=box_cnt
                 try:
-                    idx = p_keys.index(fm_cnt)
-                except:
-                    idx = -1
-
-                self._opt.zero_grad()
-                pred,_ = self._net(xnor.to(self._device))
-                if(len(pred_list)<10 and fm_cnt%30==0):
-                    pred_list.append(pred.detach().to('cpu'))
-                loss = self._loss(pred,y)
-                box_cnt = 0
-                if(idx>0):
-                    pred_aff_map = pred[:,2:].to('cpu')
-                    ch,af = gt[:,0].to('cpu').numpy(),gt[:,1].to('cpu').numpy()
-                    word_map = np.where(ch>af,ch,af)
-                    # dst = t, src = t-1
-                    dst,src = pointsxy[p_keys[idx]],pointsxy[p_keys[idx-1]]
-                    src_box = []
-                    dst_box = []
-                    loss_box = 0.0
-                    for box in dst:
-                        ind = np.where(box[0]==src[:,0])[0]
-                        if(ind.shape[0]):
-                            src_box.append(src[ind[0]][1:].reshape((4,2)))
-                            dst_box.append(box[1:].reshape((4,2)))
-                    if(src_box):
-                        src_box = np_box_resize(np.array(src_box),im_size,ch.shape[-2:],'polyxy')
-                        dst_box = np_box_resize(np.array(dst_box),im_size,ch.shape[-2:],'polyxy')
-                        det_box = np.sum(np.abs(src_box-dst_box),axis=(-1,-2))
-                        if(det_box.max()>=2.0):
-                            aff_list_up, _ = cv_box_moving_vector(dst_box[:,(0,1,3)],src_box[:,(0,1,3)])
-                            aff_list_dw, _ = cv_box_moving_vector(dst_box[:,(1,2,3)],src_box[:,(1,2,3)])
-                            # aff_list = aff_list.reshape((-1,6))
-                            # N,2,3
-                            aff_list_up = aff_list_up.astype(np.float32)
-                            aff_list_dw = aff_list_dw.astype(np.float32)
-                            
-                            for i in range(dst_box.shape[0]):
-                                if(det_box[i]<=1.0):
-                                    continue
-                                x1= np.clip(dst_box[i,:,0].min(),0,ch.shape[-1]-1)
-                                x2= np.clip(dst_box[i,:,0].max(),0,ch.shape[-1])
-                                y1= np.clip(dst_box[i,:,1].min(),0,ch.shape[-2]-1)
-                                y2= np.clip(dst_box[i,:,1].max(),0,ch.shape[-2])
-                                if((int(x2)-int(x1))*(int(y2)-int(y1))<=0):
-                                    continue
-                                tri_up = path.Path(dst_box[i,(0,1,3),:])
-                                # tri_dw = path.Path(dst_box[i,(1,2,3),:])
-                                dx = np.linspace(x1,x2,int(x2)-int(x1),dtype=np.float32)
-                                dy = np.linspace(y1,y2,int(y2)-int(y1),dtype=np.float32)
-                                dx,dy = np.meshgrid(dx,dy)
-                                # (len_dy,len_dx,3)-x,y,1
-                                ds = np.stack([dx,dy,np.ones_like(dy)],-1)
-                                # (len_dy,3,len_dx)
-                                ds_t = np.moveaxis(ds,-1,-2)
-                                # (2,len_dy,len_dx)
-                                sr_up = aff_list_up[i].dot(ds_t)
-                                sr_dw = aff_list_dw[i].dot(ds_t)
-                                # (len_dy,len_dx,2)
-                                sr_up = np.moveaxis(sr_up,0,-1)
-                                sr_dw = np.moveaxis(sr_dw,0,-1)
-
-                                gt = np.where(
-                                    tri_up.contains_points(ds[:,:,:2].reshape(-1,2)).reshape(ds.shape[0],ds.shape[1],1),
-                                    sr_up-ds[:,:,:2],sr_dw-ds[:,:,:2])
-                                x1,x2,y1,y2=int(x1),int(x2),int(y1),int(y2)
-                                gt = torch.from_numpy(gt)
-                                # (2,len_dy,len_dx)->(len_dy,len_dx,2) on cpu
-                                sub_map = pred_aff_map[0,:2,y1:y2,x1:x2].permute(1,2,0)
-                                sub_map = torch.sum(torch.abs(sub_map-gt),dim=-1)
-                                loss_box += torch.mean(sub_map)
-                                box_cnt += 1
-                        # if(box_cnt>0):
-                        #     loss_box/=box_cnt
-                    try:
-                        self._f_train_loger.write("Mask loss:{}, Box loss:{}, Frame: {}.\n".format(loss,loss_box,fm_cnt+1))
-                        self._f_train_loger.flush()
-                    except:
-                        None
-                    if(loss_box>0.0):
-                        loss+=loss_box
-                    loss.backward(retain_graph=True)
-                    loss_list.append(loss.item())
-                    self._opt.step()
-                try:
-                    # self._net.lstmh = self._net.lstmh.detach()
-                    # self._net.lstmc = self._net.lstmc.detach()
-                    # self._net.lstmh.grad.data.zero_()
-                    # self._net.lstmc.grad.data.zero_()
-                    b_wait_for_flash = bool((fm_cnt+1)%flush_stp==0) or b_wait_for_flash
-                    if(idx==-1 or (b_wait_for_flash and box_cnt==0) or (fm_cnt+1)%(flush_stp*2)==0 or len(src_box)==0):
-                        self._net.lstmh.detach_()
-                        self._net.lstmc.detach_()
-                        b_wait_for_flash=False
-                        self._f_train_loger.write("Delete gradient.")
-                        self._f_train_loger.flush()
+                    self._f_train_loger.write("Mask loss:{}, Box loss:{}, Frame: {}.\n".format(loss,loss_box,fm_cnt+1))
+                    self._f_train_loger.flush()
                 except:
                     None
-                fm_cnt += 1
-                if(idx==len(p_keys)-1):
-                    break
-            vdo.release()
+                if(loss_box>0.0):
+                    loss+=loss_box
+                loss.backward(retain_graph=True)
+                loss_list.append(loss.item())
+                self._opt.step()
             try:
-                # Freee the memory
-                self._net.lstmh.detach_()
-                self._net.lstmc.detach_()
+                # self._net.lstmh = self._net.lstmh.detach()
+                # self._net.lstmc = self._net.lstmc.detach()
+                # self._net.lstmh.grad.data.zero_()
+                # self._net.lstmc.grad.data.zero_()
+                b_wait_for_flash = bool((fm_cnt+1)%flush_stp==0) or b_wait_for_flash
+                if(idx==-1 or (b_wait_for_flash and box_cnt==0) or (fm_cnt+1)%(flush_stp*2)==0 or len(src_box)==0):
+                    self._net.lstmh.detach_()
+                    self._net.lstmc.detach_()
+                    b_wait_for_flash=False
+                    self._f_train_loger.write("Delete gradient.")
+                    self._f_train_loger.flush()
             except:
                 None
-            x=torch.cat(x_list)
-            y=torch.cat(y_ch_list),torch.cat(y_af_list)
-            loss = loss_list
-            pred = torch.cat(pred_list)
+            fm_cnt += 1
+            if(idx==len(p_keys)-1):
+                break
+        vdo.release()
+        try:
+            # Freee the memory
+            self._net.lstmh.detach_()
+            self._net.lstmc.detach_()
+        except:
+            None
+        x=torch.cat(x_list)
+        y=torch.cat(y_ch_list),torch.cat(y_af_list)
+        loss = loss_list
+        pred = torch.cat(pred_list)
         return x,y,pred,loss
+
+    def _train_act(self,sample):
+        if('video' not in sample):
+            return self.train_image(sample)
+        else:
+            return self.train_video(sample)
 
 class CRAFTTester(Tester):
     def __init__(self,**params):
@@ -371,7 +374,7 @@ class CRAFTTester(Tester):
             lines = lines.astype(x.dtype)
             wods = np.sum(pred,1)
             for batch,wod in enumerate(wods):
-                odet, labels, mapper = cv_getDetCharBoxes_core(wod)
+                odet, labels, mapper = cv_get_box_from_mask(wod)
                 # frame = x[batch]
                 frame = image[batch].numpy().astype(np.uint8)
                 # frame = np.pad(frame,((0,640-frame.shape[0]),(0,0),(0,0)), 'constant',constant_values=0)
@@ -413,7 +416,7 @@ class CRAFTTester(Tester):
         miss_corr = []
 
         for bh in range(chmap.shape[0]):
-            odet, labels, mapper = cv_getDetCharBoxes_core(chmap[bh]+segmap[bh])
+            odet, labels, mapper = cv_get_box_from_mask(chmap[bh]+segmap[bh])
             if(odet.shape[0]==0):
                 miss_corr.append((0.0,0.0,0.0))
                 continue
@@ -539,7 +542,7 @@ def train_vdo(net,teacher,vdo_dataset,loss,opt):
                     aff_list = torch.from_numpy(np.expand_dims(aff_list,(1,3,4)))
                     loss_box = 0.0
                     box_cnt = 0
-                    odet, labels, mapper = cv_getDetCharBoxes_core(word_map[0])
+                    odet, labels, mapper = cv_get_box_from_mask(word_map[0])
                     labels = torch.from_numpy(labels)
                     for i in range(dst_box.shape[0]):
                         x1= int(np.clip(dst_box[i,:,0].min(),0,ch.shape[-1]-1))

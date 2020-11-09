@@ -150,7 +150,7 @@ class SynthText(Dataset):
                 continue
             affine_boxes = create_affine_boxes(char_boxes.reshape(-1,4,2))
             for points in affine_boxes:
-                box = np_polybox_minrect(points,'polyxy')[0]
+                box = np_polybox_minrect(points,'polyxy')
                 deta_x,deta_y = (box[2]-box[0]).astype(np.int16)
                 min_x = max(int(box[0,0]),0)
                 min_y = max(int(box[0,1]),0)

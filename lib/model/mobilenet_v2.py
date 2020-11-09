@@ -8,19 +8,19 @@ import math
 from collections import namedtuple
 
 
-def double_conv(in_ch, mid_ch, out_ch):
+def double_conv(in_ch, mid_ch, out_ch, padding=True):
     return nn.Sequential(
         nn.Conv2d(in_ch, mid_ch, kernel_size=1),
         nn.BatchNorm2d(mid_ch),
         nn.ReLU(inplace=True),
-        nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1),
+        nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1 if(padding)else 0),
         nn.BatchNorm2d(out_ch),
         nn.ReLU(inplace=True)
     )
 
-def conv_bn(inp, oup, stride):
+def conv_bn(inp, oup, stride,padding=True):
     return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
+        nn.Conv2d(inp, oup, 3, stride, 1 if(padding)else 0, bias=False),
         nn.BatchNorm2d(oup),
         nn.ReLU6(inplace=True)
     )
@@ -64,18 +64,18 @@ class ConvBNReLU(nn.Sequential):
             nn.ReLU6(inplace=True)
         )
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, expand_ratio):
+    def __init__(self, inp, oup, stride, expand_ratio, padding=True):
         super(InvertedResidual, self).__init__()
         self.stride = stride
         assert stride in [1, 2]
 
         hidden_dim = int(inp * expand_ratio)
-        self.use_res_connect = self.stride == 1 and inp == oup
+        self.use_res_connect = self.stride == 1 and inp == oup and padding
 
         if expand_ratio == 1:
             self.conv = nn.Sequential(
                 # dw
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1 if(padding)else 0, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # pw-linear
@@ -89,7 +89,7 @@ class InvertedResidual(nn.Module):
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # dw
-                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1 if(padding)else 0, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # pw-linear
@@ -105,11 +105,7 @@ class InvertedResidual(nn.Module):
 
 
 class MobileNetV2(nn.Module):
-    def __init__(self, width_mult=1., have_fc=False, n_class=1000):
-        super(MobileNetV2, self).__init__()
-        block = InvertedResidual
-        input_channel = 32
-        last_channel = 1280
+    def __init__(self, width_mult=1., 
         interverted_residual_setting = [
             # t, c, n, s
             [1, 16, 1, 1],
@@ -119,19 +115,25 @@ class MobileNetV2(nn.Module):
             [6, 96, 3, 1],
             [6, 160, 3, 2],
             [6, 320, 1, 1],
-        ]
+        ],
+        have_fc=False, n_class=1000,padding=True):
+        super(MobileNetV2, self).__init__()
+        block = InvertedResidual
+        input_channel = 32
+        last_channel = 1280
+
 
         # input_channel = make_divisible(input_channel * width_mult)  # first channel is always 32!
         self._last_channel = make_divisible(last_channel * width_mult) if width_mult > 1.0 else last_channel
-        self.features = [conv_bn(3, input_channel, 2)]
+        self.features = [conv_bn(3, input_channel, 2, padding)]
         # building inverted residual blocks
         for t, c, n, s in interverted_residual_setting:
             output_channel = make_divisible(c * width_mult) if t > 1 else c
             for i in range(n):
                 if i == 0:
-                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t))
+                    self.features.append(block(input_channel, output_channel, s, expand_ratio=t,padding=padding))
                 else:
-                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t))
+                    self.features.append(block(input_channel, output_channel, 1, expand_ratio=t,padding=padding))
                 input_channel = output_channel
         
         # building classifier
@@ -176,26 +178,33 @@ class MobUNet(nn.Module):
     def __init__(self, width_mult=1.,pretrained=False,
         inverted_residual_setting = [
             # t, c, n, s
+            # initial doun sample
             # 1/2
-            [1, 16, 1, 1], # block_0
+            [1, 16, 1, 1], # block_
             [6, 24, 2, 2], # block_1
             # 1/4
             [6, 32, 3, 2], # block_2
             # 1/8
             [6, 64, 4, 2], # block_3
             # 1/16
-            [6, 96, 3, 1], # block_4
-            [6, 160, 3, 2], # block_5
+            [6, 96, 3, 1], # block_
+            [6, 160, 3, 2], # block_4
             # 1/32
             [6, 320, 1, 1], # block_6
-        ],
+            ],
+            padding=True
         ):
         super(MobUNet, self).__init__()
-        mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
-            pretrained=pretrained,
-            width_mult=width_mult,
-            inverted_residual_setting=inverted_residual_setting)
 
+        self.padding = bool(padding)
+        if(not self.padding):
+            mob = MobileNetV2(interverted_residual_setting=inverted_residual_setting,padding=False)
+        else:
+            mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
+                pretrained=pretrained,
+                width_mult=width_mult,
+                inverted_residual_setting=inverted_residual_setting)
+        # blocks
         self._b1=torch.nn.Sequential()
         self._b2=torch.nn.Sequential()
         self._b3=torch.nn.Sequential()
@@ -205,6 +214,7 @@ class MobUNet(nn.Module):
         # self.init_weights(self._b0.modules())
         # self._b0=ConvBNReLU(3,32,norm_layer = nn.BatchNorm2d)
 
+        # copy the parameters to block
         k,l=1,3
         for i in range(k,k+l):
             # ConvBNReLU, [1, 16, 1, 1],[6, 24, 2, 2]
@@ -237,17 +247,17 @@ class MobUNet(nn.Module):
 
         upchs=out_chs[-1]
         # out_chs[-1],[-3]
-        self._upc1 = double_conv(upchs+out_chs[-3],(upchs+out_chs[-3])//2,(upchs+out_chs[-3])//2)
+        self._upc1 = double_conv(upchs+out_chs[-3],(upchs+out_chs[-3])//2,(upchs+out_chs[-3])//2,self.padding)
         upchs = (upchs+out_chs[-3])//2 #208
         # out_chs[-3],[-5]
-        self._upc2 = double_conv(upchs+out_chs[-5],(upchs+out_chs[-5])//2,(upchs+out_chs[-5])//2)
+        self._upc2 = double_conv(upchs+out_chs[-5],(upchs+out_chs[-5])//2,(upchs+out_chs[-5])//2,self.padding)
         upchs = (upchs+out_chs[-5])//2 #120
         # out_chs[-5]+[-6]
-        self._upc3 = double_conv(upchs+out_chs[-6],(upchs+out_chs[-6])//2,(upchs+out_chs[-6])//2)
+        self._upc3 = double_conv(upchs+out_chs[-6],(upchs+out_chs[-6])//2,(upchs+out_chs[-6])//2,self.padding)
         upchs = (upchs+out_chs[-6])//2 #72
         # out_chs[-6]+make_divisible(32 * width_mult)
         inch=make_divisible(32 * width_mult)
-        self._upc4 = double_conv(upchs+inch,(upchs+inch)//2,(upchs+inch)//2)
+        self._upc4 = double_conv(upchs+inch,(upchs+inch)//2,(upchs+inch)//2,self.padding)
         upchs = (upchs+inch)//2 #52
         self.final_predict_ch = upchs
 

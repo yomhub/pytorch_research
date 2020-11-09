@@ -405,22 +405,25 @@ def cv_fill_by_box(img, src_box, dst_box, out_size):
     res = cv2.warpPerspective(img, M, (int(out_size[1]), int(out_size[0])))
     return res
 
-def cv_create_affine_boxes(boxs):
+def cv_create_affine_boxes(boxs,bx_wide:float = 0.8):
     """
-    boxs: (N,4,2) with (x,y)
+    Calculate affine boxes
+        boxs: (N,4,2) with (x,y)
+        bx_wide: new_h = org_h * bx_wide
     Return:
         affin boxes: (N-1,4,2)
     """
+    det = (1-min(1.0,max(0.3,bx_wide)))/2
     sp = boxs[:-1]
     top_center = (sp[:,1]+sp[:,0])/2.0
     bot_center = (sp[:,3]+sp[:,2])/2.0
-    up_cent_sp = bot_center + (top_center-bot_center)*0.75
-    dw_cent_sp = bot_center + (top_center-bot_center)*0.25
+    up_cent_sp = bot_center + (top_center-bot_center)*(1-det)
+    dw_cent_sp = bot_center + (top_center-bot_center)*det
     ep = boxs[1:]
     top_center = (ep[:,1]+ep[:,0])/2.0
     bot_center = (ep[:,3]+ep[:,2])/2.0
-    up_cent_ep = bot_center + (top_center-bot_center)*0.75
-    dw_cent_ep = bot_center + (top_center-bot_center)*0.25
+    up_cent_ep = bot_center + (top_center-bot_center)*(1-det)
+    dw_cent_ep = bot_center + (top_center-bot_center)*det
 
     return np.stack([up_cent_sp,up_cent_ep,dw_cent_ep,dw_cent_sp],axis=1)
 
@@ -623,7 +626,7 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_getDetCharBoxes_core(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.3):
+def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.3):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
@@ -890,6 +893,75 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
 
     return np.array(matrix_list),matrix_map
 
+def cv_divd_polygon(box,n):
+    """
+    Divide polygon into N parts linearly
+    v 0.5, need refine
+    Args:
+        box: (2k,2) x,y polygon points 
+        n: n part
+    Return:
+        divplg: (n,4,2) x,y polygon points
+    """
+    # box: (2k,2) for polygon xy
+    det_list = []
+    total_det = 0
+    ans = []
+    # calculate center line length
+    for j in range(box.shape[0]//2-1):
+        up = box[j+1] - box[j]
+        dw = box[-j-2] - box[-j-1]
+        det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
+        total_det+=det
+        det_list.append(det)
+
+    # single text lenth
+    single_len = total_det/n
+    last_length = 0.0
+    last_ps = None
+    for j in range(len(det_list)):
+        # Skip small segment 
+        if(det_list[j]+last_length<=single_len):
+            last_length+=det_list[j]
+            if(not isinstance(last_ps,type(None))):
+                # Don't have last remnant
+                last_ps = np.array((box[j],box[-j]))
+            continue
+        
+        if(last_length>0.0):
+            bx_len = det_list[j] + last_length
+        else:
+            bx_len = det_list[j]
+        # total splited box number
+        divs = int(bx_len/single_len)
+
+        up_line = box[j+1] - box[j]
+        dw_line = box[-j-2] - box[-j-1]
+        up_sp,dw_sp = box[j],box[-j-1]
+        sp_len = single_len - last_length
+        up_last,dw_last = up_sp + up_line*sp_len/det_list[j],dw_sp + dw_line*sp_len/det_list[j]
+        # add 1st box
+        if(not isinstance(last_ps,type(None))):
+            ans.append((last_ps[0],up_last,dw_last,last_ps[1]))
+        else:
+            ans.append((up_sp,up_last,dw_last,dw_sp))
+        
+        up_dxy = np.linspace(box[0],box[1],n+1)
+        # add 2nd~end boxes
+        for sub_bxi in range(divs-1):
+            # append single polygon
+            new_up_last,new_dw_last = up_last + up_line*single_len/det_list[j],dw_last + dw_line*single_len/det_list[j]
+            ans.append((up_last,new_up_last,new_dw_last,dw_last))
+            up_last,dw_last = new_up_last,new_dw_last
+
+        # remain lenth for next last_length
+        last_length = bx_len - single_len*divs
+        last_ps = np.array((up_last,dw_last))
+    if(last_length>=0.6*single_len):
+        bxi = box.shape[0]//2-1
+        ans.append((up_last,box[bxi],box[-bxi-1],dw_last))
+    return np.stack(ans,axis=0)
+
 def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
     """
     Generate text level gaussian distribution
@@ -1071,6 +1143,46 @@ def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.n
                 af_mask[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]] = sub_mask
     
     return ch_mask,af_mask,ch_boxes_list,aff_boxes_list
+
+def cv_watershed_gen_gaussian(img,cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
+    """
+    Generate text level gaussian distribution use watershed
+    if watershed can't generate correct text region, use cv_gen_gaussian
+    Parameters:
+        img: orginal image in np.uint8
+        cv_boxes: ((box number),points number,2) in (x,y). Points number MUST be even
+        texts: list with len((box number)) or str (for single box), set None to disable text level split
+        img_size: tuple of (h,w)
+        ch_mask: if not None, generator will add the gaussian distribution on mask
+        af_mask: if not None, generator will add the gaussian distribution on mask
+        affin: True to generate af_mask
+    Return:
+        ch_mask, af_mask: (h,w) mask on np.float32
+        ch_boxes_list: list of character level box [(k,4,2) or None], same lenth with texts
+        aff_boxes_list: list of character level affin box [(k-1,4,2) or None], same lenth with texts
+    """
+    # Check parameters
+    if(isinstance(ch_mask,type(None))):
+        ch_mask = np.zeros(img_size,dtype=np.float32)
+    if(isinstance(af_mask,type(None))):
+        af_mask = np.zeros(img_size,dtype=np.float32)
+    if(not isinstance(texts,list)):
+        texts = [texts]
+    if(len(cv_boxes.shape)==2):
+        cv_boxes = np.expand_dims(cv_boxes,0)
+    if(img.dtype!=np.uint8):
+        img = img.astype(np.uint8)
+
+    for bxi in range(cv_boxes.shape[0]):
+        targ_len = len(texts[bxi])
+        sub_x = cv_crop_image_by_polygon(img,cv_boxes[bxi])
+        sub_gray = cv2.cvtColor(sub_x,cv2.COLOR_BGR2GRAY)
+        ret,sub_bin = cv2.threshold(sub_gray,0,255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
+        nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(sub_bin,connectivity=8)
+        # if(nLabels<targ_len):
+        #     # faild to saperate text
+        #     cv_gen_gaussian()
+        
 
 # 
 # ===============================================

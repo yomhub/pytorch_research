@@ -72,7 +72,7 @@ def train_siam(loader,net,criteria,device):
             wd_map = np.where(det_map[0,0]>det_map[0,1],det_map[0,0],det_map[0,1])
 
             # detect box on mask
-            boxes,label_map,labels = cv_getDetCharBoxes_core(wd_map)
+            boxes,label_map,labels = cv_get_box_from_mask(wd_map)
             matchs = cv_box_match(boxes,np_box_resize(gt_boxes,img_size,pred.shape[-2:],'polyxy'))
             mch_num = 0
             for mch in matchs:
@@ -96,7 +96,7 @@ def train_siam(loader,net,criteria,device):
                     obj_map,obj_feat = net(sub_img_nor)
                     match_map,_ = net.match(obj_feat,feat)
                     
-                    boxes,label_map,labels = cv_getDetCharBoxes_core(match_map[0,0].to('cpu').numpy())
+                    boxes,label_map,labels = cv_get_box_from_mask(match_map[0,0].to('cpu').numpy())
                     ovlap = cv_box_overlap(boxes,np_box_resize(gt_boxes[boxi],img_size,match_map.shape[-2:],'polyxy'))
                     mxovlap = np.max(ovlap)
                     if(mxovlap>=0.5):
