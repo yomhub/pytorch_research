@@ -46,10 +46,10 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
         if('text' in sample):
             words_bth = sample['text']
         for i in range(batch_size):
-            try:
-            # if(1):
+            # try:
+            if(1):
                 x = xs[i]
-                wrd_list = sample['text'][i]
+                wrd_list = words_bth[i] if(words_bth)else None
                 img_size = x.shape[0:-1]
                 x_nor = torch_img_normalize(x)
                 # if(x_nor.shape[-3]*x_nor.shape[-2]>maxh*maxw):
@@ -65,74 +65,119 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                 opt.zero_grad()
                 x_nor = x_nor.float().permute(0,3,1,2).to(device)
                 pred,feat = net(x_nor)
+                pred_ch_mask = pred[0,0].to('cpu').detach().numpy()
+                pred_af_mask = pred[0,1].to('cpu').detach().numpy()
                 if(train_detector):
-                    resized_boxes = np_box_resize(boxes,img_size,pred.shape[2:],'polyxy')
-                    resized_recbox = np_polybox_minrect(resized_boxes)
-                    pred_ch_mask = pred[0,0].to('cpu').detach().numpy()
-                    pred_af_mask = pred[0,1].to('cpu').detach().numpy()
-                    ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(resized_boxes,wrd_list,pred.shape[2:])
-                    for bxi in range(resized_recbox.shape[0]):
-                        spx,spy = resized_recbox[bxi][0].astype(np.int16)
-                        sub_ch_mask,_ = cv_crop_image_by_bbox(pred_ch_mask,resized_recbox[bxi])
-                        sub_af_mask,_ = cv_crop_image_by_bbox(pred_af_mask,resized_recbox[bxi])
-                        subh,subw = sub_ch_mask.shape
-                        nLabels, labels = cv2.connectedComponents(
-                            np.logical_and(sub_ch_mask>=0.4,sub_ch_mask>sub_af_mask).astype(np.uint8),
-                            connectivity=4)
-                        if(nLabels<len(wrd_list[bxi])//2):
-                            ch_mask[spy:subh+spy,spx:subw+spx] = pred_ch_mask[spy:subh+spy,spx:subw+spx]
-                            af_mask[spy:subh+spy,spx:subw+spx] = pred_af_mask[spy:subh+spy,spx:subw+spx]
+                    if('char_gt' in sample):
+                        ch_mask = sample['char_gt'][i,:,:,0].float().numpy()
+                        af_mask = sample['aff_gt'][i,:,:,0].float().numpy()
+                    else:
+                        resized_boxes = np_box_resize(boxes,img_size,pred.shape[2:],'polyxy')
+                        resized_recbox = np_polybox_minrect(resized_boxes)
 
-                    if(work_dir):
-                        img_msk = cv_mask_image(x.numpy(),ch_mask)
-                        save_image(os.path.join(work_dir,'images','gt_ch_mask_'+sample['name'][i]),img_msk)
+                        ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(resized_boxes,wrd_list,pred.shape[2:])
+                        for bxi in range(resized_recbox.shape[0]):
+                            spx,spy = resized_recbox[bxi][0].astype(np.int16)
+                            sub_ch_mask,_ = cv_crop_image_by_bbox(pred_ch_mask,resized_recbox[bxi])
+                            sub_af_mask,_ = cv_crop_image_by_bbox(pred_af_mask,resized_recbox[bxi])
+                            subh,subw = sub_ch_mask.shape
+                            nLabels, labels = cv2.connectedComponents(
+                                np.logical_and(sub_ch_mask>=0.4,sub_ch_mask>sub_af_mask).astype(np.uint8),
+                                connectivity=4)
+                            if(nLabels<len(wrd_list[bxi])//2):
+                                ch_mask[spy:subh+spy,spx:subw+spx] = pred_ch_mask[spy:subh+spy,spx:subw+spx]
+                                af_mask[spy:subh+spy,spx:subw+spx] = pred_af_mask[spy:subh+spy,spx:subw+spx]
+
+                    if(work_dir or logger):
+                        # img_msk = cv_mask_image(x.numpy(),ch_mask)
+                        # if(work_dir):
+                        #     save_image(os.path.join(work_dir,'images','gt_ch_mask_'+sample['name'][i]),img_msk)
+                        # if(logger):
+                        #     logger.add_image('gt_ch_mask', img_msk, batch*batch_size+i,dataformats='HWC')
                         img_msk = cv_mask_image(x.numpy(),pred_ch_mask)
-                        save_image(os.path.join(work_dir,'images','pred_ch_mask_'+sample['name'][i]),img_msk)
-                        img_msk = cv_mask_image(x.numpy(),af_mask)
-                        save_image(os.path.join(work_dir,'images','gt_af_mask_'+sample['name'][i]),img_msk)
+                        if(work_dir):
+                            save_image(os.path.join(work_dir,'images','pred_ch_mask_'+sample['name'][i]),img_msk)
+                        if(logger):
+                            logger.add_image('pred_ch_mask', img_msk, batch*batch_size+i,dataformats='HWC')
+                        # img_msk = cv_mask_image(x.numpy(),af_mask)
+                        # if(work_dir):
+                        #     save_image(os.path.join(work_dir,'images','gt_af_mask_'+sample['name'][i]),img_msk)
+                        # if(logger):
+                        #     logger.add_image('gt_af_mask', img_msk, batch*batch_size+i,dataformats='HWC')
                         img_msk = cv_mask_image(x.numpy(),pred_af_mask)
-                        save_image(os.path.join(work_dir,'images','pred_af_mask_'+sample['name'][i]),img_msk)
-
+                        if(work_dir):
+                            save_image(os.path.join(work_dir,'images','pred_af_mask_'+sample['name'][i]),img_msk)
+                        if(logger):
+                            logger.add_image('pred_af_mask', img_msk, batch*batch_size+i,dataformats='HWC')
+                    
                     loss_dict['ch_loss'] = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
                     loss_dict['af_loss'] = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
+
                 loss_dict['sub_ch_loss'] = 0.0
                 cnt = 0
-                
-                # Select top max_boxes biggest boxes 
-                recbox = np_polybox_minrect(boxes,'polyxy')
-                ws = np.linalg.norm(recbox[:,0]-recbox[:,1],axis=-1)
-                hs = np.linalg.norm(recbox[:,0]-recbox[:,3],axis=-1)
-                inds = np.argsort(ws*hs)[::-1]
-                boxes = boxes[inds[:max_boxes]]
-                recbox = recbox[inds[:max_boxes]]
-                for bxi,box in enumerate(boxes):
-                    # if(img_size!=x_nor.shape[1:-1]):
-                    #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
-                    sub_img,_ = cv_crop_image_by_polygon(x.numpy(),boxes[bxi])
-                    sub_img_nor = np_img_normalize(sub_img)
-                    sub_img_nor = np.expand_dims(sub_img_nor,0)
-                    sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
-                    try:
-                    # if(1):
-                        obj_map,obj_feat = net(sub_img_nor)
-                        # obj_feat*=obj_map[:,0].reshape(obj_feat.shape[0],1,obj_feat.shape[2],obj_feat.shape[3])
-                        match_map,_ = net.match(obj_feat,feat)
-                        # sub_ch_mask, _,_,_ = cv_gen_gaussian(
-                        #     np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
-                        #     None,match_map.shape[2:],affin=False)
-                        sub_ch_mask = cv_gen_gaussian_by_poly(
-                            np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
-                            match_map.shape[2:]
-                        )
-                        # sub_ch_mask /= np.max(sub_ch_mask)
-                        loss_dict['sub_ch_loss'] += criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
-                        match_map_np = match_map.detach().to('cpu').numpy()
-                        cnt+=1
-                    except Exception as e:
-                        sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'],x_nor.shape,sub_img_nor.shape))
-                        sys.stdout.write(e)
-                        sys.stdout.flush()
-                        continue
+                if('chbox' in sample):
+                    for chbx in sample['chbox'][i]:
+                        minx = chbx[:,:,0].min()
+                        miny = chbx[:,:,1].min()
+                        maxx = chbx[:,:,0].max()
+                        maxy = chbx[:,:,1].max()
+                        rectbx = np.array(((minx,miny),(maxx,miny),(maxx,maxy),(minx,maxy)))
+                        sub_img,_ = cv_crop_image_by_polygon(x.numpy(),rectbx,w_min=524,h_min=524)
+                        sub_img_nor = np_img_normalize(sub_img)
+                        sub_img_nor = np.expand_dims(sub_img_nor,0)
+                        sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
+                        try:
+                            obj_map,obj_feat = net(sub_img_nor)
+                            # obj_feat*=obj_map[:,0].reshape(obj_feat.shape[0],1,obj_feat.shape[2],obj_feat.shape[3])
+                            match_map,_ = net.match(obj_feat,feat)
+                            schbx = np_box_resize(chbx,img_size,match_map.shape[2:],'polyxy')
+                            spoly = np.concatenate((schbx[:,0:2].reshape(-1,2),schbx[:,2:].reshape(-1,2)),axis=0)
+                            sub_ch_mask = cv_gen_gaussian_by_poly(spoly,match_map.shape[2:])
+
+                            loss_dict['sub_ch_loss'] += criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
+                            match_map_np = match_map.detach().to('cpu').numpy()
+                            cnt+=1
+                        except Exception as e:
+                            sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'],x_nor.shape,sub_img_nor.shape))
+                            sys.stdout.write(str(e))
+                            sys.stdout.flush()
+                            continue
+                else:
+                    # Select top max_boxes biggest boxes 
+                    recbox = np_polybox_minrect(boxes,'polyxy')
+                    ws = np.linalg.norm(recbox[:,0]-recbox[:,1],axis=-1)
+                    hs = np.linalg.norm(recbox[:,0]-recbox[:,3],axis=-1)
+                    inds = np.argsort(ws*hs)[::-1]
+                    boxes = boxes[inds[:max_boxes]]
+                    recbox = recbox[inds[:max_boxes]]
+                    for bxi,box in enumerate(boxes):
+                        # if(img_size!=x_nor.shape[1:-1]):
+                        #     box = np_box_resize(box,img_size,x_nor.shape[1:-1],'polyxy')
+                        sub_img,_ = cv_crop_image_by_polygon(x.numpy(),boxes[bxi],w_min=524,h_min=524)
+                        sub_img_nor = np_img_normalize(sub_img)
+                        sub_img_nor = np.expand_dims(sub_img_nor,0)
+                        sub_img_nor = torch.from_numpy(sub_img_nor).float().permute(0,3,1,2).to(device)
+                        try:
+                        # if(1):
+                            obj_map,obj_feat = net(sub_img_nor)
+                            # obj_feat*=obj_map[:,0].reshape(obj_feat.shape[0],1,obj_feat.shape[2],obj_feat.shape[3])
+                            match_map,_ = net.match(obj_feat,feat)
+                            # sub_ch_mask, _,_,_ = cv_gen_gaussian(
+                            #     np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
+                            #     None,match_map.shape[2:],affin=False)
+                            sub_ch_mask = cv_gen_gaussian_by_poly(
+                                np_box_resize(box,img_size,match_map.shape[2:],'polyxy'),
+                                match_map.shape[2:]
+                            )
+                            # sub_ch_mask /= np.max(sub_ch_mask)
+                            loss_dict['sub_ch_loss'] += criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
+                            match_map_np = match_map.detach().to('cpu').numpy()
+                            cnt+=1
+                        except Exception as e:
+                            sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'],x_nor.shape,sub_img_nor.shape))
+                            sys.stdout.write(str(e))
+                            sys.stdout.flush()
+                            continue
                 if(loss_dict['sub_ch_loss']==0.0):
                     continue
                 if(cnt>0):
@@ -181,12 +226,11 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                 del match_map
                 del x_nor
                 del sub_img_nor
-                del sample
                 del loss_dict
                 del loss
-            except Exception as e:
-                sys.stdout.write("Faild in training image {}, step {}, err: {}\n".format(sample['name'][i],batch*batch_size+i,e))
-                sys.stdout.flush()
+            # except Exception as e:
+            #     sys.stdout.write("Faild in training image {}, step {}, err: {}\n".format(sample['name'][i],batch*batch_size+i,str(e)))
+            #     sys.stdout.flush()
     return 0
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -240,8 +284,10 @@ if __name__ == "__main__":
     # lr_decay_step_size = None
 
     dev = 'cuda' if(use_cuda)else 'cpu'
-    basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
-    net = SiameseCRAFT(base_net=basenet,feature_chs=32,lock_basenet=True).float().to(dev)
+    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
+    basenet = CRAFT_MOB(padding=False).float()
+    net = SiameseCRAFT(base_net=basenet,feature_chs=52,lock_basenet=False).float().to(dev)
+    train_detector = True
     if(lod_dir):
         sys.stdout.write("Load model at {}\n".format(lod_dir+'.pth'))
         sys.stdout.flush()
@@ -251,27 +297,30 @@ if __name__ == "__main__":
     if(os.path.exists(args.opt)):
         opt = torch.load(args.opt)
     elif(args.opt.lower()=='adam'):
-        opt = optim.Adam(net.parameters(), lr=0.001, weight_decay=tcfg['OPT_DEC'])
+        opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     elif(args.opt.lower() in ['adag','adagrad']):
         opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
     else:
         opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft_opt2.pkl')
     # opt.add_param_group(net.parameters())
-    train_dataset = Total(
-        os.path.join(DEF_TTT_DIR,'images','train'),
-        os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
-        os.path.join(DEF_TTT_DIR,'gt_txt','train'),
-        out_box_format='polyxy',
-        )
+    # train_dataset = Total(
+    #     os.path.join(DEF_TTT_DIR,'images','train'),
+    #     os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
+    #     os.path.join(DEF_TTT_DIR,'gt_txt','train'),
+    #     out_box_format='polyxy',
+    #     )
     # train_dataset = ICDAR13(
     #     os.path.join(DEF_IC13_DIR,'images','train'),
     #     os.path.join(DEF_IC13_DIR,'gt_txt','train'),
     #     out_box_format='polyxy',
-    #     max_image_size=(720,1280),
+    #     image_size=(640,640),
     #     )
-    num_workers = 0
-    batch = 1
+    train_dataset = SynthText(DEF_SYN_DIR, 
+        image_size=(640, 640),
+        )
+    num_workers = 4
+    batch = 4
 
     dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
         num_workers=num_workers,
@@ -307,7 +356,7 @@ if __name__ == "__main__":
     # img_dir = os.path.join(work_dir,train_dataset.__class__.__name__)
     img_dir = None
     # try:
-    ret = train_siam(dataloader,net,opt,loss,len(train_dataset),logger,img_dir)
+    ret = train_siam(dataloader,net,opt,loss,len(train_dataset),logger,img_dir,train_detector=train_detector)
     # except Exception as e:
     #     print(e)
     

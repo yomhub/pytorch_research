@@ -12,7 +12,7 @@ from torchvision import transforms, utils
 from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LSTM
 from lib.loss.mseloss import MSE_OHEM_Loss
 from lib.dataloader.total import Total
-from lib.dataloader.icdar import ICDAR
+from lib.dataloader.icdar import *
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
@@ -20,22 +20,7 @@ from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import RandomScale
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
-
-
-__DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
-__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
-__DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
-__DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
-__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
-__DEF_MSRA_DIR = os.path.join(__DEF_DATA_DIR, 'MSRA-TD500')
-__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
-__DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
-
-if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
-elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
-else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
+from dirs import *
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -74,20 +59,20 @@ if __name__ == "__main__":
     log_step_size = args.logstp
 
     # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    isdebug = True
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
+    # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
+    # isdebug = True
     # use_net = 'craft_mob'
-    use_dataset = 'minetto'
+    # use_dataset = 'minetto'
     # log_step_size = 1
-    use_cuda = False
+    # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
 
     if(use_net=='craft'):
         net = CRAFT()
     elif(use_net=='craft_mob'):
-        net = CRAFT_MOB(pretrained=True)
+        net = CRAFT_MOB(pretrained=True,padding=False)
     elif(use_net=='craft_lstm'):
         net = CRAFT_LSTM()
     elif(use_net=='craft_motion'):
@@ -109,37 +94,37 @@ if __name__ == "__main__":
         
     if(use_dataset=="ttt"):
         train_dataset = Total(
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
+            os.path.join(DEF_TTT_DIR,'images','train'),
+            os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
+            os.path.join(DEF_TTT_DIR,'gt_txt','train'),
             image_size=(640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=="ic15"):
-        train_dataset = ICDAR(
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
+        train_dataset = ICDAR15(
+            os.path.join(DEF_IC15_DIR,'images','train'),
+            os.path.join(DEF_IC15_DIR,'gt_txt','train'),
             image_size=(640, 640),)
         train_on_real = True
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     elif(use_dataset=='sync'):
-        train_dataset = SynthText(__DEF_SYN_DIR, 
+        train_dataset = SynthText(DEF_SYN_DIR, 
             image_size=(640, 640),
             )
         train_on_real = False
         x_input_function=train_dataset.x_input_function
         y_input_function=train_dataset.y_input_function
     elif(use_dataset=='icv15'):
-        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
+        train_dataset = ICDARV(os.path.join(DEF_ICV15_DIR,'train'))
         train_on_real = True
         x_input_function = None
         y_input_function = None
         num_workers = 0
         batch = 1
     elif(use_dataset in ['minetto','mine']):
-        train_dataset = Minetto(__DEF_MINE_DIR)
+        train_dataset = Minetto(DEF_MINE_DIR)
         train_on_real = True
         x_input_function = None
         y_input_function = None
@@ -148,11 +133,11 @@ if __name__ == "__main__":
     else:
         # Load ALL jpg/png/bmp image from dir list
         train_dataset = BaseDataset((
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC19_DIR,'Train'),
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            os.path.join(__DEF_MSRA_DIR,'train'),
-            __DEF_SVT_DIR,
+            os.path.join(DEF_IC15_DIR,'images','train'),
+            os.path.join(DEF_IC19_DIR,'train'),
+            os.path.join(DEF_TTT_DIR,'images','train'),
+            os.path.join(DEF_MSRA_DIR,'train'),
+            DEF_SVT_DIR,
             # __DEF_SYN_DIR,
             ),
             image_size=(640, 640),

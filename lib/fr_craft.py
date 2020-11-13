@@ -135,6 +135,7 @@ class CRAFTTrainer(Trainer):
 
     def train_image(self,sample):
         x=self._custom_x_input_function(sample,self._device)
+        xnor = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
         try:
             self._net.init_state()
         except:
@@ -146,8 +147,8 @@ class CRAFTTrainer(Trainer):
                 img = sample['image']
             img = np_img_normalize(img)
             with torch.no_grad():
-                gt,_ = self.teacher(torch.from_numpy(img).permute(0,3,1,2).float().to(self.teacher_device))
-            gt = torch.from_numpy(gt.to('cpu').numpy()).to(self._device)
+                gt,_ = self.teacher(xnor)
+
             # gt = torch.from_numpy(gt).to(self._device)
             chmap = torch.unsqueeze(gt[:,0,:,:],1)
             afmap = torch.unsqueeze(gt[:,1,:,:],1)
@@ -172,9 +173,8 @@ class CRAFTTrainer(Trainer):
         else:
             y = self._custom_y_input_function(sample,self._device)
 
-        x = torch_img_normalize(x.permute(0,2,3,1)).permute(0,3,1,2)
         self._opt.zero_grad()
-        pred = self._net(x)
+        pred = self._net(xnor)
         
         loss = self._loss(pred[0] if(isinstance(pred,tuple))else pred,y)
         loss.backward()

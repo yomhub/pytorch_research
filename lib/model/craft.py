@@ -78,13 +78,13 @@ class CRAFT(nn.Module):
 
 
 class CRAFT_MOB(nn.Module):
-    def __init__(self, width_mult=1.,pretrained=False):
+    def __init__(self, width_mult=1.,pretrained=False,padding=True):
         super(CRAFT_MOB, self).__init__()
-        self._mob = MobUNet(width_mult=width_mult)
+        self._mob = MobUNet(width_mult=width_mult,padding=padding)
 
         self._final_predict = nn.Sequential(
-            nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
-            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1), nn.ReLU(inplace=True),
+            nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1 if(padding)else 0), nn.ReLU(inplace=True),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1 if(padding)else 0), nn.ReLU(inplace=True),
             nn.Conv2d(16, 16, kernel_size=1, stride=1), nn.ReLU(inplace=True),
             nn.Conv2d(16, 2, kernel_size=1, stride=1)
         )

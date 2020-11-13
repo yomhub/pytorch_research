@@ -160,6 +160,12 @@ class BaseDataset(Dataset):
             idx = idx.tolist()
         return self.img_names[idx]
 
+    def get_by_name(self, fname):
+        for i,o in enumerate(self.img_names):
+            if(o[-len(fname):].lower()==fname):
+                return self[i]
+        return None
+
     def read_boxs(self,fname:str):
         """
         Return boxes,texts

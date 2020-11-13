@@ -198,6 +198,7 @@ class MobUNet(nn.Module):
 
         self.padding = bool(padding)
         if(not self.padding):
+            # minimum training input: 524-524, minium test input: 491 x 491
             mob = MobileNetV2(interverted_residual_setting=inverted_residual_setting,padding=False)
         else:
             mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
