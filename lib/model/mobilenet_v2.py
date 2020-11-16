@@ -273,8 +273,8 @@ class MobUNet(nn.Module):
                 # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 # m.weight.data.normal_(0, math.sqrt(2. / n))
                 # init.xavier_normal_(m.weight.data)
-                init.kaiming_normal_(m.weight, mode='fan_out')
-                # init.xavier_uniform_(m.weight.data)
+                # init.kaiming_normal_(m.weight, mode='fan_out')
+                init.xavier_uniform_(m.weight.data)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):

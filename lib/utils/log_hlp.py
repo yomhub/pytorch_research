@@ -1,4 +1,5 @@
 import os
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mimg
@@ -80,6 +81,18 @@ def save_image(f_name:str,img:np.ndarray):
     if(len(f_name.split('.'))==1):
         f_name += '.jpg'
     mimg.imsave(f_name, img)
+
+def load_single_image(fname,to_torch:bool=False,to_dev=None):
+    if(os.path.dirname(f_name)==''):
+        f_name = os.path.join(os.getcwd(),f_name)
+    if(not os.path.exists(fname)):
+        return None
+    img = io.imread(fname)
+    if(to_torch or not isinstance(to_dev,type(None))):
+        img = torch.from_numpy(img)
+        if(not isinstance(to_dev,type(None))):
+            img = img.to(to_dev)
+    return img
 
 if __name__ == "__main__":
     img = io.imread("D:\\development\\workspace\\Dataset\\ICDAR2015\\ch4_test_images\\img_2.jpg")

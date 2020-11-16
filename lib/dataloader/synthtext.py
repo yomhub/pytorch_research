@@ -110,10 +110,15 @@ class SynthText(Dataset):
             maskdir,fname = os.path.split(maskdir)
             char_gt = io.imread(os.path.join(maskdir, 'ch_{}'.format(fname)))
             aff_gt = io.imread(os.path.join(maskdir, 'af_{}'.format(fname)))
+
+            if(self.image_size and self.image_size!=org_shape):
+                char_gt = TR.resize(char_gt,self.image_size,preserve_range=True)
+                aff_gt = TR.resize(aff_gt,self.image_size,preserve_range=True)
+            
             char_gt = char_gt[:,:,0].astype(np.float32)/255.0
             aff_gt = aff_gt[:,:,0].astype(np.float32)/255.0
-            
             line_boxes = []
+            char_index = 0
             for txt in txt_label:
                 for strings in txt.split("\n"):
                     for string in strings.split(" "):
@@ -223,13 +228,13 @@ class SynthText(Dataset):
 
 def x_input_function(sample,th_device): 
     x = sample['image'] if(isinstance(sample,dict))else sample
-    return to_torch(x,th_device).permute(0,3,1,2)
+    return to_torch(torch.from_numpy(x),th_device).permute(0,3,1,2)
 
 def y_input_function(sample,th_device): 
     char_gt = sample['char_gt'] if(isinstance(sample,dict))else sample[0]
     aff_gt = sample['aff_gt'] if(isinstance(sample,dict))else sample[1]
 
-    return to_torch(char_gt,th_device).permute(0,3,1,2), to_torch(aff_gt,th_device).permute(0,3,1,2)
+    return to_torch(torch.from_numpy(char_gt),th_device).permute(0,3,1,2), to_torch(torch.from_numpy(aff_gt),th_device).permute(0,3,1,2)
 
 def create_affine_boxes(boxs):
     """

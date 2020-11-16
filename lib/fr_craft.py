@@ -48,28 +48,24 @@ class CRAFTTrainer(Trainer):
         af_y = af_y.to('cpu').detach().numpy()
         ch_p = pred[:,0,:,:]
         af_p = pred[:,1,:,:]
-        x = x.permute(0,2,3,1).to('cpu').detach().numpy()
-        batch_size = int(pred.shape[0])
-        lines = np.ones((ch_y.shape[1],5,3),dtype=np.uint8)*255
+        if('image' in sample):
+            x = sample['image'] if(isinstance(sample['image'],np.ndarray))else sample['image'].numpy()
+        else:
+            x = x.permute(0,2,3,1).to('cpu').detach().numpy()
+        
+        batch_size = min(int(pred.shape[0]),2)
         
         for i in range(batch_size):
-            if('image' in sample):
-                img = sample['image'][i].type(torch.uint8)
-                self._file_writer.add_image('Org:Image', img, step*batch_size+i,dataformats='HWC')
-            frame = TR.resize(x[i],af_y.shape[1:],preserve_range=True)
-            frame -= np.min(frame)
-            frame/=np.max(frame)
-            frame *= 255.0
-            ch_i = cv_heatmap(ch_y[i])
-            af_i = cv_heatmap(af_y[i])
-            frame = frame.astype(af_i.dtype)
-            lines = lines.astype(af_i.dtype)
-            img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
-            self._file_writer.add_image('GT:Img|Char|Affinity', img, step*batch_size+i,dataformats='HWC')     
-            ch_i = cv_heatmap(ch_p[i])
-            af_i = cv_heatmap(af_p[i])
-            img = np.concatenate((frame,lines,ch_i,lines,af_i),axis=-2)
-            self._file_writer.add_image('Pred:Img|Char|Affinity', img, step*batch_size+i,dataformats='HWC')
+            af_mask = cv_mask_image(x[i],cv_heatmap(af_y[i]))
+            ch_mask = cv_mask_image(x[i],cv_heatmap(ch_y[i]))
+            lines = np.ones((af_mask.shape[0],5,3),dtype=af_mask.dtype)*255
+            img = np.concatenate((ch_mask,lines,af_mask),axis=-2)
+            self._file_writer.add_image('Org:Image', img, step*batch_size+i,dataformats='HWC')
+            af_mask = cv_mask_image(x[i],cv_heatmap(af_p[i]))
+            ch_mask = cv_mask_image(x[i],cv_heatmap(ch_p[i]))
+            lines = np.ones((af_mask.shape[0],5,3),dtype=af_mask.dtype)*255
+            img = np.concatenate((ch_mask,lines,af_mask),axis=-2)
+            self._file_writer.add_image('Pred:Image', img, step*batch_size+i,dataformats='HWC')
 
         return None
 

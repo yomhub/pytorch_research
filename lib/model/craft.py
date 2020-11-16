@@ -81,7 +81,7 @@ class CRAFT_MOB(nn.Module):
     def __init__(self, width_mult=1.,pretrained=False,padding=True):
         super(CRAFT_MOB, self).__init__()
         self._mob = MobUNet(width_mult=width_mult,padding=padding)
-
+        self._bn = torch.nn.BatchNorm2d(self._mob.final_predict_ch)
         self._final_predict = nn.Sequential(
             nn.Conv2d(self._mob.final_predict_ch, 32, kernel_size=3, stride=1, padding=1 if(padding)else 0), nn.ReLU(inplace=True),
             nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1 if(padding)else 0), nn.ReLU(inplace=True),
@@ -110,6 +110,7 @@ class CRAFT_MOB(nn.Module):
 
     def forward(self,x):
         f = self._mob(x)
+        f = self._bn(f)
         pred = self._final_predict(f)
         return pred,f
 

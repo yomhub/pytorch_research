@@ -24,6 +24,10 @@ def default_collate_fn(batch):
 
 def default_x_input_function(sample,th_device): 
     x = sample['image'] if(isinstance(sample,dict))else sample
+    if(isinstance(x,np.ndarray)):
+        x = torch.from_numpy(x)
+    if(len(x.shape)==3):
+        x = x.reshape((1,x.shape[0],x.shape[1],x.shape[2]))
     return x.permute((0,3,1,2)).float().to(th_device)
     
 class BaseDataset(Dataset):

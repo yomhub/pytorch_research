@@ -774,7 +774,7 @@ def cv_mask_image(image,mask,rate:float=0.7):
         image: (h1,w1,3 or 1) in np.int8
         mask: (h2,w2,(1)) np.float or (h2,w2,3) in np.int8
     Return:
-        image: (h2,w2,3 or 1)
+        image: (h2,w2,3)
     """
     rate = min(max(0.1,rate),0.9)
     if(image.shape[-1]==1):
@@ -792,7 +792,10 @@ def cv_mask_image(image,mask,rate:float=0.7):
 def cv_heatmap(img,clr = cv2.COLORMAP_JET):
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
-    img = cv2.applyColorMap(img, clr)
+    if(len(img.shape)==3 and img.shape[-1]!=1):
+        img = np.stack([cv2.applyColorMap(o, clr) for o in Image],0)
+    else:
+        img = cv2.applyColorMap(img, clr)
     return img.astype(np.uint8)
 
 def cv_watershed(org_img, mask, viz=False):

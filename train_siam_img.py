@@ -6,6 +6,7 @@ import argparse
 from tqdm import tqdm
 from datetime import datetime
 # =================Torch=======================
+from torch.nn.parallel import DataParallel
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils

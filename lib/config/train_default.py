@@ -30,7 +30,7 @@ cfg['MMT'] = 0.8
 # For optimizer (...,weight_decay = cfg['OPT_DEC'])
 cfg['OPT_DEC'] = 5e-4
 # learning rate decrease step, 0 to disable
-cfg['LR_DEC_STP'] = [0,500,300,150][-1]
+cfg['LR_DEC_STP'] = [0,500,300,150,1300,10000][-1]
 # learning rate decrease rate: current LR*rt
 cfg['LR_DEC_RT'] = [0.8,0.9][1]
 

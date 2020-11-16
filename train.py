@@ -63,12 +63,14 @@ if __name__ == "__main__":
     # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
     # isdebug = True
     # use_net = 'craft_mob'
-    # use_dataset = 'minetto'
+    # use_dataset = 'sync'
     # log_step_size = 1
     # use_cuda = False
     # num_workers=0
     # lr_decay_step_size = None
-
+    if(lod_dir and os.path.exists(lod_dir)):
+        print("Loading at {}".format(lod_dir))
+        net = torch.load(lod_dir)
     if(use_net=='craft'):
         net = CRAFT()
     elif(use_net=='craft_mob'):
@@ -79,7 +81,7 @@ if __name__ == "__main__":
         net = CRAFT_MOTION()
     elif(use_net=='craft_vgg_lstm'):
         net = CRAFT_VGG_LSTM()
-        
+    
     net = net.float().to("cuda:0" if(use_cuda)else "cpu")
     
     if(os.path.exists(args.opt)):
@@ -152,7 +154,7 @@ if __name__ == "__main__":
         collate_fn=train_dataset.default_collate_fn,
         )
 
-    loss = MSE_OHEM_Loss()
+    loss = MSE_OHEM_Loss(positive_mult = 2,positive_th = 0.5)
     trainer = CRAFTTrainer
     
     trainer = trainer(
@@ -174,7 +176,6 @@ if __name__ == "__main__":
         "Working DIR: {}\n".format(work_dir)+\
         "Running with: \n"+\
         "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,batch)+\
-        "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
         "\t Network: {}.\n".format(net.__class__.__name__)+\
         "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
         "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
@@ -191,10 +192,6 @@ if __name__ == "__main__":
     print(summarize)
     trainer.log_info(summarize)
     
-    if(lod_dir):
-        print("Loading model at {}.".format(lod_dir))
-        trainer.load(lod_dir)
-
     trainer.loader_train(dataloader,int(len(train_dataset)/dataloader.batch_size) if(max_step<0)else max_step)
     if(args.save):
         print("Saving model...")
