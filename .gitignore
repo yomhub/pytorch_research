@@ -5,9 +5,6 @@ save_model
 saved_model
 /saved_model
 **/saved_model
-pre_train
-/pre_train
-**/pre_train
 log
 /log
 **/log

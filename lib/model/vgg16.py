@@ -107,7 +107,7 @@ class VGG16(torch.nn.Module):
             nn.Conv2d(512,512,kernel_size=(3,3),stride=(1,1),padding=padding),
             nn.BatchNorm2d(512),
         )
-
+        
         if(pretrained):
             model_urls['vgg16_bn'] = model_urls['vgg16_bn'].replace('https://', 'http://')
             mdfeatures = models.vgg16_bn(pretrained=pretrained).features
