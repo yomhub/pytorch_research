@@ -25,11 +25,11 @@ class double_conv(nn.Module):
         return x
         
 class CRAFT(nn.Module):
-    def __init__(self, pretrained=False, freeze=False):
+    def __init__(self, **args):
         super(CRAFT, self).__init__()
 
         """ Base network """
-        self.basenet = VGG16(pretrained, freeze)
+        self.basenet = VGG16(**args)
 
         """ U network """
         self.upconv1 = double_conv(1024, 512, 256)

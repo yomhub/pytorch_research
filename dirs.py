@@ -12,6 +12,7 @@ DEF_IC19_DIR = os.path.join(DEF_DATA_DIR, 'ICDAR2019')
 DEF_MSRA_DIR = os.path.join(DEF_DATA_DIR, 'MSRA-TD500')
 DEF_ICV15_DIR = os.path.join(DEF_DATA_DIR, 'ICDAR2015_video')
 DEF_MINE_DIR = os.path.join(DEF_DATA_DIR, 'minetto')
+DEF_TEACHER_VGG = os.path.join(DEF_LOCAL_DIR, 'pre_train', 'craft_mlt_25k.pkl')
 
 if(platform.system().lower()[:7]=='windows'):
     DEF_SYN_DIR = "D:\\development\\SynthText"
