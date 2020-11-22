@@ -76,6 +76,9 @@ class CRAFTTrainer(Trainer):
                 self._file_writer.add_scalar('Loss/train', o, step*batch_size+i)
         else:
             self._file_writer.add_scalar('Loss/train', loss, step)
+        for param_group in self._opt.param_groups:
+            self._file_writer.add_scalar('LR rate', param_group['lr'], step)
+            break
         return None
     
     def inference_pursedo_bboxes(self,img:np.ndarray,cv_word_box:np.ndarray,word:str,auto_box_expand:bool=True):

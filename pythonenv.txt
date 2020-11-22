@@ -8,3 +8,4 @@ shapely
 datetime
 argparse
 tqdm
+ffmpeg-python

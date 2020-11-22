@@ -164,6 +164,26 @@ def np_polybox_rotate(cv_polybox,M):
     ret = np.moveaxis(ret,0,-1)
     return ret if(not len2)else ret[0]
 
+def np_apply_matrix_to_pts(pts,M):
+    """
+    Apply transform matrix to points
+    Args:
+        pts: (k1,k2,...,kn,axis) points coordinate
+        M: (axis1,axis2) matrix
+    Return:
+        (k1,k2,...,kn,axis1) points coordinate
+    """
+    if(pts.shape[-1]<M.shape[-1]):
+        # need homogeneous, (ax0,ax1...)->(ax0,ax1,...,1)
+        pd = [(0,0) for i in range(len(pts.shape)-1)]
+        pd.append((0,1))
+        pts = np.pad(pts,pd,constant_values=1)
+    if(len(pts.shape)>1):
+        pts = np.moveaxis(pts,-1,-2)
+    ret = np.dot(M,pts)
+    ret = np.moveaxis(ret,0,-1)
+    return ret
+
 def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     """
     Box transfrom in ['yxyx','xyxy','xywh','cxywh']
@@ -426,6 +446,52 @@ def cv_create_affine_boxes(boxs,bx_wide:float = 0.8):
     dw_cent_ep = bot_center + (top_center-bot_center)*det
 
     return np.stack([up_cent_sp,up_cent_ep,dw_cent_ep,dw_cent_sp],axis=1)
+
+def cv_get_rotate_matrix(roll:float=0.0, pitch:float=0.0, yaw:float=0.0,d:int=4,homo:bool=True):
+    """
+    Return rotation matrix
+    Args:
+        roll, pitch, yaw: x-y-z rotation degree in angle system
+        d: dimension of matrix
+        homo: if True, return Homogeneous array
+    Return:
+        (d,d) rotation matrix in np.float32
+    """
+    # a=roll,b=pitch,y=yaw
+    sy,cy = np.sin(yaw/180*np.pi),np.cos(yaw/180*np.pi)
+    sb,cb = np.sin(pitch/180*np.pi),np.cos(pitch/180*np.pi)
+    sa,ca = np.sin(roll/180*np.pi),np.cos(roll/180*np.pi)
+
+    l1=[cy*cb, (-1.0)*sy*ca+cy*sb*sa,  sy*sa+cy*sb*ca,         ]
+    l2=[sy*cb, cy*ca+sy*sb*sa,         (-1.0)*cy*sa+sy*sb*ca,  ]
+    l3=[-sb,   cb*sa,                  cb*ca                   ]
+
+    if(d==4):
+        ans = [l1+[0],l2+[0],l3+[0],[0,0,0,1]]
+    elif(d==3):
+        if(homo):
+            ans = [l1[:-1]+[0],l2[:-1]+[0],[0,0,1]]
+        else:
+            ans = [l1,l2,l3]
+    else:
+        ans=[l1[:2],l2[:2]]
+    return np.array(ans,dtype=np.float32)
+
+def cv_get_perspection_matrix(image_size,roll:float=0.0, pitch:float=0.0, yaw:float=0.0):
+    """
+    Assume image is in XoY plant and co-centered with origin point
+    Args:
+        image_size: (h,w)
+        roll, pitch, yaw: x-y-z rotation degree in angle system
+    """
+    M = cv_get_rotate_matrix(roll,pitch,yaw)
+    h,w = image_size
+    src_points = np.array([(-w/2,h/2,0,1),(w/2,h/2,0,1),(w/2,-h/2,0,1),(-w/2,-h/2,0,1)],dtype=M.dtype)
+    dst_points = np_apply_matrix_to_pts(src_points,M)
+    src = src_points[:,:2]+np.float32((w/2,h/2))
+    dst = dst_points[:,:2]+np.float32((w/2,h/2))
+    M = cv2.getPerspectiveTransform(src,dst)
+    return M
 
 def cv_rotate(image,angle,change_shape:bool=False):
     """
@@ -704,6 +770,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
         img: ndarray in (h,w,c) in [0,255]
         boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
             or (polygon point number,2 (x,y))
+    Return image
     """
     image = image.astype(np.uint8)
 
@@ -965,6 +1032,22 @@ def cv_divd_polygon(box,n):
         ans.append((up_last,box[bxi],box[-bxi-1],dw_last))
     return np.stack(ans,axis=0)
 
+DEF_SP_LENTH = {
+    # refer normal as 1.0
+    # big
+    'I':0.4,
+    'M':1.1,
+    'W':1.1,
+    # small
+    'l':0.4,
+    'i':0.4,
+    't':0.9,
+    'h':0.9,
+    '.':0.2,
+    '-':0.3,
+    ',':0.2,
+    '\'':0.2,
+}
 def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
     """
     Generate text level gaussian distribution
@@ -1022,16 +1105,21 @@ def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.n
                 ch_boxes.append((box[0],box[box.shape[0]//2-1],box[-box.shape[0]//2],box[-1]))
         elif(box.shape[0]==4):
             # rectangle
-            up_dxy = np.linspace(box[0],box[1],total_len+1)
-            dw_dxy = np.linspace(box[3],box[2],total_len+1)
+            txt = texts[bxi].strip()
+            len_list = [DEF_SP_LENTH[o] if(o in DEF_SP_LENTH)else 1.0 for o in txt]
+            # up_dxy = np.linspace(box[0],box[1],total_len+1)
+            # dw_dxy = np.linspace(box[3],box[2],total_len+1)
+            total_flen = sum(len_list)
+            up_sp_xy = box[0]
+            up_lxy = (box[1]-box[0])/total_flen
+            dw_sp_xy = box[3]
+            dw_lxy = (box[2]-box[3])/total_flen
             for txi in range(total_len):
-                if(txt[txi] in ' '):
-                    continue
-                elif(txt[txi] in '._,'):
-                    # 
-                    ch_boxes.append(((up_dxy[txi]+dw_dxy[txi])/2,(up_dxy[txi+1]+dw_dxy[txi+1])/2,dw_dxy[txi+1],dw_dxy[txi]))
-                else:
-                    ch_boxes.append((up_dxy[txi],up_dxy[txi+1],dw_dxy[txi+1],dw_dxy[txi]))
+                if(txt[txi] not in ' ._,\''):
+                    # ignore ' ._,'
+                    ch_boxes.append((up_sp_xy,up_sp_xy+up_lxy*len_list[txi],dw_sp_xy+dw_lxy*len_list[txi],dw_sp_xy))
+                up_sp_xy=up_sp_xy+up_lxy*len_list[txi]
+                dw_sp_xy=dw_sp_xy+dw_lxy*len_list[txi]
         else:
             # box: (2k,2) for polygon xy
             det_list = []

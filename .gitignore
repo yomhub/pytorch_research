@@ -31,3 +31,5 @@ elog
 eval
 /eval
 **/eval
+.nfs*
+*.mp4

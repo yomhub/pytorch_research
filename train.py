@@ -41,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
     parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
+    parser.add_argument('--epoch', type=int, help='Epoch size.',default=tcfg['EPOCH'])
 
     args = parser.parse_args()
     use_net = args.net.lower()
@@ -57,9 +58,10 @@ if __name__ == "__main__":
     batch = args.batch
     work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
     log_step_size = args.logstp
+    epoch = args.epoch
 
     # For Debug config
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
+    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_mob_nopd_syn.pkl"
     # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
     # isdebug = True
     # use_net = 'craft_mob'
@@ -71,7 +73,7 @@ if __name__ == "__main__":
     if(lod_dir and os.path.exists(lod_dir)):
         print("Loading at {}".format(lod_dir))
         net = torch.load(lod_dir)
-    if(use_net=='craft'):
+    elif(use_net=='craft'):
         net = CRAFT()
     elif(use_net=='craft_mob'):
         net = CRAFT_MOB(pretrained=True,padding=False)
@@ -154,7 +156,7 @@ if __name__ == "__main__":
         collate_fn=train_dataset.default_collate_fn,
         )
 
-    loss = MSE_OHEM_Loss(positive_mult = 2,positive_th = 0.5)
+    loss = MSE_OHEM_Loss(positive_mult = 3,positive_th = 0)
     trainer = CRAFTTrainer
     
     trainer = trainer(
@@ -168,6 +170,7 @@ if __name__ == "__main__":
         custom_x_input_function=x_input_function,
         custom_y_input_function=y_input_function,
         train_on_real = train_on_real,
+        auto_decay=False,
         )
     if(teacher_pkl_dir):
         trainer.set_teacher(teacher_pkl_dir)
@@ -187,17 +190,19 @@ if __name__ == "__main__":
         "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
         "\t Load network: {}.\n".format(lod_dir if(lod_dir)else 'No')+\
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
+        "\t Save step: {}.\n".format(args.savestep)+\
         "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
         ""
     print(summarize)
     trainer.log_info(summarize)
     
-    trainer.loader_train(dataloader,int(len(train_dataset)/dataloader.batch_size) if(max_step<0)else max_step)
-    if(args.save):
-        print("Saving model...")
-        trainer.save(args.save)
-        print("Saving optimizer...")
-        trainer.save_opt(args.save+'_opt.pkl')
+    for i in range(epoch):
+        trainer.loader_train(dataloader,int(len(train_dataset)/dataloader.batch_size) if(max_step<0)else max_step)
+        if(args.save):
+            print("Saving model...")
+            trainer.save(args.save)
+            print("Saving optimizer...")
+            trainer.save_opt(args.save+'_opt.pkl')
 
     time_usage = datetime.now()
     print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))

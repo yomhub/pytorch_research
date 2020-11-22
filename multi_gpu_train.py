@@ -1,45 +1,149 @@
 import os
 import sys
 import platform
-import torch
 import argparse
+from tqdm import tqdm
 from datetime import datetime
+import matplotlib.pyplot as plt
 # =================Torch=======================
+import torch
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.multiprocessing import Process
 # =================Local=======================
-from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION
-from lib.loss.mseloss import MSE_OHEM_Loss
+from lib.model.craft import *
+from lib.model.siamfc import *
+from lib.loss.mseloss import *
 from lib.dataloader.total import Total
-from lib.dataloader.icdar import ICDAR
+from lib.dataloader.icdar import *
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
-import lib.dataloader.synthtext as syn80k
-from lib.utils.img_hlp import RandomScale
+from lib.dataloader.synthtext import SynthText
+from lib.utils.img_hlp import *
+from lib.utils.log_hlp import *
 from lib.fr_craft import CRAFTTrainer
 from lib.config.train_default import cfg as tcfg
+from dirs import *
 
 
-__DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
-__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
-__DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
-__DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
-__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
-__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
-__DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
+def train(rank, world_size, args):
+    """
+    Custom training function, return 0 for join operation
+    args:
+        rank: rank id [0-N-1] for N gpu
+        world_size: N, total gup number
+        args: argparse from input
+    """
 
-if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
-elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
-else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
+    batch_size = args.batch
+    torch.manual_seed(0)
+    torch.cuda.set_device(rank)
+    dev = torch.cuda.get_device_name(rank)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Config trainer')
+    # model.cuda(rank)
+    # define loss function (criterion) and optimizer
+    criterion = nn.CrossEntropyLoss().cuda(rank)
+    optimizer = torch.optim.SGD(model.parameters(), 1e-4)
+    # Wrap the model
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+    # Data loading code
 
-    parser.add_argument('--opt', help='Choose optimizer.',default=tcfg['OPT'])
+    if(args.dataset=="ttt"):
+        train_dataset = Total(
+            os.path.join(DEF_TTT_DIR,'images','train'),
+            os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
+            os.path.join(DEF_TTT_DIR,'gt_txt','train'),
+            image_size=(640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+    elif(args.dataset=="ic15"):
+        train_dataset = ICDAR15(
+            os.path.join(DEF_IC15_DIR,'images','train'),
+            os.path.join(DEF_IC15_DIR,'gt_txt','train'),
+            image_size=(640, 640),)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+    elif(args.dataset=='sync'):
+        train_dataset = SynthText(DEF_SYN_DIR, 
+            image_size=(640, 640),
+            )
+        train_on_real = False
+        x_input_function=train_dataset.x_input_function
+        y_input_function=train_dataset.y_input_function
+    else:
+        # Load ALL jpg/png/bmp image from dir list
+        train_dataset = BaseDataset((
+            os.path.join(DEF_IC15_DIR,'images','train'),
+            os.path.join(DEF_IC19_DIR,'train'),
+            os.path.join(DEF_TTT_DIR,'images','train'),
+            os.path.join(DEF_MSRA_DIR,'train'),
+            DEF_SVT_DIR,
+            # __DEF_SYN_DIR,
+            ),
+            image_size=(640, 640),
+            img_only=True)
+        train_on_real = True
+        x_input_function = train_dataset.x_input_function
+        y_input_function = None
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,
+                                                                    num_replicas=world_size,
+                                                                    rank=rank)
+
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=False,
+                                               num_workers=0,
+                                               pin_memory=True,
+                                               sampler=train_sampler)
+
+    start = datetime.now()
+    total_step = len(train_loader)
+    for epoch in range(args.epoch):
+        for i, sample in enumerate(train_loader):
+            x = sample['image']
+            xnor = torch.from_numpy(x).float().cuda(non_blocking=True)
+            xnor = torch_img_normalize(xnor).permute(0,3,1,2)
+            y_ch = torch.from_numpy(sample['chmask']).float().cuda(non_blocking=True)
+            y_af = torch.from_numpy(sample['afmask']).float().cuda(non_blocking=True)
+            # Forward pass
+            pred,_ = model(xnor)
+            ch_loss = criterion(pred[:,0], y_ch)
+            af_loss = criterion(pred[:,1], y_af)
+            loss = ch_loss+af_loss
+            # Backward and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if (i + 1) % 100 == 0 and gpu == 0:
+                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(epoch + 1, args.epochs, i + 1, total_step,
+                                                                         loss.item()))
+
+
+    return 0
+
+def init_process(rank, world_size, fn, args):
+    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+    print("Process {}/{} init.".format(rank,world_size))
+    fn(rank,world_size,args)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    # parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
+    #                     help='number of data loading workers (default: 4)')
+    # parser.add_argument('-g', '--gpus', default=1, type=int,
+    #                     help='number of gpus per node')
+    # parser.add_argument('-nr', '--nr', default=0, type=int,
+    #                     help='ranking within the nodes')
+    # parser.add_argument('--epochs', default=2, type=int, metavar='N',
+    #                     help='number of total epochs to run')
+    parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
@@ -55,166 +159,11 @@ if __name__ == "__main__":
     parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
     parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
+    parser.add_argument('--epoch', type=int, help='Epoch size.',default=tcfg['EPOCH'])
 
     args = parser.parse_args()
-    use_net = args.net.lower()
-    use_dataset = args.dataset.lower()
-    time_start = datetime.now()
-    isdebug = args.debug
-    lod_dir = args.load
-    teacher_pkl_dir = args.teacher
-    lr = args.learnrate
-    max_step = args.step if(not isdebug)else 1000
-    use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
-    lr_decay_step_size = tcfg['LR_DEC_STP']
-    num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
-    batch = args.batch
-    work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
-
-    # For Debug config
-    # lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_lstm.pkl"
-    # teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    # isdebug = True
-    # use_net = 'craft_mob'
-    # use_dataset = 'all'
-    # use_cuda = False
-    # num_workers=0
-    # lr_decay_step_size = None
-
-    if(use_cuda):
-        for i in range(torch.cuda.device_count()):
-            torch.cuda.set_device(i)
-            torch.distributed.init_process_group()
-
-    if(use_net=='craft'):
-        net = CRAFT()
-    elif(use_net=='craft_mob'):
-        net = CRAFT_MOB(pretrained=True)
-    elif(use_net=='craft_lstm'):
-        net = CRAFT_LSTM()
-    elif(use_net=='craft_motion'):
-        net = CRAFT_MOTION()
-
-    net = net.float().to("cuda:0" if(use_cuda)else "cpu")
-    
-    if(args.opt.lower()=='adam'):
-        opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    elif(args.opt.lower() in ['adag','adagrad']):
-        opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    else:
-        opt = optim.SGD(net.parameters(), lr=lr, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-
-        
-    if(use_dataset=="ttt"):
-        train_dataset = Total(
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_pixel','Train'),
-            os.path.join(__DEF_TTT_DIR,'gt_txt','Train'),
-            image_size=(3,640, 640),)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
-    elif(use_dataset=="ic15"):
-        train_dataset = ICDAR(
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC15_DIR,'gt_txt','train'),
-            image_size=(3,640, 640),)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
-    elif(use_dataset=='sync'):
-        train_dataset = syn80k.SynthText(__DEF_SYN_DIR, image_size=(3,640, 640), 
-            transform=transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
-            ]
-        ))
-        train_on_real = False
-        x_input_function=syn80k.x_input_function
-        y_input_function=syn80k.y_input_function
-    elif(use_dataset=='icv15'):
-        train_dataset = ICDARV(os.path.join(__DEF_ICV15_DIR,'train'))
-        train_on_real = True
-        x_input_function = None
-        y_input_function = None
-        num_workers = 0
-        batch = 1
-    elif(use_dataset in ['minetto','mine']):
-        train_dataset = Minetto(__DEF_MINE_DIR)
-        train_on_real = True
-        x_input_function = None
-        y_input_function = None
-        num_workers = 0
-        batch = 1
-    else:
-        train_dataset = BaseDataset((
-            os.path.join(__DEF_IC15_DIR,'images','train'),
-            os.path.join(__DEF_IC19_DIR,'Train'),
-            os.path.join(__DEF_TTT_DIR,'Images','Train'),
-            __DEF_SVT_DIR,
-            # __DEF_SYN_DIR,
-            ),
-            image_size=(3,640, 640),
-            img_only=True)
-        train_on_real = True
-        x_input_function = train_dataset.x_input_function
-        y_input_function = None
-
-    dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
-        num_workers=num_workers,
-        pin_memory=True if(num_workers>0)else False,
-        collate_fn=train_dataset.default_collate_fn,
-        )
-
-    loss = MSE_OHEM_Loss()
-    trainer = CRAFTTrainer
-    
-    trainer = trainer(
-        work_dir = work_dir,
-        task_name=args.name if(args.name!=None)else net.__class__.__name__,
-        isdebug = isdebug, use_cuda = use_cuda,
-        net = net, loss = loss, opt = opt,
-        log_step_size = args.logstp,
-        save_step_size = args.savestep,
-        lr_decay_step_size = lr_decay_step_size, lr_decay_multi = tcfg['LR_DEC_RT'],
-        custom_x_input_function=x_input_function,
-        custom_y_input_function=y_input_function,
-        train_on_real = train_on_real,
-        )
-    if(teacher_pkl_dir):
-        trainer.set_teacher(teacher_pkl_dir)
-
-    summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
-        "Working DIR: {}\n".format(work_dir)+\
-        "Running with: \n"+\
-        "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,batch)+\
-        "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
-        "\t Network: {}.\n".format(net.__class__.__name__)+\
-        "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
-        "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
-        "\t Init learning rate: {}.\n".format(lr)+\
-        "\t Learning rate decay: {}.\n".format(lr_decay_step_size if(lr_decay_step_size>0)else "Disabled")+\
-        "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
-        "\t Teacher: {}.\n".format(teacher_pkl_dir)+\
-        "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
-        "\t Load network: {}.\n".format(lod_dir if(lod_dir)else 'No')+\
-        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-        "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
-        ""
-    print(summarize)
-    trainer.log_info(summarize)
-    
-    if(lod_dir):
-        print("Loading model at {}.".format(lod_dir))
-        trainer.load(lod_dir)
-
-    trainer.loader_train(dataloader,int(len(train_dataset)/dataloader.batch_size) if(max_step<0)else max_step)
-    if(args.save):
-        print("Saving model...")
-        trainer.save(args.save)
-    time_usage = datetime.now()
-    print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
-    time_usage = time_usage - time_start
-    print("Time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
-    pass
+    gpus = torch.cuda.device_count()
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '8888'
+    mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
+    # main()

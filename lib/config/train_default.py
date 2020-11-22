@@ -17,6 +17,9 @@ cfg['IMG_SIZE'] = [
 # train step, -1 for all
 cfg['STEP'] = [1000*5,100*10,100*5,50*5,1*5,-1][-1]
 cfg['BATCH'] = [1,4][0]
+# epoch 
+cfg['EPOCH'] = [1,4][-1]
+
 # Step size for log
 cfg['LOGSTP'] = [20,100,200][-1]
 # Step size for save model, -1 to disable 

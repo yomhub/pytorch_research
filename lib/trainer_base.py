@@ -15,8 +15,8 @@ class Trainer():
         log_floder = 'log', task_name = None,
         isdebug = False, use_cuda = True,
         net = None, loss = None, opt = None,
-        log_step_size = None, save_step_size = None, 
-        lr_decay_step_size = None, lr_decay_multi = 0.9, auto_decay = False,
+        log_step_size:int = None, save_step_size:int = None, 
+        lr_decay_step_size:int = None, lr_decay_multi:float = 0.9, auto_decay:bool = False, auto_decay_stp:int = 100,
         custom_x_input_function=None,custom_y_input_function=None,
     ):
         self._isdebug = bool(isdebug)
@@ -43,6 +43,7 @@ class Trainer():
         self._lr_decay_step_size = lr_decay_step_size
         self._lr_decay_rate = lr_decay_multi
         self._auto_decay = bool(auto_decay)
+        self._auto_decay_stp = int(auto_decay_stp)
         self._custom_x_input_function=custom_x_input_function
         self._custom_y_input_function=custom_y_input_function
         self._net = net.float().to(self._device) if(net!=None)else None
@@ -103,8 +104,10 @@ class Trainer():
         # with torch.autograd.profiler.profile() as prof:
         with tqdm(total=min(train_size,100)) as pbar:
             i=0
-            loss_avg_10=0.0
-            loss_10=[]
+            loss_mean=0.0
+            loss_range=0.0
+            loss_lst=[]
+
             for j,sample in enumerate(loader):
                 if(i>=train_size):break
                 x,y,pred,loss = self._train_act(sample)
@@ -144,13 +147,15 @@ class Trainer():
                 self._current_step += 1
 
                 if(self._auto_decay):
-                    loss_10.append(loss.item())
-                    if(len(loss_10)>=10):
-                        tmp = np.mean(loss_10)
-                        if(abs(loss_avg_10-tmp)<max(loss_10)*0.1):
+                    loss_lst.append(loss.item())
+                    if(len(loss_lst)>=self._auto_decay_stp):
+                        loss_lst = np.array(loss_lst)
+                        cur_mean = np.mean(loss_lst)
+                        cur_range = np.max(loss_lst) - np.min(loss_lst)
+                        if(np.abs(loss_mean-cur_mean)/cur_range<0.05):
                             self.opt_decay()
-                        loss_avg_10=tmp
-                        loss_10=[]
+                        loss_mean=cur_mean
+                        loss_lst=[]
 
                 if(train_size<=100 or i%int(train_size/100)==0):
                     pbar.update()
@@ -285,7 +290,7 @@ class Trainer():
         if(self._f_train_loger!=None):
             self._f_train_loger.write(
                 "Change learning rate form {} to {}.\n".format(
-                    self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*(1.0-decay_rate)))
+                    self._opt.param_groups[0]['lr'],self._opt.param_groups[0]['lr']*(decay_rate)))
         for param_group in self._opt.param_groups:
             param_group['lr'] *= decay_rate
         return

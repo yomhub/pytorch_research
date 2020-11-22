@@ -157,8 +157,8 @@ class SynthText(Dataset):
                                 deta_y = high-min_y
 
                             try:
-                                gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
-                                # gaussian = np_2d_gaussian((deta_y, deta_x))
+                                # gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+                                gaussian = np_2d_gaussian((deta_y, deta_x))
                                 res = aff_gaussian(gaussian, box, char_label[char_index], deta_y, deta_x)
                                 max_v = np.max(res)
                             except:
@@ -166,7 +166,7 @@ class SynthText(Dataset):
                                 continue
                                                     
                             if(max_v > 0):
-                                res /= max_v
+                                # res /= max_v
                                 sub_mask = char_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
                                 if(sub_mask.shape!=res.shape):
                                     print("{}_{}".format(sub_mask.shape,res.shape))
@@ -191,15 +191,15 @@ class SynthText(Dataset):
                     if(min_y+deta_y>high):
                         deta_y = high-min_y
                     try:
-                        gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
-                        # gaussian = np_2d_gaussian((deta_y, deta_x))
+                        # gaussian = cv_gaussian_kernel_2d(kernel_size=(deta_y, deta_x))
+                        gaussian = np_2d_gaussian((deta_y, deta_x))
                         res = aff_gaussian(gaussian, box, points,  deta_y, deta_x)
                         max_v = np.max(res)
                     except:
                         continue
 
                     if(max_v > 0):
-                        res /= max_v
+                        # res /= max_v
                         sub_mask = aff_gt[min_y:min_y+res.shape[0],min_x:min_x+res.shape[1]]
                         if(sub_mask.shape!=res.shape):
                             print("{}_{}".format(sub_mask.shape,res.shape))

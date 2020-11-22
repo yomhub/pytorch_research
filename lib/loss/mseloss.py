@@ -55,7 +55,7 @@ class Maploss(nn.Module):
         return char_loss/loss_g.shape[0] + affi_loss/loss_a.shape[0]
 
 class MSE_OHEM_Loss(nn.Module):
-    def __init__(self,positive_mult = 3,positive_th:float = 0.5):
+    def __init__(self,positive_mult = 3,positive_th:float = 0.0):
         super(MSE_OHEM_Loss, self).__init__()
         self.mse_loss = nn.MSELoss(reduction="none", size_average=False)
         self.positive_mult = float(positive_mult)
@@ -77,7 +77,7 @@ class MSE_OHEM_Loss(nn.Module):
             avg_sample_loss = sample_loss.mean()
         else:
             positive_loss = torch.masked_select(sample_loss, positive_mask)
-            negative_loss = torch.masked_select(sample_loss, target <= 0.0)
+            negative_loss = torch.masked_select(sample_loss, target <= self.positive_th)
             negative_loss_topk, _ = torch.topk(negative_loss, k)
             avg_sample_loss = positive_loss.mean() + negative_loss_topk.mean()
 
@@ -111,14 +111,15 @@ class MSE_OHEM_Loss(nn.Module):
         
 
 class MSE_2d_Loss(nn.Module):
-    def __init__(self,positive_mult = 3,positive_th:float = 0.5,pixel_sum:bool=False):
+    def __init__(self,positive_mult = 3,positive_th:float = 0.0,pixel_sum:bool=False):
         super(MSE_2d_Loss, self).__init__()
         self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
         self.positive_mult = float(positive_mult)
         self.pixel_sum = bool(pixel_sum)
+        self.positive_th = positive_th
 
     def mse_loss_single(self,x,y):
-        positive_mask = y > 0
+        positive_mask = y > self.positive_th
         sample_loss = self.mse_loss(x, y)
 
         num_positive = torch.sum(positive_mask).item()
@@ -131,7 +132,7 @@ class MSE_2d_Loss(nn.Module):
             sample_loss = torch.sum(sample_loss) if(self.pixel_sum)else torch.mean(sample_loss)
         else:
             positive_loss = torch.masked_select(sample_loss, positive_mask)
-            negative_loss = torch.masked_select(sample_loss, y <= 0.0)
+            negative_loss = torch.masked_select(sample_loss, y <= self.positive_th)
             negative_loss_topk, _ = torch.topk(negative_loss, k)
             if(self.pixel_sum):
                 sample_loss = torch.sum(positive_loss) + torch.sum(negative_loss_topk)
