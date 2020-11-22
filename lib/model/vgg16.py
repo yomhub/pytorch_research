@@ -1,5 +1,5 @@
 from collections import namedtuple
-
+import os
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -61,12 +61,14 @@ class VGG16_old(torch.nn.Module):
         return out
 
 class VGG16(torch.nn.Module):
-    def __init__(self, padding:bool=True, maxpool:bool=True, pretrained:bool=True, freeze:bool=True):
+    def __init__(self, padding:bool=True, maxpool:bool=True, pretrained=True, freeze:bool=True):
         """
         VGG16 bn
         Args:
             padding: enable zero padding for convolution layer
             pretrained: whether to use pretrained network
+                file path to load specific pth/pkl file,
+                or True to load default torch vgg16
             freeze: whether to freeze B1 network
         Network outs:
             namedtuple:
@@ -75,6 +77,7 @@ class VGG16(torch.nn.Module):
         padding = 1 if(padding)else 0
         mplayer = nn.MaxPool2d if(maxpool)else SoftMaxPool2d
         super(VGG16, self).__init__()
+        
         # B1+B2
         self.slice1 = nn.Sequential(
             nn.Conv2d(3,64,kernel_size=(3,3),stride=(1,1),padding=padding),
@@ -109,8 +112,16 @@ class VGG16(torch.nn.Module):
         )
         
         if(pretrained):
-            model_urls['vgg16_bn'] = model_urls['vgg16_bn'].replace('https://', 'http://')
-            mdfeatures = models.vgg16_bn(pretrained=pretrained).features
+            if(isinstance(pretrained,str) and os.path.exists(pretrained)):
+                para = torch.load(pretrained)
+                try:
+                    para = para.state_dict()
+                except:
+                    para = para
+                mdfeatures = [para[o] for o in para]
+            else:
+                model_urls['vgg16_bn'] = model_urls['vgg16_bn'].replace('https://', 'http://')
+                mdfeatures = models.vgg16_bn(pretrained=pretrained).features
             cnt = 0
             for o in self.slice1.parameters():
                 o = mdfeatures[cnt]
