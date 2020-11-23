@@ -54,7 +54,7 @@ class BaseDataset(Dataset):
                 'xywh': box_cord = [x,y,w,h]
                 'cxywh': box_cord = [cx,cy,w,h]
             'text': list of texts
-
+            'name': file name
             If have gt_mask_dir,
             'gtmask': (h,w,1) np array.
         }
