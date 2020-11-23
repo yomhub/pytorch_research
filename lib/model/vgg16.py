@@ -7,9 +7,9 @@ from torchvision import models
 from torchvision.models.vgg import model_urls
 from lib.utils.net_hlp import init_weights,SoftMaxPool2d
 
-class VGG16_old(torch.nn.Module):
-    def __init__(self, pretrained=True, freeze=True):
-        super(VGG16_old, self).__init__()
+class VGG16(torch.nn.Module):
+    def __init__(self, pretrained=True, freeze=True, padding:bool=True, maxpool:bool=True):
+        super(VGG16, self).__init__()
         model_urls['vgg16_bn'] = model_urls['vgg16_bn'].replace('https://', 'http://')
         vgg_pretrained_features = models.vgg16_bn(pretrained=pretrained).features
         self.slice1 = torch.nn.Sequential()
@@ -41,9 +41,16 @@ class VGG16_old(torch.nn.Module):
 
         init_weights(self.slice5.modules())        # no pretrained model for fc6 and fc7
 
-        if freeze:
+        if(freeze):
             for param in self.slice1.parameters():      # only first conv
                 param.requires_grad= False
+        if((not padding) or (not maxpool)):
+            for single in [self.slice1,self.slice2,self.slice3,self.slice4]:
+                for m in single.modules():
+                    if((not padding) and isinstance(m, nn.Conv2d)):
+                        m.padding=(0,0)
+                    elif((not maxpool) and isinstance(m,nn.MaxPool2d)):
+                        m=SoftMaxPool2d(kernel_size=(2,2),stride=(2,2),padding=(0,0))
 
     def forward(self, X):
         h = self.slice1(X)
@@ -60,7 +67,7 @@ class VGG16_old(torch.nn.Module):
         out = vgg_outputs(h_fc7, h_relu5_3, h_relu4_3, h_relu3_2, h_relu2_2)
         return out
 
-class VGG16(torch.nn.Module):
+class VGG16_test(torch.nn.Module):
     def __init__(self, padding:bool=True, maxpool:bool=True, pretrained=True, freeze:bool=True):
         """
         VGG16 bn
@@ -76,7 +83,7 @@ class VGG16(torch.nn.Module):
         """
         padding = 1 if(padding)else 0
         mplayer = nn.MaxPool2d if(maxpool)else SoftMaxPool2d
-        super(VGG16, self).__init__()
+        super(VGG16_test, self).__init__()
         
         # B1+B2
         self.slice1 = nn.Sequential(

@@ -30,11 +30,11 @@ class CRAFT(nn.Module):
 
         """ Base network """
         self.basenet = VGG16(**args)
-        self.slice5 = torch.nn.Sequential(
-            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6),
-            nn.Conv2d(1024, 1024, kernel_size=1)
-        )
+        # self.slice5 = torch.nn.Sequential(
+        #     nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+        #     nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6),
+        #     nn.Conv2d(1024, 1024, kernel_size=1)
+        # )
 
         """ U network """
         self.upconv1 = double_conv(1024, 512, 256, padding=padding)
@@ -60,22 +60,22 @@ class CRAFT(nn.Module):
     def forward(self, x):
         """ Base network """
         sources = self.basenet(x)
-        y = self.slice5(sources[0])
+        y = sources[0]
         """ U network """
-        y = F.interpolate(y, size=sources[0].size()[2:], mode='bilinear', align_corners=False)
-        y = torch.cat([y, sources[0]], dim=1)
-        y = self.upconv1(y)
-
         y = F.interpolate(y, size=sources[1].size()[2:], mode='bilinear', align_corners=False)
         y = torch.cat([y, sources[1]], dim=1)
-        y = self.upconv2(y)
+        y = self.upconv1(y)
 
         y = F.interpolate(y, size=sources[2].size()[2:], mode='bilinear', align_corners=False)
         y = torch.cat([y, sources[2]], dim=1)
-        y = self.upconv3(y)
+        y = self.upconv2(y)
 
         y = F.interpolate(y, size=sources[3].size()[2:], mode='bilinear', align_corners=False)
         y = torch.cat([y, sources[3]], dim=1)
+        y = self.upconv3(y)
+
+        y = F.interpolate(y, size=sources[4].size()[2:], mode='bilinear', align_corners=False)
+        y = torch.cat([y, sources[4]], dim=1)
         feature = self.upconv4(y)
 
         y = self.conv_cls(feature)
