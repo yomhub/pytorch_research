@@ -5,7 +5,7 @@ import cv2
 import os
 import torch
 import math
-from collections import Iterable
+from collections import Iterable,defaultdict
 import Polygon as plg
 from PIL import Image, ImageDraw
 from shapely.geometry import Polygon, Point
@@ -48,6 +48,10 @@ The single sample of dataset should include:
 
 # default is __DEF_FORMATS[0]
 __DEF_FORMATS = ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
+def np_topk(src,k):
+    return np.argpartition(x, -k)[-k:]
+def np_bottomk(src,k):
+    return np.argpartition(x, k)[:k]
 
 def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     """ Numpy box resize.
@@ -649,9 +653,9 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
                                     np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
 
     warped = cv2.warpPerspective(image, M, (width, height))
-    return warped, M
+    return warped.astype(image.dtype), M
 
-def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None):
+def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None,return_mask:bool=False):
     """
     Crop image by polygon.
     Args:
@@ -673,9 +677,13 @@ def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_mi
     # Generate polygon mask, 2 for outline, 1 for inside pixels
     blmask = Image.new('L', (sub_img.shape[1],sub_img.shape[0]), 0)
     ImageDraw.Draw(blmask).polygon(pts.reshape(-1).tolist(), outline=1, fill=1)
-    blmask = np.array(blmask)
-    blmask = np.expand_dims(blmask,-1)
+    blmask = np.array(blmask,dtype=np.bool)
+    if(len(blmask.shape)<len(sub_img.shape)):
+        blmask = np.expand_dims(blmask,-1)
     sub_img = np.where(blmask,sub_img,0)
+
+    if(return_mask):
+        return sub_img,M,blmask[:,:,0] if(len(blmask.shape)==3)else blmask
     return sub_img,M
 
 def cv_uncrop_image(sub_image, M, width:int, height:int):
@@ -764,7 +772,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:f
 
     return np.array(det), labels, mapper
 
-def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
+def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=1):
     """
     Arg:
         img: ndarray in (h,w,c) in [0,255]
@@ -784,7 +792,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0)):
 
     for i in range(boxes.shape[0]):
         # the points is (polygon point number,1,2) in list
-        cv2.polylines(image,[boxes[i].reshape((-1,1,2)).astype(np.int32)],True,color)
+        cv2.polylines(image,[boxes[i].reshape((-1,1,2)).astype(np.int32)],True,color,thickness=thickness)
         if(not isinstance(None,type(None))):
             # print text box
             cv2.rectangle(image,
@@ -857,10 +865,36 @@ def cv_mask_image(image,mask,rate:float=0.7):
     return cv2.addWeighted(image,rate,mask,1.0-rate,0)
 
 def cv_heatmap(img,clr = cv2.COLORMAP_JET):
+    """
+    Convert heatmap to RBG color map
+    Args:
+        img: ((batch),h,w) in [0,1]
+        clr: color
+    Return:
+        colored image: ((batch),h,w,3) in RBG
+    """
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     if(len(img.shape)==3 and img.shape[-1]!=1):
-        img = np.stack([cv2.applyColorMap(o, clr) for o in Image],0)
+        img = np.stack([cv2.applyColorMap(o, clr) for o in img],0)
+    else:
+        img = cv2.applyColorMap(img, clr)
+    return img.astype(np.uint8)
+
+def cv_labelmap(label_map,label_num:int=None,clr = cv2.COLORMAP_JET):
+    """
+    Convert label map to RBG color map
+    Args:
+        label_map: (h,w) label_map, 0 for background
+        label_num: number of label
+    Return:
+        colored_label_map: (h,w,3) in RBG
+    """
+    if(not label_num):
+        label_num = int(np.max(label_map))
+    img = (label_map/label_num*255).astype(np.uint8)
+    if(len(img.shape)==3 and img.shape[-1]!=1):
+        img = np.stack([cv2.applyColorMap(o, clr) for o in img],0)
     else:
         img = cv2.applyColorMap(img, clr)
     return img.astype(np.uint8)
@@ -1273,8 +1307,287 @@ def cv_watershed_gen_gaussian(img,cv_boxes,texts,img_size,ch_mask:np.ndarray=Non
         # if(nLabels<targ_len):
         #     # faild to saperate text
         #     cv_gen_gaussian()
-        
 
+from scipy.signal import find_peaks   
+def scipy_histogram_peaks(datas,peaks:int=3,bins:int=256,distance:int=30,min_value=None,max_range=None):
+    """
+    Find histogram peaks for a given image.
+    Args:
+        datas: nd.array datas
+        peaks: number of peaks
+        bins: lenth of histogram
+        distance: distance of peak
+        min_value: if determined, only consider value higher then min_value
+        max_range: maximum value range of single peak
+    Return:
+        peaks_value: (number of peaks)
+        peaks_range: (number of peaks,2) of low and high value
+        histogram: (value range), counter of each sample
+        values: (value range), value of each sample
+    """
+    histogram,pvalues = np.histogram(datas,bins)
+    counts = histogram-np.min(histogram)
+    sp = 0
+    if(min_value):
+        idx = np.where(pvalues>min_value)[0]
+        sp = idx[0] if(idx.shape[0]>0)else 0
+    
+    peaks, _ = find_peaks(counts[sp:],distance=30)
+    peaks += sp
+    slc_values = pvalues[peaks]
+    if(len(peaks)==1):
+        det = pvalues[1]-pvalues[0]
+        for i in range(peaks[0],-1,-1):
+            if(counts[i]==0):
+                break
+        l_range = (peaks[0]-i)*det
+        for i in range(peaks[0],counts.shape[0]):
+            if(counts[i]==0):
+                break
+        r_range = (i-peaks[0])*det
+        if(max_range and (l_range+r_range)>max_range):
+            l_range,r_range = max_range*(l_range/(l_range+r_range)),max_range*(r_range/(l_range+r_range))
+        return slc_values,nd.array((pvalues[peaks[0]]-l_range,pvalues[peaks[0]]+r_range)),histogram,pvalues
+
+    dist = slc_values[1:]-slc_values[:-1]
+    
+
+def cv_gen_binary_map(x,mask,boxes):
+    peak_distance = 20
+    max_single_peak_range = 6
+    min_peak_spacing = 20
+    counter_ignore_th = 5
+    if(isinstance(mask,type(None))):
+        mask = np.zeros(x.shape[:-1],dtype=x.dtype)
+    for box in boxes:
+        sub_x,M,sub_x_bg_map = cv_crop_image_by_polygon(x,box,return_mask=True)
+        sub_x_bg_map = ~sub_x_bg_map
+        sub_x_bin = cv2.cvtColor(sub_x, cv2.COLOR_BGR2GRAY)
+        box_rect = np_polybox_minrect(box).astype(np.uint16)
+        sub_gt_mask = mask[box_rect[0,1]:box_rect[2,1],box_rect[0,0]:box_rect[2,0],0]
+        sub_gt_mask = np.where(sub_x_bg_map,0,sub_gt_mask)
+
+        # the total pixel number outside the polygon
+        zero_cnt = np.sum(sub_x_bg_map)
+        # get polygon box boundary
+        kernel = np.ones((3,3),np.uint8)
+        dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8),kernel,iterations = 1)
+        boundary = np.where(sub_x_bg_map,0,dilate)
+
+        sub_x = np.concatenate((sub_x,np.expand_dims(sub_x_bin,-1)),-1)
+        ch_names = ['R','B','G','Gray']
+        ch_imgs = []
+        logs = defaultdict(list)
+        for chid in range(sub_x.shape[-1]):
+            sub_x_ch = sub_x[:,:,chid]
+            counts,pvalues = np.histogram(sub_x_ch,256,[0,256])
+            # shift counter and remove small instances
+            counts_zp = counts
+            # remove outside zeros (to handle the black txt (value == 0) case)
+            counts_zp[0] -= zero_cnt
+            counts_zp = np.where(counts>counter_ignore_th,counts_zp,0)
+            # also consider 
+            peaks, _ = find_peaks(counts_zp,distance=peak_distance)
+            # find 2 val range from global peaks
+
+            # top_vals = ((val1 range),(val2 range))
+            if(peaks.shape[0]>=2):
+                # find top 2 peaks as range
+                pcounts = counts_zp[peaks]
+                k = min(4,pcounts.shape[0])
+                idx = np.argpartition(pcounts, -k)[-k:]
+                # find dobule peak
+                idx_a = peaks[idx[-1]]
+                for o in idx[-2::-1]:
+                    if(abs(pvalues[idx_a]-pvalues[peaks[o]])>min_peak_spacing):
+                        break
+                idx_b = peaks[o]
+
+                # range of 1st peak
+                for i in range(idx_a,-1,-1):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                        break
+                low_va = pvalues[i]
+                for i in range(idx_a,counts_zp.shape[0]):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                        break
+                high_va = pvalues[i]
+
+                # range of 2nd peak
+                for i in range(idx_b,-1,-1):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                        break
+                low_vb = pvalues[i]
+                for i in range(idx_b,counts_zp.shape[0]):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                        break
+                high_vb = pvalues[i]
+
+                top_vals = np.array(((low_va,high_va),(low_vb,high_vb)))
+            elif(peaks.shape[0]==1):
+                for i in range(peaks[0],-1,-1):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                        break
+                low_v = pvalues[i]
+                for i in range(peaks[0],counts_zp.shape[0]):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                        break
+                high_v = pvalues[i]
+                for i in range(counts_zp.shape[0]):
+                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                        break
+                zp_v = pvalues[i]
+                top_vals = np.array(((0,zp_v),(low_v,high_v)))
+
+            # get expect BG value
+            bg_vals = sub_x_ch[boundary>0]
+            bg_counts,bg_pvalues = np.histogram(bg_vals,256,[0,256])
+            bg_peaks, _ = find_peaks(bg_counts,distance=peak_distance)
+            if(bg_peaks.shape[0]<=2):
+                # only 2 or less peaks
+                idx_a,idx_b = 0,-1
+            else:
+                # find top 2 peaks as range
+                bg_pcounts = bg_counts[bg_peaks]
+                idx = np.argpartition(bg_pcounts, -2)[-2:]
+                idx_a = idx.min()
+                idx_b = idx.max()
+            exp_bg_val = np.array((bg_pvalues[bg_peaks[idx_a]],bg_pvalues[bg_peaks[idx_b]]))
+            ct_bg_val = bg_pvalues[bg_peaks[idx_b]]
+                
+            # get expect TXT value
+            th_low=50
+            th_high=150
+            sub_x_cany = cv2.Canny(sub_x_ch,th_low,th_high)
+            # remove BG and polygon boundary
+            sub_x_cany = np.where(dilate,0,sub_x_cany)
+            txt_vals = sub_x_ch[sub_x_cany>0]
+            # same process as bg
+            txt_counts,txt_pvalues = np.histogram(txt_vals,256,[0,256])
+            txt_counts -= bg_counts
+            # txt_pvalues = pvalues
+            txt_peaks, _ = find_peaks(txt_counts,distance=peak_distance)
+            if(txt_peaks.shape[0]<=2):
+                # only 2 or less peaks
+                idx_a,idx_b = 0,-1
+            else:
+                # find top 2 peaks as range
+                txt_pcounts = txt_counts[txt_peaks]
+                idx = np.argpartition(txt_pcounts, -2)[-2:]
+                idx_a = idx.min()
+                idx_b = idx.max()
+            exp_txt_val = np.array((txt_pvalues[txt_peaks[idx_a]],txt_pvalues[txt_peaks[idx_b]]))
+            ct_txt_val = txt_pvalues[txt_peaks[idx_b]]
+
+            if(abs(ct_bg_val-np.mean(top_vals[0]))>abs(ct_bg_val-np.mean(top_vals[1]))):
+                th = top_vals[0,0]
+            else:
+                th = top_vals[1,0]
+
+            # if(th<np.mean(exp_bg_val)):
+            if(ct_txt_val<ct_bg_val):
+                # only reverse inside of polygon
+                sub_x_ch = np.where(sub_x_bg_map,0,255-sub_x_ch)
+                # exp_txt_val,exp_bg_val = exp_bg_val,exp_txt_val
+                # ct_txt_val,ct_bg_val = ct_bg_val,ct_txt_val
+                th = 255-th
+
+            th_val,sub_x_thed = cv2.threshold(sub_x_ch,th,255,cv2.THRESH_BINARY)
+
+            # CC test
+            kernel = np.ones((3,3),np.uint8)
+            ccimg = sub_x_thed
+            ccimg = cv2.dilate(ccimg,kernel,iterations = 3)
+            ccimg = cv2.erode(ccimg,kernel,iterations = 3)
+            nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats((ccimg>0).astype(np.uint8),connectivity=4)
+            incs = stats[:,cv2.CC_STAT_AREA]>10
+            incs[0] = False
+            selects = stats[incs]
+            cv_boxes = np.array(((selects[:,cv2.CC_STAT_LEFT],selects[:,cv2.CC_STAT_TOP]),
+                (selects[:,cv2.CC_STAT_LEFT]+selects[:,cv2.CC_STAT_WIDTH],selects[:,cv2.CC_STAT_TOP]),
+                (selects[:,cv2.CC_STAT_LEFT]+selects[:,cv2.CC_STAT_WIDTH],selects[:,cv2.CC_STAT_TOP]+selects[:,cv2.CC_STAT_HEIGHT]),
+                (selects[:,cv2.CC_STAT_LEFT],selects[:,cv2.CC_STAT_TOP]+selects[:,cv2.CC_STAT_HEIGHT])))
+            cv_boxes = np.moveaxis(cv_boxes,-1,0)
+            labeled_map = cv_draw_poly(cv_labelmap(labels,nLabels),cv_boxes,color=(255,255,255),thickness=5)
+
+            ch_imgs.append(sub_x_thed)
+            logs['counts'].append(counts)
+            logs['pvalues'].append(pvalues)
+            logs['peaks'].append(peaks)
+            logs['bg_counts'].append(bg_counts)
+            logs['bg_pvalues'].append(bg_pvalues)
+            logs['bg_peaks'].append(bg_peaks)
+            logs['txt_counts'].append(txt_counts)
+            logs['txt_pvalues'].append(txt_pvalues)
+            logs['txt_peaks'].append(txt_peaks)
+            logs['sub_x_cany'].append(sub_x_cany)
+            logs['labeled_map'].append(labeled_map)
+            print("exp_txt_val: {}".format(exp_txt_val))
+            print("ct_txt_val: {}".format(ct_txt_val))
+            print("exp_bg_val: {}".format(exp_bg_val))
+            print("ct_bg_val: {}".format(ct_bg_val))
+            print("th: {}".format(th))
+        
+        plt_h = 4
+        # org, counts, 
+        plt_w = 8
+        for i in range(len(ch_names)):
+            chn = ch_names[i]
+
+            plt.subplot(plt_h,plt_w,plt_w*i+2)
+            plt.title('{}: counts'.format(chn))
+            counts=logs['counts'][i]
+            pvalues=logs['pvalues'][i]
+            peaks=logs['peaks'][i]
+            plt.plot(pvalues[:counts.shape[0]],counts)
+            plt.plot(peaks, counts[peaks], "x")
+
+            plt.subplot(plt_h,plt_w,plt_w*i+3)
+            plt.title('{}: txt_counts'.format(chn))
+            counts=logs['txt_counts'][i]
+            pvalues=logs['txt_pvalues'][i]
+            peaks=logs['txt_peaks'][i]
+            plt.plot(pvalues[:counts.shape[0]],counts)
+            plt.plot(peaks, counts[peaks], "x")
+
+            plt.subplot(plt_h,plt_w,plt_w*i+4)
+            plt.title('{}: bg_counts'.format(chn))
+            counts=logs['bg_counts'][i]
+            pvalues=logs['bg_pvalues'][i]
+            peaks=logs['bg_peaks'][i]
+            plt.plot(pvalues[:counts.shape[0]],counts)
+            plt.plot(peaks, counts[peaks], "x")
+
+            plt.subplot(plt_h,plt_w,plt_w*i+5)
+            plt.title('{}: single ch'.format(chn))
+            plt.imshow(sub_x[:,:,i],'gray')
+            
+            plt.subplot(plt_h,plt_w,plt_w*i+6)
+            plt.title('{}: predicted binary'.format(chn))
+            plt.imshow(ch_imgs[i],'gray')
+
+            plt.subplot(plt_h,plt_w,plt_w*i+7)
+            plt.title('{}: sub_x_cany'.format(chn))
+            plt.imshow(logs['sub_x_cany'][i],'gray')
+
+            plt.subplot(plt_h,plt_w,plt_w*i+8)
+            plt.title('{}: sub_x_cany'.format(chn))
+            plt.imshow(logs['labeled_map'][i],'gray')
+            
+        plt.subplot(plt_h,plt_w,1)
+        plt.title('Orginal image')
+        plt.imshow(x)
+        plt.subplot(plt_h,plt_w,plt_w+1)
+        plt.title('Sub image')
+        plt.imshow(sub_x)
+        plt.subplot(plt_h,plt_w,plt_w*2+1)
+        plt.title('Binary sub image')
+        plt.imshow(sub_x_bin,'gray')
+        plt.subplot(plt_h,plt_w,plt_w*3+1)
+        plt.title('Sub GT')
+        plt.imshow(sub_gt_mask,'gray')
+        plt.subplots_adjust(hspace=0.45)
+        plt.show()
 # 
 # ===============================================
 # ==================== Class ====================
