@@ -4,25 +4,9 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.vgg16 import VGG16
-from lib.utils.net_hlp import init_weights
+from lib.utils.net_hlp import init_weights, double_conv
 from lib.model.mobilenet_v2 import MobUNet
 from lib.model.lstm import BottleneckLSTMCell
-
-class double_conv(nn.Module):
-    def __init__(self, in_ch, mid_ch, out_ch, padding:bool=True):
-        super(double_conv, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch + mid_ch, mid_ch, kernel_size=1),
-            nn.BatchNorm2d(mid_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1 if(padding)else 0),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        x = self.conv(x)
-        return x
         
 class CRAFT(nn.Module):
     def __init__(self, padding:bool=True, **args):

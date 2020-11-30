@@ -42,7 +42,7 @@ def train(rank, world_size, args):
     batch_size = args.batch
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
-    dev = torch.cuda.get_device_name(rank)
+    dev = 'cuda:{}'.format(rank)
 
     # model.cuda(rank)
     # define loss function (criterion) and optimizer

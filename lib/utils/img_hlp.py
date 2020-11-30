@@ -860,7 +860,8 @@ def cv_heatmap(img,clr = cv2.COLORMAP_JET):
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     if(len(img.shape)==3 and img.shape[-1]!=1):
-        img = np.stack([cv2.applyColorMap(o, clr) for o in Image],0)
+        # ch,h,w
+        img = np.stack([cv2.applyColorMap(o, clr) for o in img],0)
     else:
         img = cv2.applyColorMap(img, clr)
     return img.astype(np.uint8)

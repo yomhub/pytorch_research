@@ -47,8 +47,8 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
         if('text' in sample):
             words_bth = sample['text']
         for i in range(batch_size):
-            # try:
-            if(1):
+            try:
+            # if(1):
                 x = xs[i]
                 wrd_list = words_bth[i] if(words_bth)else None
                 img_size = x.shape[0:-1]
@@ -229,9 +229,9 @@ def train_siam(loader,net,opt,criteria,train_size,logger,work_dir,train_detector
                 del sub_img_nor
                 del loss_dict
                 del loss
-            # except Exception as e:
-            #     sys.stdout.write("Faild in training image {}, step {}, err: {}\n".format(sample['name'][i],batch*batch_size+i,str(e)))
-            #     sys.stdout.flush()
+            except Exception as e:
+                sys.stdout.write("Faild in training image {}, step {}, err: {}\n".format(sample['name'][i],batch*batch_size+i,str(e)))
+                sys.stdout.flush()
     return 0
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Config trainer')
@@ -252,6 +252,7 @@ if __name__ == "__main__":
     parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
     parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
+    parser.add_argument('--epoch', type=int, help='Epoch size.',default=tcfg['EPOCH'])
 
     args = parser.parse_args()
     use_net = args.net.lower()
@@ -284,11 +285,11 @@ if __name__ == "__main__":
     # num_workers=0
     # lr_decay_step_size = None
 
-    dev = 'cuda' if(use_cuda)else 'cpu'
-    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float()
-    basenet = CRAFT_MOB(padding=False).float()
-    net = SiameseCRAFT(base_net=basenet,feature_chs=52,lock_basenet=False).float().to(dev)
-    train_detector = True
+    dev = 'cuda:1' if(use_cuda)else 'cpu'
+    basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to('cpu') #ch=32
+    # basenet = CRAFT_MOB(padding=False).float() #ch=52
+    train_detector = False
+    net = SiameseCRAFT(base_net=basenet,feature_chs=32,lock_basenet=not(train_detector)).float().to(dev)
     if(lod_dir):
         sys.stdout.write("Load model at {}\n".format(lod_dir+'.pth'))
         sys.stdout.flush()
@@ -311,15 +312,14 @@ if __name__ == "__main__":
     #     os.path.join(DEF_TTT_DIR,'gt_txt','train'),
     #     out_box_format='polyxy',
     #     )
-    # train_dataset = ICDAR13(
-    #     os.path.join(DEF_IC13_DIR,'images','train'),
-    #     os.path.join(DEF_IC13_DIR,'gt_txt','train'),
-    #     out_box_format='polyxy',
-    #     image_size=(640,640),
-    #     )
-    train_dataset = SynthText(DEF_SYN_DIR, 
-        image_size=(640, 640),
+    train_dataset = ICDAR13(
+        os.path.join(DEF_IC13_DIR,'images','train'),
+        os.path.join(DEF_IC13_DIR,'gt_txt','train'),
+        out_box_format='polyxy',
         )
+    # train_dataset = SynthText(DEF_SYN_DIR, 
+    #     image_size=(640, 640),
+    #     )
     num_workers = 4
     batch = 4
 
@@ -357,7 +357,8 @@ if __name__ == "__main__":
     # img_dir = os.path.join(work_dir,train_dataset.__class__.__name__)
     img_dir = None
     # try:
-    ret = train_siam(dataloader,net,opt,loss,len(train_dataset),logger,img_dir,train_detector=train_detector)
+    for i in range(args.epoch):
+        ret = train_siam(dataloader,net,opt,loss,len(train_dataset),logger,img_dir,train_detector=train_detector)
     # except Exception as e:
     #     print(e)
     
