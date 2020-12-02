@@ -39,4 +39,4 @@ cfg['LR_DEC_RT'] = [0.8,0.9][1]
 
 cfg['NET'] = ['craft', 'craft_mob', 'craft_lstm', 'craft_motion'][-2]
 
-cfg['DATASET'] = ["ttt","ctw","svt",'sync','ic15','icv15','all'][-2]
+cfg['DATASET'] = ["ttt","ctw","svt",'sync','ic15','icv15','all'][0]

@@ -2,10 +2,12 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.image as mimg
+# import matplotlib.image as mimg
 from matplotlib import cm
 from datetime import datetime
 from skimage import io, transform
+from collections import OrderedDict
+import cv2
 
 def str2time(instr):
     ymd,hms=instr.split('-')
@@ -73,14 +75,15 @@ def plt_3d_projection(values: np.ndarray, xy_image: np.ndarray=None):
 
     return fig,ax
 
-def save_image(f_name:str,img:np.ndarray):
+def save_image(f_name:str,img:np.ndarray,cmap='rbg'):
     if(os.path.dirname(f_name)==''):
         f_name = os.path.join(os.getcwd(),f_name)
     if(not os.path.exists(os.path.dirname(f_name))):
         os.makedirs(os.path.dirname(f_name))
     if(len(f_name.split('.'))==1):
         f_name += '.jpg'
-    mimg.imsave(f_name, img)
+    # mimg.imsave(f_name, img)
+    cv2.imwrite(f_name, img)
 
 def load_single_image(fname,to_torch:bool=False,to_dev=None):
     if(os.path.dirname(f_name)==''):
@@ -94,6 +97,24 @@ def load_single_image(fname,to_torch:bool=False,to_dev=None):
             img = img.to(to_dev)
     return img
 
+def copyStateDict(state_dict):
+    if list(state_dict.keys())[0].startswith("module"):
+        start_idx = 1
+    else:
+        start_idx = 0
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = ".".join(k.split(".")[start_idx:])
+        new_state_dict[name] = v
+    return new_state_dict
+
+def log_net_hock(net):
+    for module in net.modules():
+        module.register_forward_hook(lambda m, input, output: 
+            print("{}:{}->{}".format(m.__class__.__name__,
+                input[0].shape if(isinstance(input,tuple))else input.shape,
+                output[0].shape if(isinstance(input,tuple))else output.shape,
+                )))
 if __name__ == "__main__":
     img = io.imread("D:\\development\\workspace\\Dataset\\ICDAR2015\\ch4_test_images\\img_2.jpg")
     

@@ -168,12 +168,12 @@ def np_polybox_rotate(cv_polybox,M):
     ret = np.moveaxis(ret,0,-1)
     return ret if(not len2)else ret[0]
 
-def np_apply_matrix_to_pts(pts,M):
+def np_apply_matrix_to_pts(M,pts):
     """
     Apply transform matrix to points
     Args:
-        pts: (k1,k2,...,kn,axis) points coordinate
         M: (axis1,axis2) matrix
+        pts: (k1,k2,...,kn,axis) points coordinate
     Return:
         (k1,k2,...,kn,axis1) points coordinate
     """
@@ -195,7 +195,7 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     src_format = src_format.lower()
     dst_format = dst_format.lower()
     if(src_format==dst_format):return box
-    assert(src_format in __DEF_FORMATS and dst_format in __DEF_FORMATS)
+    assert(src_format in __DEF_FORMATS and dst_format in __DEF_FORMATS,"src_format:{},dst_format:{}".format(src_format,dst_format))
 
     # convert all to 'cxywh'
     if(src_format=='yxyx'):
@@ -491,7 +491,7 @@ def cv_get_perspection_matrix(image_size,roll:float=0.0, pitch:float=0.0, yaw:fl
     M = cv_get_rotate_matrix(roll,pitch,yaw)
     h,w = image_size
     src_points = np.array([(-w/2,h/2,0,1),(w/2,h/2,0,1),(w/2,-h/2,0,1),(-w/2,-h/2,0,1)],dtype=M.dtype)
-    dst_points = np_apply_matrix_to_pts(src_points,M)
+    dst_points = np_apply_matrix_to_pts(M,src_points)
     src = src_points[:,:2]+np.float32((w/2,h/2))
     dst = dst_points[:,:2]+np.float32((w/2,h/2))
     M = cv2.getPerspectiveTransform(src,dst)

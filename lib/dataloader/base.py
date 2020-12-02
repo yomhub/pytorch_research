@@ -56,7 +56,7 @@ class BaseDataset(Dataset):
             'text': list of texts
             'name': file name
             If have gt_mask_dir,
-            'gtmask': (h,w,1) np array.
+            'mask': (h,w,1) np array.
         }
     """
 
@@ -151,12 +151,15 @@ class BaseDataset(Dataset):
             ypimg = io.imread(ypdir)
             if(len(ypimg.shape)==2):ypimg = np.expand_dims(ypimg,-1)
             if(not isinstance(self.image_size,type(None)) and ypimg.shape[0:2]!=self.image_size):
-                ypimg = transform.resize(ypimg,self.image_size)
-            sample['gtmask'] = ypimg
+                ypimg = transform.resize(ypimg,self.image_size,preserve_range=True)
+            sample['mask'] = ypimg
 
         if(self.transform!=None):
             sample = self.transform(sample)
+        sample = self.post_process(sample,self.img_names[idx])
+        return sample
 
+    def post_process(self,sample,fname):
         return sample
 
     def get_name(self, idx):

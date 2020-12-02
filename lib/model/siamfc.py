@@ -121,6 +121,31 @@ class SiameseCRAFT(nn.Module):
         score = self.final_act_fun(score)
         return score,match_map
 
+class SiamesePXT(nn.Module):
+    def __init__(self, base_net, feature_chs, lock_basenet:bool=True):
+        super(SiamesePXT, self).__init__()
+        self.base_net = base_net
+        if(lock_basenet):
+            for i in self.base_net.parameters():
+                i.requires_grad=False
+        self.match_batchnorm = nn.BatchNorm2d(feature_chs)
+        self.search_norm = nn.BatchNorm2d(feature_chs)
+        self.obj_norm = nn.BatchNorm2d(feature_chs)
+        self.map_conv = nn.Sequential(
+            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(),#Swish_act()
+            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(),#nn.ReLU
+            nn.Conv2d(feature_chs//4, 1, kernel_size=1),
+        )
+
+        # init_weights(self.map_conv)
+    def forward(self, x):
+        return self.base_net(x)
+    def match(self,obj,search):
+        obj = self.obj_norm(obj)
+        match_map = conv2d_dw_group(search,obj)
+        score = self.map_conv(match_map)
+        return score,match_map
+
 def conv2d_dw_group(x, kernel):
     batch, channel = kernel.shape[:2]
     x = x.view(1, batch*channel, x.size(2), x.size(3))  # 1 * (b*c) * k * k

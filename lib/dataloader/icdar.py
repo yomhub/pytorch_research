@@ -109,14 +109,15 @@ class ICDAR13(base.BaseDataset):
         gt_dirs: image dir, string or list or none
     """
 
-    def __init__(self, img_dir, gt_txt_dir,
+    def __init__(self, img_dir, gt_txt_dir,gt_mask_dir=None,
         out_box_format = 'polyxy',
         **params):
         in_box_format = 'polyxy'
         gt_txt_name_lambda = lambda x: "gt_%s.txt"%x
-
+        gt_mask_name_lambda = lambda x: "%s_GT.bmp"%x
         super(ICDAR13,self).__init__(img_dir=img_dir, gt_txt_dir=gt_txt_dir, 
         in_box_format=in_box_format,gt_txt_name_lambda=gt_txt_name_lambda, 
+        gt_mask_dir=gt_mask_dir,gt_mask_name_lambda=gt_mask_name_lambda,
         out_box_format=out_box_format,
         **params)
 

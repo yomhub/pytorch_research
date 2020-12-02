@@ -174,6 +174,31 @@ class MobileNetV2(nn.Module):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
 
+class MobNetBlk(nn.Module):
+    def __init__(self, width_mult=1.,pretrained=False,
+        inverted_residual_setting = [
+            # t, c, n, s
+            # initial doun sample
+            # 1/2
+            [1, 16, 1, 1], # block_
+            [6, 24, 2, 2], # block_1
+            # 1/4
+            [6, 32, 3, 2], # block_2
+            # 1/8
+            [6, 64, 4, 2], # block_3
+            # 1/16
+            [6, 96, 3, 1], # block_
+            [6, 160, 3, 2], # block_4
+            # 1/32
+            [6, 320, 1, 1], # block_6
+            ],
+        ):
+        super(MobNetBlk, self).__init__()
+        mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
+            pretrained=pretrained,
+            width_mult=width_mult,
+            inverted_residual_setting=inverted_residual_setting)
+
 class MobUNet(nn.Module):
     def __init__(self, width_mult=1.,pretrained=False,
         inverted_residual_setting = [
@@ -192,7 +217,7 @@ class MobUNet(nn.Module):
             # 1/32
             [6, 320, 1, 1], # block_6
             ],
-            padding=True
+        padding=True,
         ):
         super(MobUNet, self).__init__()
 

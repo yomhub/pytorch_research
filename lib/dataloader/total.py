@@ -35,7 +35,7 @@ class Total(base.BaseDataset):
             'polyxy': box_cord = [x,y,x,y,x,y,x,y]
         normalized: True to normalize coordinate
     """
-    def __init__(self, img_dir, gt_mask_dir, gt_txt_dir,out_box_format='polyxy',
+    def __init__(self, img_dir, gt_mask_dir, gt_txt_dir, out_box_format='polyxy',
         **params):
         in_box_format = 'polyxy'
         gt_txt_name_lambda = lambda x: "poly_gt_%s.txt"%x
@@ -76,3 +76,6 @@ class Total(base.BaseDataset):
                 boxs.append([int(1), min(ys), min(xs),max(ys), max(xs)])
             txts.append(txt)
         return np.array(boxs),txts
+
+    # def post_process(self,sample,fname):
+    #     return sample
