@@ -38,6 +38,8 @@ def train(rank, world_size, args):
         world_size: N, total gup number
         args: argparse from input
     """
+    if(rank == 0):
+        log = sys.stdout
     random_b = bool(args.random)
     time_start = datetime.now()
     work_dir = DEF_WORK_DIR
@@ -48,13 +50,12 @@ def train(rank, world_size, args):
         logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S")))
     else:
         logger = None
-    test = open(os.path.join(work_dir,'{}_files.out'.format(rank)),'w')
 
     batch_size = args.batch
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
-    model = PIX_TXT(pretrained=True,load_mobnet="/home/yomcoding/Pytorch/MyResearch/saved_model/pixtxt.pth").float()
+    model = PIX_TXT(pretrained=True).float()
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
@@ -103,7 +104,7 @@ def train(rank, world_size, args):
                                                pin_memory=True,
                                                sampler=train_sampler,
                                                collate_fn=train_dataset.default_collate_fn,)
-
+    time_c = datetime.now()
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
     for epoch in range(args.epoch):
@@ -133,10 +134,8 @@ def train(rank, world_size, args):
                 mask = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask],0).astype(np.uint8)
                 if(len(mask.shape)==3):
                     mask = np.expand_dims(mask,-1)
-                mask = torch.from_numpy(maskmask)
+                mask = torch.from_numpy(mask)
 
-            if(epoch==0):
-                test.write("IP: {}, Step: {}, Files: {}.\n".format(rank,i,str(sample['name'])))
             if(mask.shape[-1]==3):
                 mask = mask[:,:,:,0:1]
             msak_np = mask.numpy()[:,:,:,0]
@@ -185,9 +184,11 @@ def train(rank, world_size, args):
 
         if(rank == 0):
             time_usage = datetime.now()
-            time_usage = time_usage - time_start
-            print('Epoch [{}/{}], Loss: {:.4f}'.format(epoch + 1, args.epoch,loss.item()))                                   
-            print("Time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
+            time_usage = time_usage - time_c
+            time_c = time_usage
+            log.write('Epoch [{}/{}], Loss: {:.4f}\n'.format(epoch + 1, args.epoch,loss.item()))                                   
+            log.write("Time usage: {} Day {} Second.\n\n".format(time_usage.days,time_usage.seconds))
+            log.flush()
 
         if(args.save and rank == 0):
             # model_cpu = model.cpu()
@@ -216,8 +217,40 @@ def train(rank, world_size, args):
             line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
             img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
             logger.add_image('GT', img, epoch,dataformats='HWC')
-            logger.flush()                                                       
-    test.close()
+
+            b1_mask = feat.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b2_mask = feat.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b3_mask = feat.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b4_mask = feat.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+
+            b2_mask = cv2.resize(b2_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+            b3_mask = cv2.resize(b3_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+            b4_mask = cv2.resize(b4_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+            line = np.ones((b1_mask.shape[0],3,3),dtype=np.uint8)*255
+            img = np.concatenate((
+                cv_heatmap(b1_mask[:,:,0]),line,
+                cv_heatmap(b2_mask[:,:,0]),line,
+                cv_heatmap(b3_mask[:,:,0]),line,
+                cv_heatmap(b4_mask[:,:,0])),-2)
+            logger.add_image('B1|B2|B3|B4 mask', img, epoch,dataformats='HWC')
+            img = np.concatenate((
+                cv_heatmap(b1_mask[:,:,1]),line,
+                cv_heatmap(b2_mask[:,:,1]),line,
+                cv_heatmap(b3_mask[:,:,1]),line,
+                cv_heatmap(b4_mask[:,:,1])),-2)
+            logger.add_image('B1|B2|B3|B4 edge', img, epoch,dataformats='HWC')
+            img = np.concatenate((
+                cv_heatmap(b1_mask[:,:,2]),line,
+                cv_heatmap(b2_mask[:,:,2]),line,
+                cv_heatmap(b3_mask[:,:,2]),line,
+                cv_heatmap(b4_mask[:,:,2])),-2)
+            logger.add_image('B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
+            logger.flush()
+
+    if(rank == 0):
+        time_usage = datetime.now() - time_start
+        log.write("Total time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
+        log.close()
     return 0
 
 def init_process(rank, world_size, fn, args):
@@ -239,22 +272,27 @@ if __name__ == '__main__':
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
-    parser.add_argument('--net', help='Choose noework (craft).', default=tcfg['NET'])
     parser.add_argument('--name', help='Name of task.')
     parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default=tcfg['DATASET'])
-    parser.add_argument('--datax', type=int, help='Dataset output width.',default=tcfg['IMG_SIZE'][0])
-    parser.add_argument('--datay', type=int, help='Dataset output height.',default=tcfg['IMG_SIZE'][1])
-    parser.add_argument('--step', type=int, help='Step size.',default=tcfg['STEP'])
     parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
-    parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
-    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
-    parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
-    parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
     parser.add_argument('--epoch', type=int, help='Epoch size.',default=tcfg['EPOCH'])
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
 
     args = parser.parse_args()
+    summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
+        "Working DIR: {}\n".format(DEF_WORK_DIR)+\
+        "Running with: \n"+\
+        "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
+        "\t Network: {}.\n".format('PixelTXT')+\
+        "\t Optimizer: {}.\n".format(args.opt)+\
+        "\t Dataset: {}.\n".format(args.dataset)+\
+        "\t Init learning rate: {}.\n".format(args.learnrate)+\
+        "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
+        "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
+        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
+        "========\n"
+    print(summarize)
     gpus = torch.cuda.device_count()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '8888'
