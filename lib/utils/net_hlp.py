@@ -36,6 +36,13 @@ def adjust_learning_rate(optimizer, gamma):
     for param_group in optimizer.param_groups:
         param_group['lr'] *= gamma
 
+def get_final_ch(modules):
+    ch=-1
+    for m in modules:
+        if isinstance(m, nn.Conv2d):
+            ch = max(ch,m.out_channels)
+    return ch
+
 class Swish_act(nn.Module):
     def __init__(self):
         super(Swish_act, self).__init__()

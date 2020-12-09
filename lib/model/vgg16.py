@@ -7,6 +7,75 @@ from torchvision import models
 from torchvision.models.vgg import model_urls
 from lib.utils.net_hlp import init_weights,SoftMaxPool2d
 
+DEF_BASE_NETS = ['vgg11','vgg11_bn','vgg13','vgg13_bn','vgg16','vgg16_bn','vgg19','vgg19_bn']
+
+class VGG(torch.nn.Module):
+    def __init__(self, basenet='vgg16_bn', pretrained=True, padding:bool=True, maxpool:bool=True, loadnet:str=None):
+        super(VGG, self).__init__()
+        basenet = basenet.lower() if(basenet.lower() in DEF_BASE_NETS)else 'vgg16_bn'
+        model_urls[basenet] = model_urls[basenet].replace('https://', 'http://')
+        if(basenet=='vgg11'):
+            vgg_pretrained_features = models.vgg11(pretrained=pretrained).features
+        elif(basenet=='vgg11_bn'):
+            vgg_pretrained_features = models.vgg11_bn(pretrained=pretrained).features
+        elif(basenet=='vgg13'):
+            vgg_pretrained_features = models.vgg13(pretrained=pretrained).features
+        elif(basenet=='vgg13_bn'):
+            vgg_pretrained_features = models.vgg13_bn(pretrained=pretrained).features
+        elif(basenet=='vgg16'):
+            vgg_pretrained_features = models.vgg16(pretrained=pretrained).features
+        elif(basenet=='vgg16_bn'):
+            vgg_pretrained_features = models.vgg16_bn(pretrained=pretrained).features
+        elif(basenet=='vgg19'):
+            vgg_pretrained_features = models.vgg19(pretrained=pretrained).features
+        else:
+            vgg_pretrained_features = models.vgg19_bn(pretrained=pretrained).features
+            
+        self.b0 = torch.nn.Sequential()
+        self.b1 = torch.nn.Sequential()
+        self.b2 = torch.nn.Sequential()
+        self.b3 = torch.nn.Sequential()
+        self.b4 = torch.nn.Sequential()
+        init_list = [self.b0,self.b1,self.b2,self.b3,self.b4]
+        cnt=0
+        for block in init_list:
+            while(cnt<len(vgg_pretrained_features)):
+                block.add_module(str(cnt), vgg_pretrained_features[cnt])
+                if(isinstance(vgg_pretrained_features[cnt],nn.MaxPool2d)):
+                    break
+                cnt+=1
+            cnt+=1
+
+
+        if(loadnet and os.path.exists(loadnet)):
+            para = torch.load(loadnet)
+            for o in self.state_dict():
+                self.state_dict()[o]=para['module.{}'.format(o)]
+        elif(not pretrained):
+            for block in init_list:
+                init_weights(block.modules())
+                init_weights(block.modules())
+                init_weights(block.modules())
+                init_weights(block.modules())
+
+        if((not padding) or (not maxpool)):
+            for m in self.modules():
+                if((not padding) and isinstance(m, nn.Conv2d)):
+                    m.padding=(0,0)
+                if((not maxpool) and isinstance(m,nn.MaxPool2d)):
+                    m=SoftMaxPool2d(kernel_size=(2,2),stride=(2,2),padding=(0,0))
+
+    def forward(self, x):
+        b0 = self.b0(x)
+        b1 = self.b1(b0)
+        b2 = self.b2(b1)
+        b3 = self.b3(b2)
+        b4 = self.b4(b3)
+
+        vgg_outputs = namedtuple("VggOutputs", ['b0','b1', 'b2', 'b3', 'b4'])
+        out = vgg_outputs(b0, b1, b2, b3, b4)
+        return out
+
 class VGG16(torch.nn.Module):
     def __init__(self, pretrained=True, freeze=True, padding:bool=True, maxpool:bool=True):
         super(VGG16, self).__init__()

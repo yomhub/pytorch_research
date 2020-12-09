@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.mobilenet_v2 import *
 from collections import namedtuple
+from lib.model.vgg16 import VGG
+from lib.utils.net_hlp import get_final_ch
 
 class PIX_TXT(nn.Module):
     def __init__(self,
@@ -302,4 +304,75 @@ class PIX_MASK(nn.Module):
         mask = torch.cat((mask,f_cls),1)
         feat = namedtuple("pixelmap", ['b1_mask', 'b2_mask', 'b3_mask', 'b4_mask', 'b1','b2','b3','b4'])
         featout = feat(b1_mask, b2_mask, b3_mask, b4_mask, b1,b2,b3,b4)
+        return mask,featout
+
+class VGG_PXMASK(nn.Module):
+    def __init__(self,**args):
+        super(VGG_PXMASK, self).__init__()
+        self.basenet = VGG(**args)
+        ch0 = get_final_ch(self.basenet.b0)
+        ch1 = get_final_ch(self.basenet.b1)
+        ch2 = get_final_ch(self.basenet.b2)
+        ch3 = get_final_ch(self.basenet.b3)
+        ch4 = get_final_ch(self.basenet.b4)
+        map_ch = 3
+        self.b0_mask = nn.Sequential(
+            double_conv(ch0,ch0//2,ch0//4),
+            double_conv(ch0//4,ch0//4,map_ch),
+            )
+        self.b1_mask = nn.Sequential(
+            double_conv(ch1,ch1//2,ch1//4),
+            double_conv(ch1//4,ch1//8,map_ch),
+            )
+        self.b2_mask = nn.Sequential(
+            double_conv(ch2,ch2//2,ch2//4),
+            double_conv(ch2//4,ch2//8,map_ch),
+            )
+        self.b3_mask = nn.Sequential(
+            double_conv(ch3,ch3//2,ch3//4),
+            double_conv(ch3//4,ch3//8,map_ch),
+            )
+        self.b4_mask = nn.Sequential(
+            double_conv(ch4,ch4//2,ch4//4),
+            double_conv(ch4//4,ch4//8,map_ch),
+            )
+
+        self.init_weights(self.b4_mask.modules())
+        self.init_weights(self.b3_mask.modules())
+        self.init_weights(self.b2_mask.modules())
+        self.init_weights(self.b1_mask.modules())
+        self.init_weights(self.b0_mask.modules())
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                # init.kaiming_normal_(m.weight, mode='fan_out')
+                init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self,x):
+        b0, b1, b2, b3, b4 = self.basenet(x)
+
+        b4_mask = self.b4_mask(b4)
+        b3_mask = self.b3_mask(b3)
+        b2_mask = self.b2_mask(b2)
+        b1_mask = self.b1_mask(b1)
+        b0_mask = self.b0_mask(b0)
+        mask = b4_mask
+        mask = b3_mask+F.interpolate(mask, size=b3_mask.size()[2:], mode='bilinear', align_corners=False)
+        mask = b2_mask+F.interpolate(mask, size=b2_mask.size()[2:], mode='bilinear', align_corners=False)
+        mask = b1_mask+F.interpolate(mask, size=b1_mask.size()[2:], mode='bilinear', align_corners=False)
+        mask = b0_mask+F.interpolate(mask, size=b0_mask.size()[2:], mode='bilinear', align_corners=False)
+        feat = namedtuple("pixelmap", ['b0_mask','b1_mask', 'b2_mask', 'b3_mask', 'b4_mask', 'b1','b2','b3','b4'])
+        featout = feat(b0_mask, b1_mask, b2_mask, b3_mask, b4_mask, b1,b2,b3,b4)
         return mask,featout
