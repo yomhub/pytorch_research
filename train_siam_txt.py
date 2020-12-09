@@ -1,23 +1,21 @@
 import os
 import sys
 import platform
+import torch
 import argparse
 from tqdm import tqdm
 from datetime import datetime
-import matplotlib.pyplot as plt
-import cv2
 # =================Torch=======================
-import torch
+from torch.nn.parallel import DataParallel
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.multiprocessing import Process
-import torch.nn.functional as F
+from skimage import transform
+import cv2
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.model.pixel_map import PIX_TXT
+from lib.model.siamfc import SiamesePXT,conv2d_dw_group
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
@@ -30,6 +28,7 @@ from lib.utils.log_hlp import *
 from lib.config.train_default import cfg as tcfg
 from dirs import *
 
+
 def train(rank, world_size, args):
     """
     Custom training function, return 0 for join operation
@@ -40,13 +39,15 @@ def train(rank, world_size, args):
     """
     if(rank == 0):
         log = sys.stdout
-    random_b = bool(args.random)
+    # random_b = bool(args.random)
+    random_b = False
+    max_boxes = 3
     time_start = datetime.now()
     work_dir = DEF_WORK_DIR
     work_dir = os.path.join(work_dir,'log')
     if(args.name):
         work_dir = os.path.join(work_dir,args.name)
-    if(rank==0):
+    if(not(args.debug) and rank==0):
         logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S")))
     else:
         logger = None
@@ -55,7 +56,8 @@ def train(rank, world_size, args):
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
-    model = PIX_TXT(pretrained=True).float()
+
+    model = SiamesePXT(PIX_TXT(),lock_basenet=False)
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
@@ -71,9 +73,6 @@ def train(rank, world_size, args):
         optimizer = optim.Adagrad(model.parameters(), lr=args.learnrate, weight_decay=tcfg['OPT_DEC'])
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.learnrate, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    # Wrap the model
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-    # Data loading code
 
     if(args.dataset=="ttt"):
         train_dataset = Total(
@@ -92,24 +91,20 @@ def train(rank, world_size, args):
         x_input_function = train_dataset.x_input_function
         y_input_function = None
 
-
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,
-                                                                    num_replicas=world_size,
-                                                                    rank=rank)
-
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=batch_size,
-                                               shuffle=False,
+                                               shuffle=True,
                                                num_workers=0,
                                                pin_memory=True,
-                                               sampler=train_sampler,
                                                collate_fn=train_dataset.default_collate_fn,)
     time_c = datetime.now()
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
+    torch.autograd.set_detect_anomaly(True)
     for epoch in range(args.epoch):
         for i, sample in enumerate(train_loader):
             x = sample['image']
+            img_size = x.shape[-3:-1]
             mask = sample['mask']
 
             if(random_b):
@@ -153,7 +148,8 @@ def train(rank, world_size, args):
             xnor = torch_img_normalize(xnor).permute(0,3,1,2)
 
             # Forward pass
-            pred,feat = model(xnor)
+            pred,feat_org = model(xnor)
+            
             mask_loss = criterion(pred[:,0], mask)
             edge_loss = criterion(pred[:,1], edge)
             region_mask_np = []
@@ -167,8 +163,46 @@ def train(rank, world_size, args):
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
             region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
             region_loss = criterion(pred[:,2], region_mask)
-            
-            loss = edge_loss+mask_loss+region_loss
+            tracking_loss = torch.zeros_like(region_loss)
+            cnt = 0
+            for batchi in range(batch_size):
+                batch_x_np = x[batchi].numpy()
+                batch_boxes = sample['box'][batchi]
+                batch_recbox = np_polybox_minrect(batch_boxes,'polyxy')
+                ws = np.linalg.norm(batch_recbox[:,0]-batch_recbox[:,1],axis=-1)
+                hs = np.linalg.norm(batch_recbox[:,0]-batch_recbox[:,3],axis=-1)
+                inds = np.argsort(ws*hs)[::-1]
+                slc_boxes = batch_boxes[inds[:max_boxes]]
+                slc_recbox = batch_recbox[inds[:max_boxes]]
+
+                for sbxi,sig_sub_box in enumerate(slc_boxes):
+                    sub_img,_,polymask = cv_crop_image_by_polygon(batch_x_np,sig_sub_box,w_min=524,h_min=524,return_mask=True)
+                    sub_img_nor = torch.from_numpy(np.expand_dims(sub_img,0)).float()
+                    sub_img_nor = torch_img_normalize(sub_img_nor).cuda(non_blocking=True).permute(0,3,1,2)
+                    try:
+                    # if(1):
+                        pred_sub,feat_sub = model(sub_img_nor)
+                        feat_obj = (feat_sub.b1,feat_sub.b2,feat_sub.b3,feat_sub.b4)
+                        feat_search = (feat_org.b1[batchi:batchi+1],feat_org.b2[batchi:batchi+1],feat_org.b3[batchi:batchi+1],feat_org.b4[batchi:batchi+1])
+                        # nn.parallel.DistributedDataParallel.module to call orginal class
+                        match_map,feat_m = model.match(feat_obj,feat_search)
+                        sub_ch_mask = cv_gen_gaussian_by_poly(
+                            np_box_resize(sig_sub_box,img_size,match_map.shape[2:],'polyxy'),
+                            match_map.shape[2:]
+                        )
+                        sub_ch_mask_torch = torch.from_numpy(sub_ch_mask.reshape((1,1,sub_ch_mask.shape[0],sub_ch_mask.shape[1]))).float().cuda(non_blocking=True)
+                        tracking_loss+=criterion(match_map,sub_ch_mask_torch)
+
+                        cnt+=1
+                    except Exception as e:
+                        sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'][sbxi],batch_x_np.shape,sub_img_nor.shape))
+                        sys.stdout.write(str(e))
+                        sys.stdout.flush()
+                        continue
+            if(cnt>0):
+                tracking_loss/=cnt
+
+            loss = edge_loss+mask_loss+region_loss+tracking_loss
             # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
@@ -179,6 +213,7 @@ def train(rank, world_size, args):
                 logger.add_scalar('Loss/mask_loss', mask_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/edge_loss', edge_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/region_loss', region_loss.item(), epoch*total_step+i)
+                logger.add_scalar('Loss/tracking_loss', tracking_loss.item(), epoch*total_step+i)
                 logger.flush()
 
 
@@ -220,10 +255,10 @@ def train(rank, world_size, args):
             img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
             logger.add_image('GT', img, epoch,dataformats='HWC')
 
-            b1_mask = feat.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b2_mask = feat.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b3_mask = feat.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b4_mask = feat.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b1_mask = feat_org.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b2_mask = feat_org.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b3_mask = feat_org.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            b4_mask = feat_org.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
 
             b2_mask = cv2.resize(b2_mask,(b1_mask.shape[1],b1_mask.shape[0]))
             b3_mask = cv2.resize(b3_mask,(b1_mask.shape[1],b1_mask.shape[0]))
@@ -247,6 +282,31 @@ def train(rank, world_size, args):
                 cv_heatmap(b3_mask[:,:,2]),line,
                 cv_heatmap(b4_mask[:,:,2])),-2)
             logger.add_image('B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
+            try:
+                org_img = batch_x_np
+                sub_img = sub_img
+                pred_sub_np = pred_sub[0,0].to('cpu').detach().numpy()
+                gt_sub_np = sub_ch_mask
+                org_img[0:sub_img.shape[0],0:sub_img.shape[1]]=sub_img
+                org_img = cv_draw_poly(org_img,np_box_resize(sig_sub_box,img_size,org_img.shape[-3:-1],'polyxy'))
+
+                gt_sub_np = cv_heatmap(gt_sub_np)
+                pred_sub_np = cv_heatmap(pred_sub_np)
+                org_img = cv_mask_image(org_img,gt_sub_np)
+                
+                org_img = cv2.resize(org_img,(pred_sub_np.shape[1],pred_sub_np.shape[0]))
+                gt_sub_np = cv2.resize(gt_sub_np,(pred_sub_np.shape[1],pred_sub_np.shape[0]))
+                line = np.ones((pred_sub_np.shape[0],3,3),dtype=np.uint8)*255
+                img = np.concatenate((
+                    org_img,line,
+                    gt_sub_np,line,
+                    pred_sub_np),-2)
+                logger.add_image('Tracking Img|GT|Pred', img, epoch,dataformats='HWC')
+
+            except Exception as e:
+                sys.stdout.write("Log err:\n")
+                sys.stdout.write(str(e))
+                sys.stdout.flush()
             logger.flush()
 
     if(rank == 0):
@@ -256,23 +316,12 @@ def train(rank, world_size, args):
         except:
             log.write("Total time usage: {} Day {} Second.\n".format(time_usage.day,time_usage.second))
         log.close()
+
     return 0
 
-def init_process(rank, world_size, fn, args):
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    print("Process id {}/{} init.".format(rank,world_size))
-    fn(rank,world_size,args)
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
-    #                     help='number of data loading workers (default: 4)')
-    # parser.add_argument('-g', '--gpus', default=1, type=int,
-    #                     help='number of gpus per node')
-    # parser.add_argument('-nr', '--nr', default=0, type=int,
-    #                     help='ranking within the nodes')
-    # parser.add_argument('--epochs', default=2, type=int, metavar='N',
-    #                     help='number of total epochs to run')
+
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
@@ -285,6 +334,8 @@ if __name__ == '__main__':
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
 
     args = parser.parse_args()
+    # args.debug=True
+    # args.load = "/BACKUP/yom_backup/saved_model/SiamesePXT.pkl.pth"
     summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(DEF_WORK_DIR)+\
         "Running with: \n"+\
@@ -298,8 +349,5 @@ if __name__ == '__main__':
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
         "========\n"
     print(summarize)
-    gpus = torch.cuda.device_count()
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '8888'
-    mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
-    # main()
+    train(0,1,args)
+    pass

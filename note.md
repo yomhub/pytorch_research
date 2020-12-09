@@ -33,3 +33,30 @@
     The troughts of CRAFT is around 0.4 and ours is around 0.3.
 
     Consider use connected function on trought between text and text?
+
+> New task: train a texture enhanced network 
+
+## 12.01
+    Proposal: multi level region mask + edge mask + pixel mask
+
+## 12.04:
+    Net: pixeltxt
+    GT: gaussian region and 0,1 pixel mask, regular edge mask from Canny filter plus dilate OP
+        value in [0,1]
+    Loss: MSE regression
+
+## 12.07:
+    Net: pixeltxt
+    Eval: around 40% F-score
+        total-txt:
+    Reason:    
+        1. weak detection performance on big instances
+        2. weak word level separation performance
+    Phenomena:    
+        1. low lovel network (1/4) provide rich edge info while high level (1/32) provide rich region info
+        2. mask value is dominated by high level (with resident functional base network)
+        3. high level prediction is not easily affected
+
+## 12.08
+    Proposel: add multi level 3 classes classifier: BG, region boundary, region inside
+

@@ -4,8 +4,8 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.craft import CRAFT
-from lib.utils.img_hlp import cv_get_box_from_mask
 from lib.utils.net_hlp import init_weights,Swish_act,double_conv
+from collections import namedtuple
 
 class SiameseNet(nn.Module):
     """ The basic siamese network joining network, that takes the outputs of
@@ -122,29 +122,76 @@ class SiameseCRAFT(nn.Module):
         return score,match_map
 
 class SiamesePXT(nn.Module):
-    def __init__(self, base_net, feature_chs, lock_basenet:bool=True):
+    def __init__(self, base_net, lock_basenet:bool=True):
         super(SiamesePXT, self).__init__()
         self.base_net = base_net
         if(lock_basenet):
             for i in self.base_net.parameters():
                 i.requires_grad=False
-        self.match_batchnorm = nn.BatchNorm2d(feature_chs)
-        self.search_norm = nn.BatchNorm2d(feature_chs)
-        self.obj_norm = nn.BatchNorm2d(feature_chs)
+        b4_ch,b3_ch,b2_ch,b1_ch = (320,96,32,24)
+        final_ch = 1
+        # b4
         self.map_conv = nn.Sequential(
-            nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(),#Swish_act()
-            nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(),#nn.ReLU
-            nn.Conv2d(feature_chs//4, 1, kernel_size=1),
+            double_conv(b4_ch,max(16,b4_ch//2),max(16,b4_ch//4)),
+            double_conv(max(16,b4_ch//4),max(16,b4_ch//8),final_ch),
         )
-
-        # init_weights(self.map_conv)
+        # b3
+        self.map_conv_b3 = nn.Sequential(
+            double_conv(b3_ch,max(16,b3_ch//2),max(16,b3_ch//4)),
+            double_conv(max(16,b3_ch//4),max(16,b3_ch//8),final_ch),
+        )
+        # b2
+        self.map_conv_b2 = nn.Sequential(
+            double_conv(b2_ch,max(16,b2_ch//2),max(16,b2_ch//4)),
+            double_conv(max(16,b2_ch//4),max(16,b2_ch//8),final_ch),
+        )
+        # b1
+        self.map_conv_b1 = nn.Sequential(
+            double_conv(b1_ch,max(16,b1_ch//2),max(16,b1_ch//4)),
+            double_conv(max(16,b1_ch//4),max(16,b1_ch//8),final_ch),
+        )
+        self.init_weights(self.map_conv)
+        self.init_weights(self.map_conv_b3)
+        self.init_weights(self.map_conv_b2)
+        self.init_weights(self.map_conv_b1)
     def forward(self, x):
         return self.base_net(x)
+        
     def match(self,obj,search):
-        obj = self.obj_norm(obj)
-        match_map = conv2d_dw_group(search,obj)
-        score = self.map_conv(match_map)
-        return score,match_map
+        obj_b1,obj_b2,obj_b3,obj_b4 = obj
+        s_b1,s_b2,s_b3,s_b4 = search
+        b4 = conv2d_dw_group(s_b4,obj_b4)
+        sc_b4 = self.map_conv(b4)
+        b3 = conv2d_dw_group(s_b3,obj_b3)
+        sc_b3 = self.map_conv_b3(b3)
+        b2 = conv2d_dw_group(s_b2,obj_b2)
+        sc_b2 = self.map_conv_b2(b2)
+        b1 = conv2d_dw_group(s_b1,obj_b1)
+        sc_b1 = self.map_conv_b1(b1)
+        score = sc_b4
+        score = sc_b3+F.interpolate(score, size=sc_b3.size()[2:], mode='bilinear', align_corners=False)
+        score = sc_b2+F.interpolate(score, size=sc_b2.size()[2:], mode='bilinear', align_corners=False)
+        score = sc_b1+F.interpolate(score, size=sc_b1.size()[2:], mode='bilinear', align_corners=False)
+        feat = namedtuple("matchmap", ['sc_b1', 'sc_b2', 'sc_b3', 'sc_b4', 'b1','b2','b3','b4'])
+        featout = feat(sc_b1, sc_b2, sc_b3, sc_b4, b1,b2,b3,b4)
+        return score,featout
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                # init.kaiming_normal_(m.weight, mode='fan_out')
+                init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
 
 def conv2d_dw_group(x, kernel):
     batch, channel = kernel.shape[:2]

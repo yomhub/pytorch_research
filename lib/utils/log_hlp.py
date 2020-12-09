@@ -115,6 +115,35 @@ def log_net_hock(net):
                 input[0].shape if(isinstance(input,tuple))else input.shape,
                 output[0].shape if(isinstance(input,tuple))else output.shape,
                 )))
+
+def concatenate_images(images:list,direction:str='h',line_wide:int=3):
+    h,w=images[0].shape[0],images[0].shape[1]
+    for i in range(len(images)):
+        if(len(images[i].shape)==2):
+            if(images[i].dtype in [np.uint8,np.uint16,np.int8,np.int16]):
+                images[i] = images[i].astype(np.uint8)
+            else:
+                images[i] = (images[i]*255).astype(np.uint8)
+            images[i] = np.expand_dims(images[i],-1)
+            images[i] = np.concatenate((images[i],images[i],images[i]),-1)
+        h,w = min(h,images[i].shape[0]),min(w,images[i].shape[1])
+    if('h' in direction.lower()):
+        line = np.ones((h,line_wide,3),dtype=np.uint8)*255
+        ax = 1
+    else:
+        line = np.ones((line_wide,w,3),dtype=np.uint8)*255
+        ax = 0
+    rets = []
+    for i in range(len(images)):
+        if(images[i].shape[0]!=h or images[i].shape[1]!=w):
+            images[i] = cv2.resize(images[i],(w,h))
+        rets.append(images[i])
+        rets.append(line)
+    rets.pop(-1)
+
+    return np.concatenate(rets,ax)
+
+
 if __name__ == "__main__":
     img = io.imread("D:\\development\\workspace\\Dataset\\ICDAR2015\\ch4_test_images\\img_2.jpg")
     

@@ -17,7 +17,7 @@ from torch.multiprocessing import Process
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
-from lib.model.pixel_map import PIX_TXT
+from lib.model.pixel_map import PIX_MASK
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
@@ -55,14 +55,14 @@ def train(rank, world_size, args):
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
-    model = PIX_TXT(pretrained=True).float()
+    model = PIX_MASK(pretrained=True).float()
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
 
     # define loss function (criterion) and optimizer
     criterion = MSE_2d_Loss(pixel_sum=False).cuda(rank)
-
+    criterion_ce = nn.CrossEntropyLoss(ignore_index = -1)
     if(os.path.exists(args.opt)):
         optimizer = torch.load(args.opt)
     elif(args.opt.lower()=='adam'):
@@ -111,7 +111,7 @@ def train(rank, world_size, args):
         for i, sample in enumerate(train_loader):
             x = sample['image']
             mask = sample['mask']
-
+            boxes = sample['box']
             if(random_b):
                 angle = (np.random.random()-0.5)*2*5
                 h, w = x.shape[-3:-1]
@@ -135,6 +135,7 @@ def train(rank, world_size, args):
                 if(len(mask.shape)==3):
                     mask = np.expand_dims(mask,-1)
                 mask = torch.from_numpy(mask)
+                boxes = np_apply_matrix_to_pts(Mtsr,boxes)
 
             if(mask.shape[-1]==3):
                 mask = mask[:,:,:,0:1]
@@ -142,8 +143,9 @@ def train(rank, world_size, args):
             msak_np = np.where(msak_np>0,255,0).astype(np.uint8)
             edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in msak_np]
             # np (batch,h,w,1)-> torch (batch,1,h,w)
-            edge_np = np.expand_dims(np.stack(edge_np,0),-1)
-            edge = torch.from_numpy(edge_np).cuda(non_blocking=True)
+            edge_np = np.stack(edge_np,0)
+            
+            edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
             edge = (edge>0).float().permute(0,3,1,2)
 
             mask = mask.cuda(non_blocking=True)
@@ -156,19 +158,42 @@ def train(rank, world_size, args):
             pred,feat = model(xnor)
             mask_loss = criterion(pred[:,0], mask)
             edge_loss = criterion(pred[:,1], edge)
+
             region_mask_np = []
+            region_mask_bin_np = []
+            boundary_mask_bin_np = []
             for batch_boxes in sample['box']:
-                region = [cv_gen_gaussian_by_poly(box,x.shape[-3:-1]) for box in batch_boxes]
+                region = []
+                region_bl = []
+                boundary_bl = []
+                for box in batch_boxes:
+                    gas_map,blmap = cv_gen_gaussian_by_poly(box,x.shape[-3:-1],return_mask=True)
+                    blmap = np.where(blmap>0,255,0).astype(np.uint8)
+                    blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
+                    boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
+                    
+                    region.append(gas_map)
+                    region_bl.append(blmap)
+                    boundary_bl.append(boundadrymap)
+
                 region_mask_np.append(sum(region))
-            if(random_b):
-                region_mask_np = np.stack([cv2.warpAffine(rg_mask, Mtsr[:-1], (w, h)) for rg_mask in region_mask_np],0)
-                region_mask_np = np.expand_dims(region_mask_np,-1).astype(np.float32)
-            else:
-                region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
+                region_mask_bin_np.append(np.max(np.array(region_bl),axis=0))
+                boundary_mask_bin_np.append(np.max(np.array(boundary_bl),axis=0))
+
+            region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
+            region_mask_bin_np = np.stack(region_mask_bin_np,0).astype(np.uint8)
+            boundary_mask_bin_np = np.stack(boundary_mask_bin_np,0).astype(np.uint8)
+
+            ce_y = np.zeros(region_mask_bin_np.shape,dtype=np.int64)
+            ce_y[region_mask_bin_np>0]=1
+            ce_y[boundary_mask_bin_np>0]=2
+            ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
+
             region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
             region_loss = criterion(pred[:,2], region_mask)
-            
-            loss = edge_loss+mask_loss+region_loss
+            cls_loss = criterion_ce(pred[:,3:], ce_y_torch)
+
+            loss = edge_loss+mask_loss+region_loss+cls_loss
             # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
@@ -179,6 +204,7 @@ def train(rank, world_size, args):
                 logger.add_scalar('Loss/mask_loss', mask_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/edge_loss', edge_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/region_loss', region_loss.item(), epoch*total_step+i)
+                logger.add_scalar('Loss/Classify', cls_loss.item(), epoch*total_step+i)
                 logger.flush()
 
 
@@ -212,7 +238,7 @@ def train(rank, world_size, args):
             logger.add_image('Prediction', img, epoch,dataformats='HWC')
 
             gt_mask = np.stack([msak_np[0],msak_np[0],msak_np[0]],-1)
-            gt_edge = np.stack([edge_np[0,:,:,0],edge_np[0,:,:,0],edge_np[0,:,:,0]],-1)
+            gt_edge = np.stack([edge_np[0],edge_np[0],edge_np[0]],-1)
             gt_regi = cv_heatmap(region_mask_np[0,:,:,0])
             smx = cv2.resize(x[0].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
             smx = cv_mask_image(smx,gt_regi)
@@ -230,23 +256,35 @@ def train(rank, world_size, args):
             b4_mask = cv2.resize(b4_mask,(b1_mask.shape[1],b1_mask.shape[0]))
             line = np.ones((b1_mask.shape[0],3,3),dtype=np.uint8)*255
             img = np.concatenate((
-                cv_heatmap(b1_mask[:,:,0]),line,
-                cv_heatmap(b2_mask[:,:,0]),line,
                 cv_heatmap(b3_mask[:,:,0]),line,
                 cv_heatmap(b4_mask[:,:,0])),-2)
-            logger.add_image('B1|B2|B3|B4 mask', img, epoch,dataformats='HWC')
+            logger.add_image('B3|B4 BG', img, epoch,dataformats='HWC')
             img = np.concatenate((
-                cv_heatmap(b1_mask[:,:,1]),line,
-                cv_heatmap(b2_mask[:,:,1]),line,
                 cv_heatmap(b3_mask[:,:,1]),line,
                 cv_heatmap(b4_mask[:,:,1])),-2)
-            logger.add_image('B1|B2|B3|B4 edge', img, epoch,dataformats='HWC')
+            logger.add_image('B3|B4 region', img, epoch,dataformats='HWC')
             img = np.concatenate((
-                cv_heatmap(b1_mask[:,:,2]),line,
-                cv_heatmap(b2_mask[:,:,2]),line,
+                cv_heatmap(b1_mask[:,:,1]),line,
+                cv_heatmap(b2_mask[:,:,1])),-2)
+            logger.add_image('B1|B2 edge', img, epoch,dataformats='HWC')
+            img = np.concatenate((
+                cv_heatmap(b1_mask[:,:,0]),line,
+                cv_heatmap(b2_mask[:,:,0]),line,
                 cv_heatmap(b3_mask[:,:,2]),line,
                 cv_heatmap(b4_mask[:,:,2])),-2)
-            logger.add_image('B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
+            logger.add_image('B1|B2|B3|B4 txt', img, epoch,dataformats='HWC')
+
+            labels = torch.argmax(pred[0:1,3:],dim=1)
+            labels = labels[0].cpu().detach().numpy()
+            gtlabels = ce_y[0]
+            labels = cv_labelmap(labels)
+            gtlabels = cv_labelmap(gtlabels)
+            if(gtlabels.shape[:-1]!=labels.shape[:-1]):
+                gtlabels = cv2.resize(gtlabels,(labels.shape[1],labels.shape[0]))
+            line = np.ones((labels.shape[0],3,3),dtype=labels.dtype)*255
+            img = np.concatenate((gtlabels,line,labels),-2)
+            logger.add_image('Labels GT|Pred', img, epoch,dataformats='HWC')
+
             logger.flush()
 
     if(rank == 0):

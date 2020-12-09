@@ -17,7 +17,7 @@ from torch.multiprocessing import Process
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
-from lib.model.pixel_map import PIX_TXT
+from lib.model.pixel_map import PIX_MASK
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
@@ -46,23 +46,21 @@ def train(rank, world_size, args):
     work_dir = os.path.join(work_dir,'log')
     if(args.name):
         work_dir = os.path.join(work_dir,args.name)
-    if(rank==0):
+    if(rank==0 and not args.debug):
         logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S")))
     else:
         logger = None
 
     batch_size = args.batch
-    torch.manual_seed(0)
-    torch.cuda.set_device(rank)
-    dev = 'cuda:{}'.format(rank)
-    model = PIX_TXT(pretrained=True).float()
+
+    model = PIX_MASK(pretrained=True).float()
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
-    model = model.cuda(rank)
+    model = model.cuda()
 
     # define loss function (criterion) and optimizer
-    criterion = MSE_2d_Loss(pixel_sum=False).cuda(rank)
-
+    criterion = MSE_2d_Loss(pixel_sum=False).cuda()
+    criterion_ce = nn.CrossEntropyLoss(ignore_index = -1)
     if(os.path.exists(args.opt)):
         optimizer = torch.load(args.opt)
     elif(args.opt.lower()=='adam'):
@@ -71,9 +69,7 @@ def train(rank, world_size, args):
         optimizer = optim.Adagrad(model.parameters(), lr=args.learnrate, weight_decay=tcfg['OPT_DEC'])
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.learnrate, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    # Wrap the model
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-    # Data loading code
+
 
     if(args.dataset=="ttt"):
         train_dataset = Total(
@@ -93,25 +89,22 @@ def train(rank, world_size, args):
         y_input_function = None
 
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,
-                                                                    num_replicas=world_size,
-                                                                    rank=rank)
-
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=batch_size,
-                                               shuffle=False,
+                                               shuffle=True,
                                                num_workers=0,
                                                pin_memory=True,
-                                               sampler=train_sampler,
                                                collate_fn=train_dataset.default_collate_fn,)
     time_c = datetime.now()
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
-    for epoch in range(args.epoch):
+    for epoch in range(args.epoch if(not args.debug)else 1):
         for i, sample in enumerate(train_loader):
+            if(args.debug and i>3):
+                break
             x = sample['image']
             mask = sample['mask']
-
+            boxes = sample['box']
             if(random_b):
                 angle = (np.random.random()-0.5)*2*5
                 h, w = x.shape[-3:-1]
@@ -135,6 +128,7 @@ def train(rank, world_size, args):
                 if(len(mask.shape)==3):
                     mask = np.expand_dims(mask,-1)
                 mask = torch.from_numpy(mask)
+                boxes = np_apply_matrix_to_pts(Mtsr,boxes)
 
             if(mask.shape[-1]==3):
                 mask = mask[:,:,:,0:1]
@@ -142,33 +136,57 @@ def train(rank, world_size, args):
             msak_np = np.where(msak_np>0,255,0).astype(np.uint8)
             edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in msak_np]
             # np (batch,h,w,1)-> torch (batch,1,h,w)
-            edge_np = np.expand_dims(np.stack(edge_np,0),-1)
-            edge = torch.from_numpy(edge_np).cuda(non_blocking=True)
+            edge_np = np.stack(edge_np,0)
+            
+            edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda()
             edge = (edge>0).float().permute(0,3,1,2)
 
-            mask = mask.cuda(non_blocking=True)
+            mask = mask.cuda()
             mask = (mask>0).float().permute(0,3,1,2)
 
-            xnor = x.float().cuda(non_blocking=True)
+            xnor = x.float().cuda()
             xnor = torch_img_normalize(xnor).permute(0,3,1,2)
 
             # Forward pass
             pred,feat = model(xnor)
             mask_loss = criterion(pred[:,0], mask)
             edge_loss = criterion(pred[:,1], edge)
+
             region_mask_np = []
+            region_mask_bin_np = []
+            boundary_mask_bin_np = []
             for batch_boxes in sample['box']:
-                region = [cv_gen_gaussian_by_poly(box,x.shape[-3:-1]) for box in batch_boxes]
+                region = []
+                region_bl = []
+                boundary_bl = []
+                for box in batch_boxes:
+                    gas_map,blmap = cv_gen_gaussian_by_poly(box,x.shape[-3:-1],return_mask=True)
+                    blmap = np.where(blmap>0,255,0).astype(np.uint8)
+                    blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
+                    boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
+                    
+                    region.append(gas_map)
+                    region_bl.append(blmap)
+                    boundary_bl.append(boundadrymap)
+
                 region_mask_np.append(sum(region))
-            if(random_b):
-                region_mask_np = np.stack([cv2.warpAffine(rg_mask, Mtsr[:-1], (w, h)) for rg_mask in region_mask_np],0)
-                region_mask_np = np.expand_dims(region_mask_np,-1).astype(np.float32)
-            else:
-                region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
-            region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
+                region_mask_bin_np.append(np.max(np.array(region_bl),axis=0))
+                boundary_mask_bin_np.append(np.max(np.array(boundary_bl),axis=0))
+
+            region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
+            region_mask_bin_np = np.stack(region_mask_bin_np,0).astype(np.uint8)
+            boundary_mask_bin_np = np.stack(boundary_mask_bin_np,0).astype(np.uint8)
+
+            ce_y = np.zeros(region_mask_bin_np.shape,dtype=np.int64)
+            ce_y[region_mask_bin_np>0]=1
+            ce_y[boundary_mask_bin_np>0]=2
+            ce_y_torch = torch.from_numpy(ce_y).cuda()
+
+            region_mask = torch.from_numpy(region_mask_np).cuda().permute(0,3,1,2)
             region_loss = criterion(pred[:,2], region_mask)
-            
-            loss = edge_loss+mask_loss+region_loss
+            cls_loss = criterion_ce(pred[:,3:], ce_y_torch)
+
+            loss = edge_loss+mask_loss+region_loss+cls_loss
             # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
@@ -179,6 +197,7 @@ def train(rank, world_size, args):
                 logger.add_scalar('Loss/mask_loss', mask_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/edge_loss', edge_loss.item(), epoch*total_step+i)
                 logger.add_scalar('Loss/region_loss', region_loss.item(), epoch*total_step+i)
+                logger.add_scalar('Loss/Classify', cls_loss.item(), epoch*total_step+i)
                 logger.flush()
 
 
@@ -212,7 +231,7 @@ def train(rank, world_size, args):
             logger.add_image('Prediction', img, epoch,dataformats='HWC')
 
             gt_mask = np.stack([msak_np[0],msak_np[0],msak_np[0]],-1)
-            gt_edge = np.stack([edge_np[0,:,:,0],edge_np[0,:,:,0],edge_np[0,:,:,0]],-1)
+            gt_edge = np.stack([edge_np[0],edge_np[0],edge_np[0]],-1)
             gt_regi = cv_heatmap(region_mask_np[0,:,:,0])
             smx = cv2.resize(x[0].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
             smx = cv_mask_image(smx,gt_regi)
@@ -247,6 +266,17 @@ def train(rank, world_size, args):
                 cv_heatmap(b3_mask[:,:,2]),line,
                 cv_heatmap(b4_mask[:,:,2])),-2)
             logger.add_image('B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
+            labels = F.softmax(pred[0:1,3:],dim=1)
+            labels = labels[0].cpu().detach().numpy()
+            gtlabels = ce_y[0]
+            labels = cv_labelmap(labels)
+            gtlabels = cv_labelmap(gtlabels)
+            if(gtlabels.shape[:-1]!=labels.shape[:-1]):
+                gtlabels = cv2.resize(gtlabels,(labels.shape[1],labels.shape[0]))
+            line = np.ones((labels.shape[0],3,3),dtype=labels.dtype)*255
+            img = np.concatenate((gtlabels,line,labels),-2)
+            logger.add_image('Labels GT|Pred', img, epoch,dataformats='HWC')
+
             logger.flush()
 
     if(rank == 0):
@@ -258,21 +288,9 @@ def train(rank, world_size, args):
         log.close()
     return 0
 
-def init_process(rank, world_size, fn, args):
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    print("Process id {}/{} init.".format(rank,world_size))
-    fn(rank,world_size,args)
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    # parser.add_argument('-n', '--nodes', default=1, type=int, metavar='N',
-    #                     help='number of data loading workers (default: 4)')
-    # parser.add_argument('-g', '--gpus', default=1, type=int,
-    #                     help='number of gpus per node')
-    # parser.add_argument('-nr', '--nr', default=0, type=int,
-    #                     help='ranking within the nodes')
-    # parser.add_argument('--epochs', default=2, type=int, metavar='N',
-    #                     help='number of total epochs to run')
+
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
@@ -285,6 +303,7 @@ if __name__ == '__main__':
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
 
     args = parser.parse_args()
+    args.debug = True
     summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(DEF_WORK_DIR)+\
         "Running with: \n"+\
@@ -298,8 +317,5 @@ if __name__ == '__main__':
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
         "========\n"
     print(summarize)
-    gpus = torch.cuda.device_count()
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '8888'
-    mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
-    # main()
+
+    train(0,1,args)

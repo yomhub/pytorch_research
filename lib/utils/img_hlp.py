@@ -48,10 +48,29 @@ The single sample of dataset should include:
 
 # default is __DEF_FORMATS[0]
 __DEF_FORMATS = ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
-def np_topk(src,k):
-    return np.argpartition(x, -k)[-k:]
-def np_bottomk(src,k):
-    return np.argpartition(x, k)[:k]
+def np_topk(src,k,axis=-1):
+    """
+    Return top k value along axis.
+    """
+    return np.argpartition(x, -k,axis=axis)[-k:]
+def np_topk_inc(src,k,axis=-1):
+    """
+    Return top k indices along axis.
+    """
+    incs = np.argsort(src,axis=axis)
+    incs = incs[::-1]
+    return incs[:k]
+def np_bottomk(src,k,axis=-1):
+    """
+    Return bottom k value along axis.
+    """
+    return np.argpartition(x, k,axis=axis)[:k]
+def np_bottomk_inc(src,k,axis=-1):
+    """
+    Return bottom k indices along axis.
+    """
+    incs = np.argsort(src,axis=axis)
+    return incs[:k]
 
 def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     """ Numpy box resize.
@@ -177,14 +196,21 @@ def np_apply_matrix_to_pts(M,pts):
     Return:
         (k1,k2,...,kn,axis1) points coordinate
     """
+    len2 = False
+    if(isinstance(pts,list) or pts.dtype==np.object):
+        ans = [np_apply_matrix_to_pts(M,o) for o in pts]
+        return np.array(ans)
     if(pts.shape[-1]<M.shape[-1]):
         # need homogeneous, (ax0,ax1...)->(ax0,ax1,...,1)
+        len2 = True
         pd = [(0,0) for i in range(len(pts.shape)-1)]
         pd.append((0,1))
         pts = np.pad(pts,pd,constant_values=1)
     if(len(pts.shape)>1):
         pts = np.moveaxis(pts,-1,-2)
     ret = np.dot(M,pts)
+    if(len2):
+        ret = ret[:-1]
     ret = np.moveaxis(ret,0,-1)
     return ret
 
@@ -358,7 +384,7 @@ def cv_gaussian_kernel_2d(kernel_size = (3, 3)):
 
 from scipy import ndimage
 # For masked polygon distance 
-def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:float=1.5,sigma:float=0.9):
+def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:float=1.5,sigma:float=0.9,return_mask:bool=False):
     """
     Generate gaussian map by polygon
     Args:
@@ -369,6 +395,7 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
         sigma: sigma
     Return:
         gaussian mask for polygon
+        if return_mask, return gaussian_mask,polygon_region_mask
     """
     box_rect = np_polybox_minrect(cv_box)
     if(not img_size):
@@ -408,7 +435,9 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
     # apply gaussian
     dst_mask = np.exp(-( (dst_mask)**2 / ( 2.0 * sigma**2 ) ) )
     dst_mask = np.where(blmask==1,dst_mask,0.0)
-    
+    if(return_mask):
+        return dst_mask,blmask
+
     return dst_mask
 
 def cv_fill_by_box(img, src_box, dst_box, out_size):
@@ -519,57 +548,82 @@ def cv_box_overlap(boxes1,boxes2):
     """
     Calculate box overlap in CV coordinate
     Args:
-        boxes1: ((N1),2,4 or k) CV coordinate
-        boxes1: ((N2),2,4 or k) CV coordinate
+        boxes1: ((N1),k,2) CV coordinate
+        boxes1: ((N2),k,2) CV coordinate
     Return:
         overlap: (N1,N2) array, 0.0 for non-overlap
     """
     if(len(boxes1.shape)==2):boxes1 = np.expand_dims(boxes1,0)
     if(len(boxes2.shape)==2):boxes2 = np.expand_dims(boxes2,0)
+    poly1 = [Polygon(o) for o in boxes1]
+    poly2 = [Polygon(o) for o in boxes2]
     ans = []
-    for b1 in boxes1:
+    for p1 in poly1:
         tmp = []
-        p1 = Polygon(b1)
-        for b2 in boxes2:
-            p2 = Polygon(b2)
+        for p2 in poly2:
             a = p1.intersection(p2).area
             tmp.append(a/(p1.area+p2.area-a) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
-    return np.array(ans)
+    return np.array(ans,dtype=np.float32)
 
 def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
     """
     Box match algorithm
+    see also ICDAR threshold is 0.5, https://rrc.cvc.uab.es/?ch=15&com=tasks
     Args:
-        pred: ((N1),2,4) CV coordinate
-        gt: ((N2),2,4) CV coordinate
-        bg: optional, ((N3),2,4) CV coordinate
+        pred: ((N1),k,2) CV coordinate
+        gt: ((N2),k,2) CV coordinate
+        bg: optional, ((N3),k,2) CV coordinate
         ovth: overlap threshold, default is 0.5
     Return:
         id_list: id list of matched, non-negative for gt boxes, negative for bg boxes if have.
         Usage e.g. 
             if(id_list[i] and id_list[i]>=0):gt[id_list[i]]
             if(id_list[i] and id_list[i]<0):bg[id_list[i]]
+        precision_rate
+        recall_rate
     """
-    pred = pred.reshape((-1,4,2))
+    if(len(pred.shape)==2):
+        pred = np.expand_dims(pred,0)
+    if(len(gt.shape)==2):
+        gt = np.expand_dims(gt,0)
+    T = pred.shape[0]
+    Tdsh = pred.shape[0]
     id_list = [None for i in range(pred.shape[0])]
     if(not isinstance(bg,type(None))):
-        bg = bg.reshape((-1,4,2))
+        if(len(bg.shape)==2):
+            bg = np.expand_dims(bg,0)
         ovs = cv_box_overlap(pred,bg)
+        incs = np.argsort(ovs,axis=1)
+        incs = incs[:,::-1]
         for i in range(pred.shape[0]):
-            imax = np.argmax(ovs[i])
-            if(ovs[i,imax]>=ovth):
-                id_list[i] = -1-int(imax)
-
+            for imax in incs[i]:
+                if(ovs[i,imax]>=ovth):
+                    if(-1-int(imax) not in id_list):
+                        id_list[i] = -1-int(imax)
+                        Tdsh-=1
+                        break
+                else:
+                    break
+    M=0
+    G = gt.shape[0]
     ovs = cv_box_overlap(pred,gt)
+    incs = np.argsort(ovs,axis=1)
+    incs = incs[:,::-1]
     for i in range(pred.shape[0]):
         if(id_list[i]!=None):
             continue
-        imax = np.argmax(ovs[i])
-        if(ovs[i,imax]>=ovth):
-            id_list[i] = imax
-            
-    return id_list
+        for imax in incs[i]:
+            if(ovs[i,imax]>=ovth):
+                if(imax not in id_list):
+                    id_list[i] = imax
+                    M+=1
+                    break
+            else:
+                break
+    precision =M/Tdsh
+    recall = M/G
+    return id_list,precision,recall
 
 def cv_box2cvbox(boxes,image_size,box_format:str):
     """
@@ -700,14 +754,12 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:float=0.5, seg_th:float=0.3):
+def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
         scoremap: confidence map, ndarray in (h,w,1) or (h,w), range in [0,1], float
-        segmap: segmentation map, ndarray in (h,w,1) or (h,w), range in [0,1], float
         score_th: threshold of score, float
-        seg_th: threshold of segmentation, float
     Ret:
         detections: (N,4,2) box with polyxy format
         labels: map of labeled number
@@ -715,13 +767,9 @@ def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:f
     """
     img_h, img_w = scoremap.shape[0], scoremap.shape[1]
     scoremap = scoremap.reshape((img_h, img_w))
-    if(isinstance(segmap,type(None))):
-        segmap = np.zeros((img_h, img_w),dtype=scoremap.dtype)
-    else:
-        segmap = segmap.reshape((img_h, img_w))
 
     nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        np.logical_or(scoremap>=score_th,segmap>=seg_th).astype(np.uint8),
+        (scoremap>=score_th).astype(np.uint8),
         connectivity=4)
 
     det = []
@@ -736,7 +784,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:f
 
         # make segmentation map
         tmp = np.zeros(scoremap.shape, dtype=np.uint8)
-        tmp[np.logical_and(labels == k,segmap<seg_th)] = 255
+        tmp[labels == k] = 255
 
         x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
         w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
@@ -772,12 +820,13 @@ def cv_get_box_from_mask(scoremap:np.ndarray, segmap:np.ndarray=None, score_th:f
 
     return np.array(det), labels, mapper
 
-def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=1):
+def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2):
     """
     Arg:
         img: ndarray in (h,w,c) in [0,255]
         boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
             or (polygon point number,2 (x,y))
+        color: (B,G,R) box color
     Return image
     """
     image = image.astype(np.uint8)
