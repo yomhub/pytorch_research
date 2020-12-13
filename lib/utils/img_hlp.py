@@ -440,6 +440,38 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
 
     return dst_mask
 
+def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
+    """
+    Refine box by binary map
+    Args:
+        cv_box: ((n),k,2) polygon box
+        binary_map: (H,W,(1)) binary map
+        points_number: final refined points number, should be even
+            set 0 to disable maximum number limit
+    Return:
+        list of np.ndarray (l,2) refined boxes if cv_box is (n,k,2)
+        else np.ndarray (l,2)
+    """
+    len2=False
+    if(len(cv_box.shape)==2):
+        len2=True
+        cv_box = [cv_box]
+    points_number = (points_number//2)*2
+    refined_boxes = []
+    for box in cv_box:
+        sub_binary,M = cv_crop_image_by_polygon(binary_map,box)
+        MINV = np.linalg.inv(M)
+        contours, hierarchy = cv2.findContours(sub_binary,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+        slc = [o for o in contours if(o.shape[0]>1)]
+        if(len(slc)==0):
+            refined_boxes.append(box)
+            continue
+        cnt = np.concatenate(slc,0)
+        hull = cv2.convexHull(cnt)
+        hull = np_apply_matrix_to_pts(MINV,hull[:,0,:])
+        refined_boxes.append(hull)
+    return refined_boxes[0] if(len2)else refined_boxes
+
 def cv_fill_by_box(img, src_box, dst_box, out_size):
     """
     Fill image from source box region to destination box region
@@ -727,14 +759,17 @@ def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_mi
     w,h = (box_rect[2]-box_rect[0]).astype(np.int16)
     sub_img,M = cv_crop_image_by_bbox(image, box_rect, w_multi, h_multi,w_min, h_min)
     pts = box-box_rect[0]
-    pts = np_box_resize(pts,(h,w),sub_img.shape[:-1],'polyxy')
+    pts = np_box_resize(pts,(h,w),sub_img.shape[:2],'polyxy')
     # Generate polygon mask, 2 for outline, 1 for inside pixels
     blmask = Image.new('L', (sub_img.shape[1],sub_img.shape[0]), 0)
     ImageDraw.Draw(blmask).polygon(pts.reshape(-1).tolist(), outline=1, fill=1)
     blmask = np.array(blmask,dtype=np.bool)
-    if(len(blmask.shape)<len(sub_img.shape)):
-        blmask = np.expand_dims(blmask,-1)
-    sub_img = np.where(blmask,sub_img,0)
+    # if(len(blmask.shape)<len(sub_img.shape)):
+    #     blmask = np.expand_dims(blmask,-1)
+    if(len(sub_img.shape)==3):
+        sub_img[~blmask,:] = 0
+    else:
+        sub_img[~blmask] = 0
 
     if(return_mask):
         return sub_img,M,blmask[:,:,0] if(len(blmask.shape)==3)else blmask
@@ -1399,22 +1434,65 @@ def scipy_histogram_peaks(datas,peaks:int=3,bins:int=256,distance:int=30,min_val
         return slc_values,nd.array((pvalues[peaks[0]]-l_range,pvalues[peaks[0]]+r_range)),histogram,pvalues
 
     dist = slc_values[1:]-slc_values[:-1]
-    
 
-def cv_gen_binary_map(x,mask,boxes):
+def cv_gen_binary_map_by_pred(x,boxes,gtmask=None,predmask=None,visualization:bool=False):
+    """
+    Image binarization for weakly supervised learning
+    Args:
+        x: image (H,W,3)
+        boxes: cv polygon box ((N),k,2) for (x,y)
+        gtmask: np.float32 in [0,1] or np.uint8 mask in 0 or 255
+        predmask: np.float32 in [0,1] or np.uint8 mask in 0 or 255
+    Return:
+        mask: np.uint8 (H,W) in 0 or 255
+        predicted region: np.bool (H,W), Ture for predicted region
+    """
     peak_distance = 20
     max_single_peak_range = 6
     min_peak_spacing = 20
     counter_ignore_th = 5
-    if(isinstance(mask,type(None))):
-        mask = np.zeros(x.shape[:-1],dtype=x.dtype)
+    bin_nums = 256
+
+    if(isinstance(gtmask,type(None))):
+        b_have_gtmask=False
+        gtmask = np.zeros(x.shape[0:2],dtype=np.uint8)
+    else:
+        b_have_gtmask=True
+        if(gtmask.dtype!=np.uint8):
+            gtmask = (gtmask>0).astype(np.uint8)*255
+    if(isinstance(predmask,type(None))):
+        b_have_predmask = False
+        # predmask = np.zeros(x.shape[0:2],dtype=np.uint8)
+    else:
+        b_have_predmask = True
+        if(predmask.dtype!=np.uint8):
+            predmask = (predmask>0).astype(np.uint8)*255
+    if(b_have_gtmask and len(gtmask.shape)==3):gtmask = gtmask[:,:,0]
+    if(b_have_predmask and len(predmask.shape)==3):predmask = predmask[:,:,0]
+    if(b_have_gtmask and gtmask.shape!=x.shape[0:2]):
+        gtmask = cv2.resize(gtmask,(x.shape[1],x.shape[0]))
+    if(b_have_predmask and predmask.shape!=x.shape[0:2]):
+        predmask = cv2.resize(predmask,(x.shape[1],x.shape[0]))
+
     for box in boxes:
-        sub_x,M,sub_x_bg_map = cv_crop_image_by_polygon(x,box,return_mask=True)
-        sub_x_bg_map = ~sub_x_bg_map
-        sub_x_bin = cv2.cvtColor(sub_x, cv2.COLOR_BGR2GRAY)
+        sub_x,M,sub_x_fg_map = cv_crop_image_by_polygon(x,box,return_mask=True)
+        sub_x_bg_map = ~sub_x_fg_map
         box_rect = np_polybox_minrect(box).astype(np.uint16)
-        sub_gt_mask = mask[box_rect[0,1]:box_rect[2,1],box_rect[0,0]:box_rect[2,0],0]
-        sub_gt_mask = np.where(sub_x_bg_map,0,sub_gt_mask)
+        sub_gt_mask = gtmask[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]
+        sub_gt_mask[sub_x_bg_map] = 0
+
+        if(b_have_gtmask):
+            # ensure gt mask is available in this box
+            fg_map = sub_gt_mask[sub_x_fg_map]
+            mean_v = np.mean(fg_map)
+            min_v,max_v = np.min(fg_map),np.max(fg_map)
+            if(max_v!=0 and min_v!=255 and max(mean_v-min_v,max_v-mean_v)>100):
+                # gt mask is available in this box
+                continue
+
+        if(b_have_predmask):
+            sub_pred_mask = predmask[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]
+            sub_pred_mask[sub_x_bg_map] = 0
 
         # the total pixel number outside the polygon
         zero_cnt = np.sum(sub_x_bg_map)
@@ -1423,26 +1501,41 @@ def cv_gen_binary_map(x,mask,boxes):
         dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8),kernel,iterations = 1)
         boundary = np.where(sub_x_bg_map,0,dilate)
 
-        sub_x = np.concatenate((sub_x,np.expand_dims(sub_x_bin,-1)),-1)
-        ch_names = ['R','B','G','Gray']
+        vote_mask = np.zeros(sub_x,dtype=np.uint8)
+        ch_names = ['R','B','G']
         ch_imgs = []
         logs = defaultdict(list)
+
         for chid in range(sub_x.shape[-1]):
             sub_x_ch = sub_x[:,:,chid]
-            counts,pvalues = np.histogram(sub_x_ch,256,[0,256])
-            # shift counter and remove small instances
-            counts_zp = counts
-            # remove outside zeros (to handle the black txt (value == 0) case)
-            counts_zp[0] -= zero_cnt
-            counts_zp = np.where(counts>counter_ignore_th,counts_zp,0)
-            # also consider 
-            peaks, _ = find_peaks(counts_zp,distance=peak_distance)
+            counts,pvalues = np.histogram(sub_x_ch[sub_x_fg_map],bin_nums,[0,256])
+            counts[counts<counter_ignore_th] = 0
+
             # find 2 val range from global peaks
+            peaks, _ = find_peaks(counts,distance=peak_distance)
+
+            if(b_have_predmask):
+                pred_txt_slc = sub_x_ch[sub_pred_mask]
+                pred_txt_cnt,_ = np.histogram(pred_txt_slc,bin_nums,[0,256])
+                idc = np.argmax(pred_txt_cnt)
+                idp,min_dst = peaks[0],abs(peaks[0]-idc)
+                for o in peaks[1:]:
+                    if(abs(o-idc)<min_dst):
+                        min_dst = abs(o-idc)
+                        idp=o
+                max_v = counts[idp]
+                idp_l = idp
+                while(idp_l>0 and counts[idp_l]>=max_v//5 and (idp-idp_l)<=15):
+                    idp_l-=1
+                idp_r = idp
+                while(idp_r<len(counts) and counts[idp_r]>=max_v//5 and (idp_r-idp)<=15):
+                    idp_r+=1
+                low_txt_v,high_txt_v = pvalues[idp_l],pvalues[idp_r]
 
             # top_vals = ((val1 range),(val2 range))
-            if(peaks.shape[0]>=2):
+            elif(peaks.shape[0]>=2):
                 # find top 2 peaks as range
-                pcounts = counts_zp[peaks]
+                pcounts = counts[peaks]
                 k = min(4,pcounts.shape[0])
                 idx = np.argpartition(pcounts, -k)[-k:]
                 # find dobule peak
@@ -1454,43 +1547,42 @@ def cv_gen_binary_map(x,mask,boxes):
 
                 # range of 1st peak
                 for i in range(idx_a,-1,-1):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
                         break
                 low_va = pvalues[i]
-                for i in range(idx_a,counts_zp.shape[0]):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                for i in range(idx_a,counts.shape[0]):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
                         break
                 high_va = pvalues[i]
 
                 # range of 2nd peak
                 for i in range(idx_b,-1,-1):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
                         break
                 low_vb = pvalues[i]
-                for i in range(idx_b,counts_zp.shape[0]):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                for i in range(idx_b,counts.shape[0]):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
                         break
                 high_vb = pvalues[i]
 
                 top_vals = np.array(((low_va,high_va),(low_vb,high_vb)))
             elif(peaks.shape[0]==1):
                 for i in range(peaks[0],-1,-1):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=max_single_peak_range//2):
                         break
                 low_v = pvalues[i]
-                for i in range(peaks[0],counts_zp.shape[0]):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                for i in range(peaks[0],counts.shape[0]):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
                         break
                 high_v = pvalues[i]
-                for i in range(counts_zp.shape[0]):
-                    if(counts_zp[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
+                for i in range(counts.shape[0]):
+                    if(counts[i]==0 or abs(peaks[0]-i)>=(max_single_peak_range-max_single_peak_range//2)):
                         break
                 zp_v = pvalues[i]
                 top_vals = np.array(((0,zp_v),(low_v,high_v)))
 
             # get expect BG value
-            bg_vals = sub_x_ch[boundary>0]
-            bg_counts,bg_pvalues = np.histogram(bg_vals,256,[0,256])
+            bg_counts,bg_pvalues = np.histogram(sub_x_ch[boundary>0],bin_nums,[0,256])
             bg_peaks, _ = find_peaks(bg_counts,distance=peak_distance)
             if(bg_peaks.shape[0]<=2):
                 # only 2 or less peaks
@@ -1512,7 +1604,7 @@ def cv_gen_binary_map(x,mask,boxes):
             sub_x_cany = np.where(dilate,0,sub_x_cany)
             txt_vals = sub_x_ch[sub_x_cany>0]
             # same process as bg
-            txt_counts,txt_pvalues = np.histogram(txt_vals,256,[0,256])
+            txt_counts,txt_pvalues = np.histogram(txt_vals,bin_nums,[0,256])
             txt_counts -= bg_counts
             # txt_pvalues = pvalues
             txt_peaks, _ = find_peaks(txt_counts,distance=peak_distance)
@@ -1542,7 +1634,8 @@ def cv_gen_binary_map(x,mask,boxes):
                 th = 255-th
 
             th_val,sub_x_thed = cv2.threshold(sub_x_ch,th,255,cv2.THRESH_BINARY)
-
+            sub_x_thed[sub_x_bg_map] = 0
+            vote_mask[:,:,chid] = sub_x_thed
             # CC test
             kernel = np.ones((3,3),np.uint8)
             ccimg = sub_x_thed
