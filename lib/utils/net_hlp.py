@@ -40,7 +40,7 @@ def get_final_ch(modules):
     ch=-1
     for m in modules:
         if isinstance(m, nn.Conv2d):
-            ch = max(ch,m.out_channels)
+            ch = m.out_channels
     return ch
 
 class Swish_act(nn.Module):

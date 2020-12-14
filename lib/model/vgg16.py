@@ -3,14 +3,15 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.init as init
+import torch.nn.functional as F
 from torchvision import models
 from torchvision.models.vgg import model_urls
-from lib.utils.net_hlp import init_weights,SoftMaxPool2d
+from lib.utils.net_hlp import init_weights,SoftMaxPool2d,get_final_ch,double_conv
 
 DEF_BASE_NETS = ['vgg11','vgg11_bn','vgg13','vgg13_bn','vgg16','vgg16_bn','vgg19','vgg19_bn']
 
-class VGG(torch.nn.Module):
-    def __init__(self, basenet='vgg16_bn', pretrained=True, padding:bool=True, maxpool:bool=True, loadnet:str=None):
+class VGG(nn.Module):
+    def __init__(self, basenet='vgg16_bn', pretrained=True, padding:bool=True, maxpool:bool=True, loadnet:str=None,**args):
         super(VGG, self).__init__()
         basenet = basenet.lower() if(basenet.lower() in DEF_BASE_NETS)else 'vgg16_bn'
         model_urls[basenet] = model_urls[basenet].replace('https://', 'http://')
@@ -30,7 +31,7 @@ class VGG(torch.nn.Module):
             vgg_pretrained_features = models.vgg19(pretrained=pretrained).features
         else:
             vgg_pretrained_features = models.vgg19_bn(pretrained=pretrained).features
-            
+        self.output_tuple = namedtuple("VggOutputs", ['b0','b1', 'b2', 'b3', 'b4'])
         self.b0 = torch.nn.Sequential()
         self.b1 = torch.nn.Sequential()
         self.b2 = torch.nn.Sequential()
@@ -71,12 +72,51 @@ class VGG(torch.nn.Module):
         b2 = self.b2(b1)
         b3 = self.b3(b2)
         b4 = self.b4(b3)
+        return self.output_tuple(b0, b1, b2, b3, b4)
 
-        vgg_outputs = namedtuple("VggOutputs", ['b0','b1', 'b2', 'b3', 'b4'])
-        out = vgg_outputs(b0, b1, b2, b3, b4)
-        return out
-
-class VGG16(torch.nn.Module):
+class VGGUnet(nn.Module):
+    def __init__(self, include_b0:bool = False, padding:bool=True, **args):
+        super(VGGUnet, self).__init__()
+        self.basenet = VGG(padding=padding,**args)
+        self.include_b0 = bool(include_b0)
+        b4ch = get_final_ch(self.basenet.b4)
+        b3ch = get_final_ch(self.basenet.b3)
+        b2ch = get_final_ch(self.basenet.b2)
+        b1ch = get_final_ch(self.basenet.b1)
+        b0ch = get_final_ch(self.basenet.b0)
+        self.b4b3_b2 = double_conv(b4ch+b3ch,(b4ch+b3ch)//2,b3ch,padding=padding)
+        self.b3b2_b1 = double_conv(b3ch+b2ch,(b3ch+b2ch)//2,b2ch,padding=padding)
+        self.b2b1_b0 = double_conv(b2ch+b1ch,(b2ch+b1ch)//2,b1ch,padding=padding)
+        self.final_ch = b1ch+b0ch if(self.include_b0)else b1ch
+        self.init_weights(self.b4b3_b2.modules())
+        self.init_weights(self.b3b2_b1.modules())
+        self.init_weights(self.b2b1_b0.modules())
+        
+    def forward(self,x):
+        vgg_feat = self.basenet(x)
+        b0, b1, b2, b3, b4 = vgg_feat
+        feat = b4
+        feat = torch.cat((b3,F.interpolate(feat,b3.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b4b3_b2(feat)
+        feat = torch.cat((b2,F.interpolate(feat,b2.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b3b2_b1(feat)
+        feat = torch.cat((b1,F.interpolate(feat,b1.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b2b1_b0(feat)
+        if(self.include_b0):
+            feat = torch.cat((b0,F.interpolate(feat,b0.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        return feat,vgg_feat
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                # init.kaiming_normal_(m.weight, mode='fan_out')
+                init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+                    
+class VGG16(nn.Module):
     def __init__(self, pretrained=True, freeze=True, padding:bool=True, maxpool:bool=True):
         super(VGG16, self).__init__()
         model_urls['vgg16_bn'] = model_urls['vgg16_bn'].replace('https://', 'http://')
@@ -136,7 +176,7 @@ class VGG16(torch.nn.Module):
         out = vgg_outputs(h_fc7, h_relu5_3, h_relu4_3, h_relu3_2, h_relu2_2)
         return out
 
-class VGG16_test(torch.nn.Module):
+class VGG16_test(nn.Module):
     def __init__(self, padding:bool=True, maxpool:bool=True, pretrained=True, freeze:bool=True):
         """
         VGG16 bn

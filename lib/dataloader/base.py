@@ -12,14 +12,31 @@ from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize,np_img_n
 
 def default_collate_fn(batch):
     # batch: list of dict
-    ret = {}
-    for key,value in batch[0].items():
-        if(key.lower() in ['box','text','name'] or 'list' in key.lower()):
-            ret[key]=[d[key] for d in batch]
-        elif(key.lower() in ['box_format'] or 'sig' in key.lower()):
-            ret[key]=value[0] if(isinstance(value,list))else value
-        else:
-            ret[key]=torch.stack([torch.from_numpy(d[key].copy())if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
+    try:
+        ret = {}
+        for key,value in batch[0].items():
+            if(key.lower() in ['box','text','name'] or 'list' in key.lower()):
+                ret[key]=[d[key] for d in batch]
+            elif(key.lower() in ['box_format'] or 'sig' in key.lower()):
+                ret[key]=value[0] if(isinstance(value,list))else value
+            else:
+                ret[key]=torch.stack([torch.from_numpy(d[key].copy())if(isinstance(d[key],np.ndarray))else d[key] for d in batch],0)
+    except Exception as e:
+        msg = str(e)+'\n'
+        itm_list = ["{}:".format(kname) for kname in batch[0]]
+
+        for kname,value in batch[0].items():
+            log = "{}:".format(kname)
+            if(kname=='name'):
+                for o in batch:
+                    log+='\t\t{},'.format(o[kname])
+            elif(isinstance(value,np.ndarray)):
+                for o in batch:
+                    log+='\tshape:{},dtype:{},'.format(o[kname].shape,o[kname].dtype)
+            itm_list.append(log)
+        for o in itm_list:
+            msg+=o+'\n'
+        raise Exception(msg)
     return ret
 
 def default_x_input_function(sample,th_device): 
@@ -119,7 +136,7 @@ class BaseDataset(Dataset):
             elif(not isinstance(self.max_image_size,type(None)) and (org_shape[0]>self.max_image_size[0] or org_shape[1]>self.max_image_size[1])):
                 img = transform.resize(img,(min(org_shape[0],self.max_image_size[0]),min(org_shape[1],self.max_image_size[1])),preserve_range=True)
 
-            sample = {'image': img}
+            sample = {'image': img.astype(np.uint8)}
         elif(self.img_names[idx].split('.')[-1].lower() in self.vdo_type):
             vfile = cv2.VideoCapture(self.img_names[idx])
             sample = {'video': vfile}
@@ -152,7 +169,7 @@ class BaseDataset(Dataset):
             if(len(ypimg.shape)==2):ypimg = np.expand_dims(ypimg,-1)
             if(not isinstance(self.image_size,type(None)) and ypimg.shape[0:2]!=self.image_size):
                 ypimg = transform.resize(ypimg,self.image_size,preserve_range=True)
-            sample['mask'] = ypimg
+            sample['mask'] = ypimg.astype(np.uint8)
 
         if(self.transform!=None):
             sample = self.transform(sample)

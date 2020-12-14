@@ -75,9 +75,11 @@ def np_bottomk_inc(src,k,axis=-1):
 def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     """ Numpy box resize.
         Args: 
-        org_size: tuple, (y,x)
-        new_size: tuple, (y,x) or int for both yx
-        box_format: in 'cxywh','yxyx','xyxy','xywh','polyxy','polyyx'
+            box: (N,4 or 5) for rectangle
+                (k,2),(N,k*2),(N,k,2) for polygon
+            org_size: tuple, (y,x)
+            new_size: tuple, (y,x) or int for both yx
+            box_format: in 'cxywh','yxyx','xyxy','xywh','polyxy','polyyx'
     """
     if(not isinstance(new_size,Iterable)):
         new_size = (int(new_size),int(new_size))

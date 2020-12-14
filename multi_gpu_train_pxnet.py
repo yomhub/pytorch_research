@@ -17,7 +17,7 @@ from torch.multiprocessing import Process
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
-from lib.model.pixel_map import PIX_TXT
+from lib.model.pixel_map import PIX_TXT,VGG_PXMASK,VGGUnet_PXMASK
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
@@ -40,6 +40,7 @@ def train(rank, world_size, args):
     """
     if(rank == 0):
         log = sys.stdout
+    image_size = (640,640)
     random_b = bool(args.random)
     time_start = datetime.now()
     work_dir = DEF_WORK_DIR
@@ -55,7 +56,7 @@ def train(rank, world_size, args):
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
-    model = VGG_PXMASK(pretrained=True).float()
+    model = VGGUnet_PXMASK(pretrained=True,padding=False,include_b0=True).float()
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
@@ -80,7 +81,7 @@ def train(rank, world_size, args):
             os.path.join(DEF_TTT_DIR,'images','train'),
             os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
             os.path.join(DEF_TTT_DIR,'gt_txt','train'),
-            image_size=(1080, 1080),)
+            image_size=image_size,)
         x_input_function = train_dataset.x_input_function
         y_input_function = None
     else:
@@ -88,7 +89,7 @@ def train(rank, world_size, args):
             os.path.join(DEF_IC13_DIR,'images','train'),
             os.path.join(DEF_IC13_DIR,'gt_txt','train'),
             os.path.join(DEF_IC13_DIR,'gt_pixel','train'),
-            image_size=(1080, 1080),)
+            image_size=image_size,)
         x_input_function = train_dataset.x_input_function
         y_input_function = None
 
@@ -220,38 +221,38 @@ def train(rank, world_size, args):
             img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
             logger.add_image('GT', img, epoch,dataformats='HWC')
 
-            b0_mask = feat.b0_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b1_mask = feat.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b2_mask = feat.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b3_mask = feat.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-            b4_mask = feat.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            # b0_mask = feat.b0_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            # b1_mask = feat.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            # b2_mask = feat.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            # b3_mask = feat.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+            # b4_mask = feat.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
 
-            b1_mask = cv2.resize(b1_mask,(b0_mask.shape[1],b0_mask.shape[0]))
-            b2_mask = cv2.resize(b2_mask,(b0_mask.shape[1],b0_mask.shape[0]))
-            b3_mask = cv2.resize(b3_mask,(b0_mask.shape[1],b0_mask.shape[0]))
-            b4_mask = cv2.resize(b4_mask,(b0_mask.shape[1],b0_mask.shape[0]))
-            line = np.ones((b0_mask.shape[0],3,3),dtype=np.uint8)*255
-            img = np.concatenate((
-                cv_heatmap(b0_mask[:,:,0]),line,
-                cv_heatmap(b1_mask[:,:,0]),line,
-                cv_heatmap(b2_mask[:,:,0]),line,
-                cv_heatmap(b3_mask[:,:,0]),line,
-                cv_heatmap(b4_mask[:,:,0])),-2)
-            logger.add_image('B0|B1|B2|B3|B4 mask', img, epoch,dataformats='HWC')
-            img = np.concatenate((
-                cv_heatmap(b0_mask[:,:,1]),line,
-                cv_heatmap(b1_mask[:,:,1]),line,
-                cv_heatmap(b2_mask[:,:,1]),line,
-                cv_heatmap(b3_mask[:,:,1]),line,
-                cv_heatmap(b4_mask[:,:,1])),-2)
-            logger.add_image('B0|B1|B2|B3|B4 edge', img, epoch,dataformats='HWC')
-            img = np.concatenate((
-                cv_heatmap(b0_mask[:,:,2]),line,
-                cv_heatmap(b1_mask[:,:,2]),line,
-                cv_heatmap(b2_mask[:,:,2]),line,
-                cv_heatmap(b3_mask[:,:,2]),line,
-                cv_heatmap(b4_mask[:,:,2])),-2)
-            logger.add_image('B0|B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
+            # b1_mask = cv2.resize(b1_mask,(b0_mask.shape[1],b0_mask.shape[0]))
+            # b2_mask = cv2.resize(b2_mask,(b0_mask.shape[1],b0_mask.shape[0]))
+            # b3_mask = cv2.resize(b3_mask,(b0_mask.shape[1],b0_mask.shape[0]))
+            # b4_mask = cv2.resize(b4_mask,(b0_mask.shape[1],b0_mask.shape[0]))
+            # line = np.ones((b0_mask.shape[0],3,3),dtype=np.uint8)*255
+            # img = np.concatenate((
+            #     cv_heatmap(b0_mask[:,:,0]),line,
+            #     cv_heatmap(b1_mask[:,:,0]),line,
+            #     cv_heatmap(b2_mask[:,:,0]),line,
+            #     cv_heatmap(b3_mask[:,:,0]),line,
+            #     cv_heatmap(b4_mask[:,:,0])),-2)
+            # logger.add_image('B0|B1|B2|B3|B4 mask', img, epoch,dataformats='HWC')
+            # img = np.concatenate((
+            #     cv_heatmap(b0_mask[:,:,1]),line,
+            #     cv_heatmap(b1_mask[:,:,1]),line,
+            #     cv_heatmap(b2_mask[:,:,1]),line,
+            #     cv_heatmap(b3_mask[:,:,1]),line,
+            #     cv_heatmap(b4_mask[:,:,1])),-2)
+            # logger.add_image('B0|B1|B2|B3|B4 edge', img, epoch,dataformats='HWC')
+            # img = np.concatenate((
+            #     cv_heatmap(b0_mask[:,:,2]),line,
+            #     cv_heatmap(b1_mask[:,:,2]),line,
+            #     cv_heatmap(b2_mask[:,:,2]),line,
+            #     cv_heatmap(b3_mask[:,:,2]),line,
+            #     cv_heatmap(b4_mask[:,:,2])),-2)
+            # logger.add_image('B0|B1|B2|B3|B4 region', img, epoch,dataformats='HWC')
             logger.flush()
 
     if(rank == 0):
