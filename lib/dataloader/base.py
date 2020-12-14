@@ -153,11 +153,14 @@ class BaseDataset(Dataset):
                 raise ex
                 
             if(not isinstance(boxs,type(None))):
-                if(self.normalize): boxs = np_box_nor(boxs,org_shape,self.in_box_format)
-                elif(sample['image'].shape[0:2]!=org_shape):
-                    boxs = np_box_resize(boxs,org_shape,sample['image'].shape[0:2],self.in_box_format)
-                if(self.in_box_format!=self.out_box_format):
-                    boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
+                if(boxs.shape[0]==0):
+                    print("Warring: 0-box in {}".format(img_nm))
+                else:
+                    if(self.normalize): boxs = np_box_nor(boxs,org_shape,self.in_box_format)
+                    elif(sample['image'].shape[0:2]!=org_shape):
+                        boxs = np_box_resize(boxs,org_shape,sample['image'].shape[0:2],self.in_box_format)
+                    if(self.in_box_format!=self.out_box_format):
+                        boxs = np_box_transfrom(boxs,self.in_box_format,self.out_box_format)
                 sample['box']= boxs
                 sample['box_format']=self.out_box_format
 

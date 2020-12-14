@@ -99,7 +99,7 @@ def np_box_rescale(box,scale,box_format:str):
     if(box.dtype==np.object):
         tmp = [np_box_rescale(o,scale,box_format) for o in box]
         return np.array(tmp)
-    if(box[:,-(box.shape[-1]//2*2):].max()<=1.0): 
+    if(box.max()<=1.0): 
         return box # no need for normalized coordinate
     if(not isinstance(scale,Iterable)):scale = (scale,scale)
     scale = np.clip(scale,0.001,10)
@@ -223,7 +223,6 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     src_format = src_format.lower()
     dst_format = dst_format.lower()
     if(src_format==dst_format):return box
-    assert(src_format in __DEF_FORMATS and dst_format in __DEF_FORMATS,"src_format:{},dst_format:{}".format(src_format,dst_format))
 
     # convert all to 'cxywh'
     if(src_format=='yxyx'):
@@ -427,13 +426,14 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
     dst_mask -= min_dst
     max_dst = np.max(dst_mask)
     if(max_dst==0.0):
-        return (dst_mask+1.0)*0.5
-    # map to (0,1)
-    dst_mask /= max_dst
-    # map to (1,0)
-    dst_mask = 1.0-dst_mask
-    # map to (v_range,0)
-    dst_mask *= v_range
+        dst_mask = (dst_mask+1.0)*0.5
+    else:
+        # map to (0,1)
+        dst_mask /= max_dst
+        # map to (1,0)
+        dst_mask = 1.0-dst_mask
+        # map to (v_range,0)
+        dst_mask *= v_range
     # apply gaussian
     dst_mask = np.exp(-( (dst_mask)**2 / ( 2.0 * sigma**2 ) ) )
     dst_mask = np.where(blmask==1,dst_mask,0.0)

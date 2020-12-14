@@ -160,7 +160,7 @@ def train(rank, world_size, args):
                 angle = (np.random.random()-0.5)*2*5
                 angle += 90*int(np.random.random()*4)
                 h, w = x.shape[-3:-1]
-                Mr = cv2.getRotationMatrix2D((w-1/2, h-1/2), angle, 1.0)
+                Mr = cv2.getRotationMatrix2D(((w-1)/2, (h-1)/2), angle, 1.0)
                 Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=Mr.dtype)),0)
 
                 scale_x = (np.random.random()*0.2+0.9)
@@ -181,7 +181,8 @@ def train(rank, world_size, args):
                     if(len(mask.shape)==3):
                         mask = np.expand_dims(mask,-1)
                     mask = torch.from_numpy(mask)
-                boxes = np_apply_matrix_to_pts(Mtsr,boxes)
+                tmp = [np_apply_matrix_to_pts(Mtsr,bth_box) if(bth_box.shape[0]>0)else bth_box for bth_box in boxes]
+                boxes = np.array(tmp)
 
             if(b_have_mask):
                 if(mask.shape[-1]==3): mask = mask[:,:,:,0:1]
@@ -211,19 +212,29 @@ def train(rank, world_size, args):
             region_mask_np = []
             region_mask_bin_np = []
             boundary_mask_bin_np = []
-            for batch_boxes in sample['box']:
+            for batch_boxes in boxes:
+                # (h,w)
                 region = []
                 region_bl = []
                 boundary_bl = []
-                for box in batch_boxes:
-                    gas_map,blmap = cv_gen_gaussian_by_poly(box,x.shape[-3:-1],return_mask=True)
-                    blmap = np.where(blmap>0,255,0).astype(np.uint8)
-                    blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
-                    boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
-                    
-                    region.append(gas_map)
-                    region_bl.append(blmap)
-                    boundary_bl.append(boundadrymap)
+                if(batch_boxes.shape[0]==0):
+                    gas_map = np.zeros(x.shape[-3:-1],dtype=np.float32)
+                    blmap = np.zeros(pred.shape[-2:],dtype=np.uint8)
+                    boundadrymap = np.zeros(pred.shape[-2:],dtype=np.uint8)
+                    region_mask_np.append(gas_map)
+                    region_mask_bin_np.append(blmap)
+                    boundary_mask_bin_np.append(boundadrymap)
+                    continue
+                else:
+                    for box in batch_boxes:
+                        gas_map,blmap = cv_gen_gaussian_by_poly(box,x.shape[-3:-1],return_mask=True)
+                        blmap = np.where(blmap>0,255,0).astype(np.uint8)
+                        blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
+                        boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
+        
+                        region.append(gas_map)
+                        region_bl.append(blmap)
+                        boundary_bl.append(boundadrymap)
 
                 region_mask_np.append(sum(region))
                 region_mask_bin_np.append(np.max(np.array(region_bl),axis=0))
@@ -271,28 +282,33 @@ def train(rank, world_size, args):
 
         if(args.save and rank == 0):
             # model_cpu = model.cpu()
-            print("Saving model at {}...".format(args.save+'.pth'))
-            torch.save(model.state_dict(),args.save+'.pth')
+            print("Saving model at {}...".format(args.save))
+            torch.save(model.state_dict(),args.save)
         if(logger and rank==0):
+            log_i,box_num = 0,boxes[0].shape[0]
+            for i,o in enumerate(boxes):
+                if(box_num<o.shape[0]):
+                    log_i=i
+                    box_num = o.shape[0]
             if(DEF_BOOL_TRAIN_MASK):
-                pred_mask = pred[0,DEF_START_CE_CH+0].to('cpu').detach().numpy()
-                pred_edge = pred[0,DEF_START_CE_CH+1].to('cpu').detach().numpy()
-                pred_regi = pred[0,DEF_START_CE_CH+2].to('cpu').detach().numpy()
+                pred_mask = pred[log_i,DEF_START_MASK_CH+0].to('cpu').detach().numpy()
+                pred_edge = pred[log_i,DEF_START_MASK_CH+1].to('cpu').detach().numpy()
+                pred_regi = pred[log_i,DEF_START_MASK_CH+2].to('cpu').detach().numpy()
                 pred_mask = (pred_mask*255.0).astype(np.uint8)
                 pred_edge = (pred_edge*255.0).astype(np.uint8)
                 pred_regi = cv_heatmap(pred_regi)
                 pred_mask = np.stack([pred_mask,pred_mask,pred_mask],-1)
                 pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
-                smx = cv2.resize(x[0].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
+                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
                 smx = cv_mask_image(smx,pred_regi)
                 line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
                 img = np.concatenate((smx,line,pred_mask,line,pred_edge),-2)
                 logger.add_image('Prediction', img, epoch,dataformats='HWC')
                 if(b_have_mask):
-                    gt_mask = np.stack([msak_np[0],msak_np[0],msak_np[0]],-1)
-                    gt_edge = np.stack([edge_np[0],edge_np[0],edge_np[0]],-1)
+                    gt_mask = np.stack([msak_np[log_i],msak_np[log_i],msak_np[log_i]],-1)
+                    gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
                     gt_regi = cv_heatmap(region_mask_np[0,:,:,0])
-                    smx = cv2.resize(x[0].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
+                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
                     smx = cv_mask_image(smx,gt_regi)
                     line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
                     img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
@@ -300,10 +316,10 @@ def train(rank, world_size, args):
 
                 if(DEF_BOOL_LOG_LEVEL_MASK):
                     try:
-                        b1_mask = feat.b1_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-                        b2_mask = feat.b2_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-                        b3_mask = feat.b3_mask[0].to('cpu').permute(1,2,0).detach().numpy()
-                        b4_mask = feat.b4_mask[0].to('cpu').permute(1,2,0).detach().numpy()
+                        b1_mask = feat.b1_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                        b2_mask = feat.b2_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                        b3_mask = feat.b3_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                        b4_mask = feat.b4_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
 
                         b2_mask = cv2.resize(b2_mask,(b1_mask.shape[1],b1_mask.shape[0]))
                         b3_mask = cv2.resize(b3_mask,(b1_mask.shape[1],b1_mask.shape[0]))
@@ -331,7 +347,7 @@ def train(rank, world_size, args):
                         print(str(e))
 
             if(DEF_BOOL_TRAIN_CE):
-                labels = torch.argmax(pred[0:1,DEF_START_CE_CH:],dim=1)
+                labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:],dim=1)
                 labels = labels[0].cpu().detach().numpy()
                 gtlabels = ce_y[0]
                 labels = cv_labelmap(labels)
@@ -339,8 +355,9 @@ def train(rank, world_size, args):
                 if(gtlabels.shape[:-1]!=labels.shape[:-1]):
                     gtlabels = cv2.resize(gtlabels,(labels.shape[1],labels.shape[0]))
                 line = np.ones((labels.shape[0],3,3),dtype=labels.dtype)*255
-                img = np.concatenate((gtlabels,line,labels),-2)
-                logger.add_image('Labels GT|Pred', img, epoch,dataformats='HWC')
+                img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
+                img = np.concatenate((img,line,gtlabels,line,labels),-2)
+                logger.add_image('Labels Image|GT|Pred', img, epoch,dataformats='HWC')
 
             logger.flush()
 
