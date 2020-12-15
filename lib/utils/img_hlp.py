@@ -389,7 +389,7 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
     """
     Generate gaussian map by polygon
     Args:
-        cv_box: (k,2) polygon box 
+        cv_box: ((n),k,2) polygon box 
         img_size: (y,x) output mask shape, if None, use minium box rectangle
         centralize: whether to centralize the polygon
         v_range: MAX distance of gaussian 
@@ -398,21 +398,21 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
         gaussian mask for polygon
         if return_mask, return gaussian_mask,polygon_region_mask
     """
+    if(len(cv_box.shape)==2):
+        cv_box = np.expand_dims(cv_box,0)
     box_rect = np_polybox_minrect(cv_box)
     if(not img_size):
-        x0,y0 = box_rect[0]
-        x1,y1 = box_rect[2]
-        x0 = max(0,int(x0))
-        y0 = max(0,int(y0))
-        img_size = (int(y1-y0),int(x1-x0))
+        img_size = (box_rect[:,2]-box_rect[:,0]).astype(np.uint16).max(axis=0)
     elif(not isinstance(img_size,Iterable)):
         img_size = (int(img_size),int(img_size))
 
-    pts = cv_box-box_rect[0] if(centralize)else cv_box
+    pts = cv_box-box_rect[:,0] if(centralize)else cv_box
 
     # Generate polygon mask, 2 for outline, 1 for inside pixels
     blmask = Image.new('L', (img_size[1],img_size[0]), 0)
-    ImageDraw.Draw(blmask).polygon(pts.reshape(-1).tolist(), outline=2, fill=1)
+    draw = ImageDraw.Draw(blmask)
+    for o in pts:
+        draw.polygon(o.reshape(-1).tolist(), outline=2, fill=1)
     blmask = np.array(blmask)
 
     # use scipy.ndimage.morphology.distance_transform_edt to calculate distence

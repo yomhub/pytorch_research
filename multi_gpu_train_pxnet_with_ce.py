@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.model.pixel_map import *
+from lib.model.siamfc import SiamesePXT,SiameseMask,conv2d_dw_group
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
@@ -57,6 +58,7 @@ def train(rank, world_size, args):
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
+    
     if(args.net=='vgg_pur_cls'):
         model = VGG_PUR_CLS(include_b0=True,padding=False,pretrained=True).float()
         DEF_BOOL_TRAIN_MASK = False
@@ -82,6 +84,12 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_LOG_LEVEL_MASK = True
+        
+    DEF_BOOL_TRACKING = False
+    if(args.tracking=='siamesemask'):
+        model = SiameseMask(basenet=model).float()
+        DEF_BOOL_TRACKING = True
+
     if(args.load and os.path.exists(args.load)):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
@@ -90,6 +98,7 @@ def train(rank, world_size, args):
     DEF_MASK_CH = 3
     DEF_START_CE_CH = DEF_START_MASK_CH+DEF_MASK_CH if(DEF_BOOL_TRAIN_MASK)else 0
     DEF_CE_CH = 3
+    DEF_MAX_TRACKING_BOX_NUMBER = 3
 
     # define loss function (criterion) and optimizer
     criterion = MSE_2d_Loss(pixel_sum=False).cuda(rank)
@@ -214,31 +223,19 @@ def train(rank, world_size, args):
             boundary_mask_bin_np = []
             for batch_boxes in boxes:
                 # (h,w)
-                region = []
-                region_bl = []
-                boundary_bl = []
                 if(batch_boxes.shape[0]==0):
                     gas_map = np.zeros(x.shape[-3:-1],dtype=np.float32)
                     blmap = np.zeros(pred.shape[-2:],dtype=np.uint8)
                     boundadrymap = np.zeros(pred.shape[-2:],dtype=np.uint8)
-                    region_mask_np.append(gas_map)
-                    region_mask_bin_np.append(blmap)
-                    boundary_mask_bin_np.append(boundadrymap)
-                    continue
                 else:
-                    for box in batch_boxes:
-                        gas_map,blmap = cv_gen_gaussian_by_poly(box,x.shape[-3:-1],return_mask=True)
-                        blmap = np.where(blmap>0,255,0).astype(np.uint8)
-                        blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
-                        boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
+                    gas_map,blmap = cv_gen_gaussian_by_poly(batch_boxes,x.shape[-3:-1],return_mask=True)
+                    blmap = np.where(blmap>0,255,0).astype(np.uint8)
+                    blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
+                    boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
         
-                        region.append(gas_map)
-                        region_bl.append(blmap)
-                        boundary_bl.append(boundadrymap)
-
-                region_mask_np.append(sum(region))
-                region_mask_bin_np.append(np.max(np.array(region_bl),axis=0))
-                boundary_mask_bin_np.append(np.max(np.array(boundary_bl),axis=0))
+                region_mask_np.append(gas_map)
+                region_mask_bin_np.append(blmap)
+                boundary_mask_bin_np.append(boundadrymap)
 
             if(DEF_BOOL_TRAIN_MASK):
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
@@ -253,7 +250,43 @@ def train(rank, world_size, args):
                 ce_y[boundary_mask_bin_np>0]=2
                 ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
                 loss_dict['cls_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:], ce_y_torch)
+            if(DEF_BOOL_TRACKING):
+                for batchi in range(batch_size):
+                    batch_boxes = boxes[batchi]
+                    if(batch_boxes.shape[0]==0):
+                        continue
+                    batch_x_np = x[batchi].numpy()
+                    batch_recbox = np_polybox_minrect(batch_boxes,'polyxy')
+                    ws = np.linalg.norm(batch_recbox[:,0]-batch_recbox[:,1],axis=-1)
+                    hs = np.linalg.norm(batch_recbox[:,0]-batch_recbox[:,3],axis=-1)
+                    inds = np.argsort(ws*hs)[::-1]
+                    slc_boxes = batch_boxes[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
+                    slc_recbox = batch_recbox[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
 
+                    for sbxi,sig_sub_box in enumerate(slc_boxes):
+                        sub_img,_,polymask = cv_crop_image_by_polygon(batch_x_np,sig_sub_box,w_min=524,h_min=524,return_mask=True)
+                        sub_img_nor = torch.from_numpy(np.expand_dims(sub_img,0)).float()
+                        sub_img_nor = torch_img_normalize(sub_img_nor).cuda(non_blocking=True).permute(0,3,1,2)
+                        # try:
+                        if(1):
+                            pred_sub,feat_sub = model(sub_img_nor)
+                            feat_obj = (feat_sub.b1,feat_sub.b2,feat_sub.b3,feat_sub.b4)
+                            feat_search = (feat_org.b1[batchi:batchi+1],feat_org.b2[batchi:batchi+1],feat_org.b3[batchi:batchi+1],feat_org.b4[batchi:batchi+1])
+                            # nn.parallel.DistributedDataParallel.module to call orginal class
+                            match_map,feat_m = model.module.match(feat_obj,feat_search)
+                            sub_ch_mask = cv_gen_gaussian_by_poly(
+                                np_box_resize(sig_sub_box,x.shape[1:3],match_map.shape[2:],'polyxy'),
+                                match_map.shape[2:]
+                            )
+                            sub_ch_mask_torch = torch.from_numpy(sub_ch_mask.reshape((1,1,sub_ch_mask.shape[0],sub_ch_mask.shape[1]))).float().cuda(non_blocking=True)
+                            tracking_loss+=criterion(match_map,sub_ch_mask_torch)
+
+                            cnt+=1
+                        # except Exception as e:
+                        #     sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'][sbxi],batch_x_np.shape,sub_img_nor.shape))
+                        #     sys.stdout.write(str(e))
+                        #     sys.stdout.flush()
+                        #     continue
             loss = 0.0
             for keyn,value in loss_dict.items():
                 loss+=value
@@ -307,7 +340,7 @@ def train(rank, world_size, args):
                 if(b_have_mask):
                     gt_mask = np.stack([msak_np[log_i],msak_np[log_i],msak_np[log_i]],-1)
                     gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
-                    gt_regi = cv_heatmap(region_mask_np[0,:,:,0])
+                    gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
                     smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
                     smx = cv_mask_image(smx,gt_regi)
                     line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
@@ -349,7 +382,7 @@ def train(rank, world_size, args):
             if(DEF_BOOL_TRAIN_CE):
                 labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:],dim=1)
                 labels = labels[0].cpu().detach().numpy()
-                gtlabels = ce_y[0]
+                gtlabels = ce_y[log_i]
                 labels = cv_labelmap(labels)
                 gtlabels = cv_labelmap(gtlabels)
                 if(gtlabels.shape[:-1]!=labels.shape[:-1]):

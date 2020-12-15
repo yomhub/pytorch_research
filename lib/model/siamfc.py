@@ -4,7 +4,7 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from lib.model.craft import CRAFT
-from lib.utils.net_hlp import init_weights,Swish_act,double_conv
+from lib.utils.net_hlp import init_weights,Swish_act,double_conv,get_final_ch
 from collections import namedtuple
 
 class SiameseNet(nn.Module):
@@ -122,7 +122,7 @@ class SiameseCRAFT(nn.Module):
         return score,match_map
 
 class SiamesePXT(nn.Module):
-    def __init__(self, base_net, lock_basenet:bool=True):
+    def __init__(self, base_net, lock_basenet:bool=False):
         super(SiamesePXT, self).__init__()
         self.base_net = base_net
         if(lock_basenet):
@@ -175,6 +175,67 @@ class SiamesePXT(nn.Module):
         feat = namedtuple("matchmap", ['sc_b1', 'sc_b2', 'sc_b3', 'sc_b4', 'b1','b2','b3','b4'])
         featout = feat(sc_b1, sc_b2, sc_b3, sc_b4, b1,b2,b3,b4)
         return score,featout
+
+    def init_weights(self,modules):
+        for m in modules:
+            if isinstance(m, nn.Conv2d):
+                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                # m.weight.data.normal_(0, math.sqrt(2. / n))
+                # init.xavier_normal_(m.weight.data)
+                # init.kaiming_normal_(m.weight, mode='fan_out')
+                init.xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+class SiameseMask(nn.Module):
+    def __init__(self, basenet, final_ch:int = 1, padding=False, lock_basenet:bool=False):
+        super(SiameseMask, self).__init__()
+        self.basenet = basenet
+        if(lock_basenet):
+            for i in self.basenet.parameters():
+                i.requires_grad=False
+        b1ch = get_final_ch(self.basenet.basenet.b1)
+        b2ch = get_final_ch(self.basenet.basenet.b2)
+        b3ch = get_final_ch(self.basenet.basenet.b3)
+        b4ch = get_final_ch(self.basenet.basenet.b4)
+        
+        self.b4b3_b2 = double_conv(b4ch+b3ch,(b4ch+b3ch)//2,b3ch,padding=padding)
+        self.b3b2_b1 = double_conv(b3ch+b2ch,(b3ch+b2ch)//2,b2ch,padding=padding)
+        self.b2b1_b0 = double_conv(b2ch+b1ch,(b2ch+b1ch)//2,b1ch,padding=padding)
+        # b4
+        self.map_conv = nn.Sequential(
+            double_conv(b1ch,max(16,b1ch//2),max(16,b1ch//4)),
+            double_conv(max(16,b1ch//4),max(16,b1ch//8),final_ch),
+        )
+        self.init_weights(self.map_conv)
+        self.init_weights(self.b4b3_b2)
+        self.init_weights(self.b3b2_b1)
+        self.init_weights(self.b2b1_b0)
+    def forward(self, x):
+        return self.base_net(x)
+        
+    def match(self,obj,search):
+        obj_b1,obj_b2,obj_b3,obj_b4 = obj
+        s_b1,s_b2,s_b3,s_b4 = search
+        b4 = conv2d_dw_group(s_b4,obj_b4)
+        b3 = conv2d_dw_group(s_b3,obj_b3)
+        b2 = conv2d_dw_group(s_b2,obj_b2)
+        b1 = conv2d_dw_group(s_b1,obj_b1)
+        feat = b4
+        feat = torch.cat((b3,F.interpolate(feat,b3.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b4b3_b2(feat)
+        feat = torch.cat((b2,F.interpolate(feat,b2.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b3b2_b1(feat)
+        feat = torch.cat((b1,F.interpolate(feat,b1.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b2b1_b0(feat)
+        score = self.map_conv(feat)
+        return score,feat
 
     def init_weights(self,modules):
         for m in modules:
