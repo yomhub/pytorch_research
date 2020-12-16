@@ -381,9 +381,9 @@ class VGGUnet_PXMASK(nn.Module):
     def __init__(self,padding:bool=True,**args):
         super(VGGUnet_PXMASK, self).__init__()
         self.basenet = VGGUnet(padding=padding,**args)
-        outch = self.basenet.final_ch
+        self.final_ch = self.basenet.final_ch
         self.final_mask = nn.Sequential(
-            double_conv(outch,128,64,padding=padding),
+            double_conv(self.final_ch,128,64,padding=padding),
             double_conv(64,32,3,padding=padding),
             )
         self.init_weights(self.final_mask.modules())

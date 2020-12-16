@@ -40,7 +40,7 @@ class SiameseNet(nn.Module):
             self.upscale_factor = self.stride
 
     def forward(self, x):
-        pred, feature = self.embedding_net(x)
+        return self.embedding_net(x)
 
     def forward(self, x1, x2):
         """
@@ -92,33 +92,24 @@ class SiameseNet(nn.Module):
         return match_map
 
 class SiameseCRAFT(nn.Module):
-    def __init__(self, base_net, feature_chs, lock_basenet:bool=True):
+    def __init__(self, basenet, feature_chs, lock_basenet:bool=False):
         super(SiameseCRAFT, self).__init__()
-        self.base_net = base_net
+        self.basenet = basenet
         if(lock_basenet):
-            for i in self.base_net.parameters():
+            for i in self.basenet.parameters():
                 i.requires_grad=False
-        self.match_batchnorm = nn.BatchNorm2d(feature_chs)
-        self.search_norm = nn.BatchNorm2d(feature_chs)
-        self.obj_norm = nn.BatchNorm2d(feature_chs)
         self.map_conv = nn.Sequential(
             nn.Conv2d(feature_chs, feature_chs//2, kernel_size=3, padding=0), nn.ReLU(),#Swish_act()
             nn.Conv2d(feature_chs//2, feature_chs//4, kernel_size=3, padding=0), nn.ReLU(),#nn.ReLU
             nn.Conv2d(feature_chs//4, 1, kernel_size=1),
         )
-        # self.final_act_fun = lambda x: torch.exp(-x*x/1.62)
-        self.final_act_fun = lambda x: x
         
         # init_weights(self.map_conv)
     def forward(self, x):
-        return self.base_net(x)
+        return self.basenet(x)
     def match(self,obj,search):
-        search = self.search_norm(search)
-        obj = self.obj_norm(obj)
         match_map = conv2d_dw_group(search,obj)
-        match_map = self.match_batchnorm(match_map)
         score = self.map_conv(match_map)
-        score = self.final_act_fun(score)
         return score,match_map
 
 class SiamesePXT(nn.Module):
