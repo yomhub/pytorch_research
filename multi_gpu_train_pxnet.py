@@ -192,18 +192,10 @@ def train(rank, world_size, args):
                 boxes = [np_apply_matrix_to_pts(Mtsr,bth_box) if(bth_box.shape[0]>0)else bth_box for bth_box in boxes]
                 if(b_have_mask):
                     mask_np = mask.numpy()
-                    mask_np = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask],0).astype(np.uint8)
+                    mask_np = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask_np],0).astype(np.uint8)
                     if(len(mask_np.shape)==3):
                         mask_np = np.expand_dims(mask_np,-1)
                     mask = torch.from_numpy(mask_np)
-                    if(args.bxrefine):
-                        refine_boxes = []
-                        for batchi in range(x.shape[0]):
-                            batchbox = boxes[batchi]
-                            batchmask = mask_np[batchi,:,:,0]
-                            refine_boxes.append(cv_refine_box_by_binary_map(batchbox,batchmask))
-                        boxes = refine_boxes
-                # boxes = np.array(tmp)
 
             if(b_have_mask):
                 if(mask.shape[-1]==3): mask = mask[:,:,:,0:1]
@@ -233,13 +225,18 @@ def train(rank, world_size, args):
             region_mask_np = []
             region_mask_bin_np = []
             boundary_mask_bin_np = []
-            for batch_boxes in boxes:
+            for batchi,batch_boxes in enumerate(boxes):
                 # (h,w)
                 if(batch_boxes.shape[0]==0):
                     gas_map = np.zeros(x.shape[-3:-1],dtype=np.float32)
                     blmap = np.zeros(pred.shape[-2:],dtype=np.uint8)
                     boundadrymap = np.zeros(pred.shape[-2:],dtype=np.uint8)
                 else:
+                    if(b_have_mask and args.bxrefine):
+                        batch_mask = mask_np[batchi]
+                        if(len(batch_mask.shape)==3):
+                            batch_mask=batch_mask[:,:,0]
+                        batch_boxes = cv_refine_box_by_binary_map(batch_boxes,batch_mask)
                     gas_map,blmap = cv_gen_gaussian_by_poly(batch_boxes,x.shape[-3:-1],return_mask=True)
                     blmap = np.where(blmap>0,255,0).astype(np.uint8)
                     blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
@@ -250,6 +247,7 @@ def train(rank, world_size, args):
                 boundary_mask_bin_np.append(boundadrymap)
 
             if(DEF_BOOL_TRAIN_MASK):
+
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
                 region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
                 loss_dict['region_loss'] = criterion(pred[:,DEF_START_MASK_CH+2], region_mask)

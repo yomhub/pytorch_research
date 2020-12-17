@@ -480,7 +480,7 @@ def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
             refined_boxes.append(box)
             continue
         refined_boxes.append(hull)
-    return refined_boxes[0] if(len2)else refined_boxes
+    return refined_boxes[0] if(len2)else np.array(refined_boxes)
 
 def cv_fill_by_box(img, src_box, dst_box, out_size):
     """
@@ -744,7 +744,7 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
     #     M = cv2.getPerspectiveTransform(np.float32(box),
     #                                     np.float32(np.array([[width, 0], [width, height], [0, height], [0, 0]])))
     # else:
-    M = cv2.getPerspectiveTransform(np.float32(box_rect),
+    M = cv2.getPerspectiveTransform(np.float32(box),
                                     np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
 
     warped = cv2.warpPerspective(image, M, (width, height))
