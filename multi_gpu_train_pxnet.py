@@ -188,13 +188,21 @@ def train(rank, world_size, args):
                 image = x.numpy()
                 image = np.stack([cv2.warpAffine(bt_image, Mtsr[:-1], (w, h)) for bt_image in image],0).astype(np.uint8)
                 x = torch.from_numpy(image)
-                if(b_have_mask):
-                    mask = mask.numpy()
-                    mask = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask],0).astype(np.uint8)
-                    if(len(mask.shape)==3):
-                        mask = np.expand_dims(mask,-1)
-                    mask = torch.from_numpy(mask)
+
                 boxes = [np_apply_matrix_to_pts(Mtsr,bth_box) if(bth_box.shape[0]>0)else bth_box for bth_box in boxes]
+                if(b_have_mask):
+                    mask_np = mask.numpy()
+                    mask_np = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask],0).astype(np.uint8)
+                    if(len(mask_np.shape)==3):
+                        mask_np = np.expand_dims(mask_np,-1)
+                    mask = torch.from_numpy(mask_np)
+                    if(args.bxrefine):
+                        refine_boxes = []
+                        for batchi in range(x.shape[0]):
+                            batchbox = boxes[batchi]
+                            batchmask = mask_np[batchi,:,:,0]
+                            refine_boxes.append(cv_refine_box_by_binary_map(batchbox,batchmask))
+                        boxes = refine_boxes
                 # boxes = np.array(tmp)
 
             if(b_have_mask):
@@ -256,7 +264,7 @@ def train(rank, world_size, args):
                 loss_dict['cls_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:], ce_y_torch)
             if(DEF_BOOL_TRACKING):
                 tracking_loss_lst = []
-                for batchi in range(batch_size):
+                for batchi in range(x.shape[0]):
                     batch_boxes = boxes[batchi]
                     if(batch_boxes.shape[0]==0):
                         continue
@@ -269,13 +277,24 @@ def train(rank, world_size, args):
                     slc_recbox = batch_recbox[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
                     tracking_loss = 0.0
                     cnt=0
+                    
                     for sbxi,sig_sub_box in enumerate(slc_boxes):
-                        sub_img,_,polymask = cv_crop_image_by_polygon(batch_x_np,sig_sub_box,w_min=524,h_min=524,return_mask=True)
-                        sub_img_nor = torch.from_numpy(np.expand_dims(sub_img,0)).float()
+                        w_min,h_min=230,230
+                        w_max,h_max=480,480
+                        sub_img,_,polymask = cv_crop_image_by_polygon(batch_x_np,sig_sub_box,return_mask=True)
+                        h_sub,w_sub = sub_img.shape[:-1]
+                        if(sub_img.shape[0]<h_min or sub_img.shape[1]<w_min or sub_img.shape[1]>w_max or sub_img.shape[0]>h_max):
+                            sub_img_nor = cv2.resize(sub_img,
+                                (min(w_max,max(w_min,sub_img.shape[1])),min(h_max,max(h_min,sub_img.shape[0]))))
+                        else:
+                            sub_img_nor = sub_img
+
+                        sub_img_nor = torch.from_numpy(np.expand_dims(sub_img_nor,0)).float()
                         sub_img_nor = torch_img_normalize(sub_img_nor).cuda(non_blocking=True).permute(0,3,1,2)
-                        # try:
-                        if(1):
+                        try:
+                        # if(1):
                             pred_sub,feat_sub = model(sub_img_nor)
+                            feat_sub = F.interpolate(feat_sub,size=(h_sub//2,w_sub//2), mode='bilinear', align_corners=False)
                             # feat_obj = (feat_sub.b1,feat_sub.b2,feat_sub.b3,feat_sub.b4)
                             # feat_search = (feat.b1[batchi:batchi+1],feat.b2[batchi:batchi+1],feat.b3[batchi:batchi+1],feat.b4[batchi:batchi+1])
                             feat_search = feat[batchi:batchi+1]
@@ -289,14 +308,15 @@ def train(rank, world_size, args):
                             tracking_loss+=criterion(match_map,sub_ch_mask_torch)
 
                             cnt+=1
-                        # except Exception as e:
-                        #     sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'][sbxi],batch_x_np.shape,sub_img_nor.shape))
-                        #     sys.stdout.write(str(e))
-                        #     sys.stdout.flush()
-                        #     continue
+                        except Exception as e:
+                            sys.stdout.write("Err at {}, X.shape: {}, sub_img shape {}:\n".format(sample['name'][sbxi],batch_x_np.shape,sub_img_nor.shape))
+                            sys.stdout.write("\t{}\n".format(str(e)))
+                            sys.stdout.flush()
+                            continue
                     if(cnt>0):
                         tracking_loss_lst.append(tracking_loss/cnt)
-                loss_dict['tracking']=torch.mean(torch.stack(tracking_loss_lst))
+                if(tracking_loss_lst):
+                    loss_dict['tracking']=torch.mean(torch.stack(tracking_loss_lst))
             loss = 0.0
             for keyn,value in loss_dict.items():
                 loss+=value
@@ -344,7 +364,7 @@ def train(rank, world_size, args):
                 pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
                 smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
                 smx = cv_mask_image(smx,pred_regi)
-                line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
+                line = np.ones((smx.shape[0],3,3),dtype=np.uint8)*255
                 img = np.concatenate((smx,line,pred_mask,line,pred_edge),-2)
                 logger.add_image('Prediction', img, epoch,dataformats='HWC')
                 if(b_have_mask):
@@ -353,7 +373,7 @@ def train(rank, world_size, args):
                     gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
                     smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
                     smx = cv_mask_image(smx,gt_regi)
-                    line = np.ones((smx.shape[0],3,3),dtype=smx.dtype)*255
+                    line = np.ones((smx.shape[0],3,3),dtype=np.uint8)*255
                     img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
                     logger.add_image('GT', img, epoch,dataformats='HWC')
 
@@ -397,19 +417,19 @@ def train(rank, world_size, args):
                 gtlabels = cv_labelmap(gtlabels)
                 if(gtlabels.shape[:-1]!=labels.shape[:-1]):
                     gtlabels = cv2.resize(gtlabels,(labels.shape[1],labels.shape[0]))
-                line = np.ones((labels.shape[0],3,3),dtype=labels.dtype)*255
+                line = np.ones((labels.shape[0],3,3),dtype=np.uint8)*255
                 img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
                 img = np.concatenate((img,line,gtlabels,line,labels),-2)
                 logger.add_image('Labels Image|GT|Pred', img, epoch,dataformats='HWC')
             if(DEF_BOOL_TRACKING):
                 img = batch_x_np
                 img[:sub_img.shape[0],:sub_img.shape[1]] = sub_img
-                match_map_np = match_map[0,0].to('cpu').detach()
+                match_map_np = match_map[0,0].to('cpu').detach().numpy()
                 track_gt = cv_mask_image(img,cv_heatmap(sub_ch_mask))
                 track_pred = cv_mask_image(img,cv_heatmap(match_map_np))
                 if(track_pred.shape!=track_gt.shape):
                     track_gt = cv2.resize(track_gt,(track_pred.shape[1],track_pred.shape[0]))
-                line = np.ones((track_pred.shape[0],3,3),dtype=labels.dtype)*255
+                line = np.ones((track_pred.shape[0],3,3),dtype=np.uint8)*255
                 img = np.concatenate((track_gt,line,track_pred),-2)
                 logger.add_image('Tracking GT|Pred', img, epoch,dataformats='HWC')
                 

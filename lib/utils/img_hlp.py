@@ -462,6 +462,9 @@ def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
     refined_boxes = []
     for box in cv_box:
         sub_binary,M = cv_crop_image_by_polygon(binary_map,box)
+        if(np.max(sub_binary)==0):
+            refined_boxes.append(box)
+            continue
         MINV = np.linalg.inv(M)
         contours, hierarchy = cv2.findContours(sub_binary,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
         slc = [o for o in contours if(o.shape[0]>1)]
@@ -471,6 +474,11 @@ def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
         cnt = np.concatenate(slc,0)
         hull = cv2.convexHull(cnt)
         hull = np_apply_matrix_to_pts(MINV,hull[:,0,:])
+        poly_hull = Polygon(hull)
+        poly_box = Polygon(box)
+        if(poly_hull.area>(1.1*poly_box.area)):
+            refined_boxes.append(box)
+            continue
         refined_boxes.append(hull)
     return refined_boxes[0] if(len2)else refined_boxes
 
@@ -710,10 +718,10 @@ def cv_cvbox2box(cv_4p_boxes,box_format:str):
 
 def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:int=None, h_min:int=None):
     """
-    Crop image by box.
+    Crop image by rectangle box.
     Args:
         image: numpy with shape (h,w,(3 or 1))
-        box: shape (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
+        box: rectangle box (4,2) with ((x0,y0),(x1,y1),(x2,y2),(x3,y3))
         w_multi: final width will be k*w_multi
         h_multi: final height will be k*h_multi
         w_min: final width will greater than w_min
@@ -723,8 +731,7 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
         M: mapping matrix
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
-    w = (int)(np.linalg.norm(box[0] - box[1]))
-    h = (int)(np.linalg.norm(box[0] - box[3]))
+    w,h = (box[2]-box[0]).astype(np.int16)
     if(w_min!=None):
         w = max(w,w_min)
     if(h_min!=None):
@@ -737,7 +744,7 @@ def cv_crop_image_by_bbox(image, box, w_multi:int=None, h_multi:int=None,w_min:i
     #     M = cv2.getPerspectiveTransform(np.float32(box),
     #                                     np.float32(np.array([[width, 0], [width, height], [0, height], [0, 0]])))
     # else:
-    M = cv2.getPerspectiveTransform(np.float32(box),
+    M = cv2.getPerspectiveTransform(np.float32(box_rect),
                                     np.float32(np.array([[0, 0], [width, 0], [width, height], [0, height]])))
 
     warped = cv2.warpPerspective(image, M, (width, height))
