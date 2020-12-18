@@ -473,6 +473,9 @@ def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
             continue
         cnt = np.concatenate(slc,0)
         hull = cv2.convexHull(cnt)
+        if(hull.shape[0]<4):
+            refined_boxes.append(box)
+            continue
         hull = np_apply_matrix_to_pts(MINV,hull[:,0,:])
         poly_hull = Polygon(hull)
         poly_box = Polygon(box)

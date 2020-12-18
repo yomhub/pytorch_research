@@ -14,10 +14,18 @@ def double_conv(in_ch, mid_ch, out_ch, padding=True):
         nn.ReLU(inplace=True)
     )
         
-def init_weights(modules):
+def init_weights(modules,method:str = 'xavier_uniform'):
+    method = method.lower()
     for m in modules:
         if isinstance(m, nn.Conv2d):
-            init.xavier_uniform_(m.weight.data)
+            if('xavier_uniform' in method):
+                init.xavier_uniform_(m.weight.data)
+            elif('xavier_normal' in method):
+                init.xavier_normal_(m.weight.data)
+            elif('kaiming_normal' in method):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+            else:
+                m.weight.data.normal_(0, math.sqrt(2. / n))
             if m.bias is not None:
                 m.bias.data.zero_()
         elif isinstance(m, nn.BatchNorm2d):
@@ -38,9 +46,9 @@ def adjust_learning_rate(optimizer, gamma):
 
 def get_final_ch(modules):
     ch=-1
-    for m in modules:
-        if isinstance(m, nn.Conv2d):
-            ch = m.out_channels
+    for bname in modules.state_dict():
+        if('conv' in bname and 'weight' in bname):
+            ch = modules.state_dict()[bname].shape[0]
     return ch
 
 class Swish_act(nn.Module):

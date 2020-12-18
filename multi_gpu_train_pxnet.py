@@ -79,6 +79,11 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = False
         DEF_BOOL_LOG_LEVEL_MASK = True
+    elif(args.net=='pix_unet_mask'):
+        PIX_Unet_MASK(min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        DEF_BOOL_TRAIN_MASK = True
+        DEF_BOOL_TRAIN_CE = True
+        DEF_BOOL_LOG_LEVEL_MASK = False
     else:
         model = PIX_MASK().float()
         DEF_BOOL_TRAIN_MASK = True

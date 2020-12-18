@@ -75,7 +75,8 @@ class VGG(nn.Module):
         return self.output_tuple(b0, b1, b2, b3, b4)
 
 class VGGUnet(nn.Module):
-    def __init__(self, include_b0:bool = False, padding:bool=True, **args):
+    def __init__(self, include_b0:bool = False, padding:bool=True, 
+        init_method:str='xavier_uniform',**args):
         super(VGGUnet, self).__init__()
         self.basenet = VGG(padding=padding,**args)
         self.include_b0 = bool(include_b0)
@@ -88,9 +89,9 @@ class VGGUnet(nn.Module):
         self.b3b2_b1 = double_conv(b3ch+b2ch,(b3ch+b2ch)//2,b2ch,padding=padding)
         self.b2b1_b0 = double_conv(b2ch+b1ch,(b2ch+b1ch)//2,b1ch,padding=padding)
         self.final_ch = b1ch+b0ch if(self.include_b0)else b1ch
-        self.init_weights(self.b4b3_b2.modules())
-        self.init_weights(self.b3b2_b1.modules())
-        self.init_weights(self.b2b1_b0.modules())
+        init_weights(self.b4b3_b2.modules(),init_method)
+        init_weights(self.b3b2_b1.modules(),init_method)
+        init_weights(self.b2b1_b0.modules(),init_method)
         
     def forward(self,x):
         vgg_feat = self.basenet(x)
@@ -105,16 +106,6 @@ class VGGUnet(nn.Module):
         if(self.include_b0):
             feat = torch.cat((b0,F.interpolate(feat,b0.shape[2:], mode='bilinear', align_corners=False)),dim=1)
         return feat,vgg_feat
-    def init_weights(self,modules):
-        for m in modules:
-            if isinstance(m, nn.Conv2d):
-                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                # m.weight.data.normal_(0, math.sqrt(2. / n))
-                # init.xavier_normal_(m.weight.data)
-                # init.kaiming_normal_(m.weight, mode='fan_out')
-                init.xavier_uniform_(m.weight.data)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
                     
 class VGG16(nn.Module):
     def __init__(self, pretrained=True, freeze=True, padding:bool=True, maxpool:bool=True):

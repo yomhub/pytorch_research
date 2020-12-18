@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -5,8 +6,25 @@ import torch.nn.functional as F
 from torchvision import models
 import numpy as np
 import math
-from collections import namedtuple
+from lib.utils.net_hlp import get_final_ch,init_weights
+from collections import namedtuple,Iterable
 
+DEF_INTERVERTED_RESIDUAL_SETTING = [
+    # t, c, n, s
+    # initial doun sample
+    # 1/2
+    [1, 16, 1, 1], # block_
+    [6, 24, 2, 2], # block_1
+    # 1/4
+    [6, 32, 3, 2], # block_2
+    # 1/8
+    [6, 64, 4, 2], # block_3
+    # 1/16
+    [6, 96, 3, 1], # block_
+    [6, 160, 3, 2], # block_4
+    # 1/32
+    [6, 320, 1, 1], # block_6
+    ]
 
 def double_conv(in_ch, mid_ch, out_ch, padding=True):
     return nn.Sequential(
@@ -106,16 +124,7 @@ class InvertedResidual(nn.Module):
 
 class MobileNetV2(nn.Module):
     def __init__(self, width_mult=1., 
-        interverted_residual_setting = [
-            # t, c, n, s
-            [1, 16, 1, 1],
-            [6, 24, 2, 2],
-            [6, 32, 3, 2],
-            [6, 64, 4, 2],
-            [6, 96, 3, 1],
-            [6, 160, 3, 2],
-            [6, 320, 1, 1],
-        ],
+        interverted_residual_setting = DEF_INTERVERTED_RESIDUAL_SETTING,
         have_fc=False, n_class=1000,padding=True):
         super(MobileNetV2, self).__init__()
         block = InvertedResidual
@@ -176,149 +185,81 @@ class MobileNetV2(nn.Module):
 
 class MobNetBlk(nn.Module):
     def __init__(self, width_mult=1.,pretrained=False,
-        inverted_residual_setting = [
-            # t, c, n, s
-            # initial doun sample
-            # 1/2
-            [1, 16, 1, 1], # block_
-            [6, 24, 2, 2], # block_1
-            # 1/4
-            [6, 32, 3, 2], # block_2
-            # 1/8
-            [6, 64, 4, 2], # block_3
-            # 1/16
-            [6, 96, 3, 1], # block_
-            [6, 160, 3, 2], # block_4
-            # 1/32
-            [6, 320, 1, 1], # block_6
-            ],
+        inverted_residual_setting = DEF_INTERVERTED_RESIDUAL_SETTING,
+        **args
         ):
         super(MobNetBlk, self).__init__()
-        mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
-            pretrained=pretrained,
+        mob = models.mobilenet_v2(
+            pretrained=bool(pretrained),
             width_mult=width_mult,
             inverted_residual_setting=inverted_residual_setting)
 
+        # blocks
+        self.b0=torch.nn.Sequential()
+        self.b1=torch.nn.Sequential()
+        self.b2=torch.nn.Sequential()
+        self.b3=torch.nn.Sequential()
+        self.b4=torch.nn.Sequential()
+        self.b0.add_module(str(0)+mob.features[0].__class__.__name__,mob.features[0])
+        blk_lst = [self.b0,self.b1,self.b2,self.b3,self.b4]
+        blk_idx,feat_idx=0,1
+        for t, c, n, s in inverted_residual_setting:
+            if(s>1):
+                blk_idx = min(blk_idx+1,len(blk_lst)-1)
+            for i in range(n):
+                blk_lst[blk_idx].add_module(
+                    str(feat_idx+i)+mob.features[feat_idx+i].__class__.__name__,mob.features[feat_idx+i])
+            feat_idx+=n
+
+        self.out_tuple = namedtuple("MobNetBlk", ['b{}'.format(i) for i in range(len(blk_lst))])
+
+    def forward(self,x):
+        b0 = self.b0(x)
+        b1 = self.b1(b0)
+        b2 = self.b2(b1)
+        b3 = self.b3(b2)
+        b4 = self.b4(b3)
+        return self.out_tuple(b0,b1,b2,b3,b4)
+
 class MobUNet(nn.Module):
-    def __init__(self, width_mult=1.,pretrained=False,
-        inverted_residual_setting = [
-            # t, c, n, s
-            # initial doun sample
-            # 1/2
-            [1, 16, 1, 1], # block_
-            [6, 24, 2, 2], # block_1
-            # 1/4
-            [6, 32, 3, 2], # block_2
-            # 1/8
-            [6, 64, 4, 2], # block_3
-            # 1/16
-            [6, 96, 3, 1], # block_
-            [6, 160, 3, 2], # block_4
-            # 1/32
-            [6, 320, 1, 1], # block_6
-            ],
-        padding=True,
-        ):
+    def __init__(self,min_upc_ch:int=128,init_method:str='xavier_uniform',**args):
         super(MobUNet, self).__init__()
 
-        self.padding = bool(padding)
-        if(not self.padding):
-            # minimum training input: 524-524, minium test input: 491 x 491
-            mob = MobileNetV2(interverted_residual_setting=inverted_residual_setting,padding=False)
-        else:
-            mob = models.mobilenet_v2(pretrained=True) if(pretrained)else models.mobilenet_v2(
-                pretrained=pretrained,
-                width_mult=width_mult,
-                inverted_residual_setting=inverted_residual_setting)
-        # blocks
-        self._b1=torch.nn.Sequential()
-        self._b2=torch.nn.Sequential()
-        self._b3=torch.nn.Sequential()
-        self._b4=torch.nn.Sequential()
-
-        self._b0=mob.features[0]
-        # self.init_weights(self._b0.modules())
-        # self._b0=ConvBNReLU(3,32,norm_layer = nn.BatchNorm2d)
-
-        # copy the parameters to block
-        k,l=1,3
-        for i in range(k,k+l):
-            # ConvBNReLU, [1, 16, 1, 1],[6, 24, 2, 2]
-            self._b1.add_module(str(i)+mob.features[i].__class__.__name__,mob.features[i])
-        k+=l
-        # 1/2
-
-        l=3
-        for i in range(k,k+l):
-            # [6, 32, 3, 2],
-            self._b2.add_module(str(i)+mob.features[i].__class__.__name__,mob.features[i])
-        k+=l
-        # 1/4
+        self.basenet = MobNetBlk(**args)
         
-        l=7
-        for i in range(k,k+l):
-            # [6, 64, 4, 2],[6, 96, 3, 1]
-            self._b3.add_module(str(i)+mob.features[i].__class__.__name__,mob.features[i])
-        k+=l
-        # 1/8
+        b0ch = get_final_ch(self.basenet.b0)
+        b1ch = get_final_ch(self.basenet.b1)
+        b2ch = get_final_ch(self.basenet.b2)
+        b3ch = get_final_ch(self.basenet.b3)
+        b4ch = get_final_ch(self.basenet.b4)
+        if(min_upc_ch==None):
+            min_upc_ch=0
+        b4b3_b3_out = max(min_upc_ch,b3ch)
+        b3b2_b2_out = max(min_upc_ch,b2ch)
+        b2b1_b1_out = max(min_upc_ch,b1ch)
+        b1b0_b0_out = max(min_upc_ch,b0ch)
+        b4b3_b3_ct = max(b4b3_b3_out,(b4ch+b3ch)//2)
+        b3b2_b2_ct = max(b3b2_b2_out,(b4b3_b3_out+b2ch)//2)
+        b2b1_b1_ct = max(b2b1_b1_out,(b3b2_b2_out+b1ch)//2)
+        b1b0_b0_ct = max(b1b0_b0_out,(b2b1_b1_out+b0ch)//2)
+        self.b4b3_b3 = double_conv(b4ch+b3ch,b4b3_b3_ct,b4b3_b3_out,padding=True)
+        self.b3b2_b2 = double_conv(b4b3_b3_out+b2ch,b3b2_b2_ct,b3b2_b2_out,padding=True)
+        self.b2b1_b1 = double_conv(b3b2_b2_out+b1ch,b2b1_b1_ct,b2b1_b1_out,padding=True)
+        self.b1b0_b0 = double_conv(b2b1_b1_out+b0ch,b1b0_b0_ct,b1b0_b0_out,padding=True)
 
-        l=4
-        for i in range(k,k+l):
-            # [6, 160, 3, 2],[6, 320, 1, 1],ConvBNReLU
-            self._b4.add_module(str(i)+mob.features[i].__class__.__name__,mob.features[i])
-        # 1/16
-        k+=l
-
-        out_chs = [make_divisible(c * width_mult)if(t > 1)else c for t, c, n, s in inverted_residual_setting]
-
-        upchs=out_chs[-1]
-        # out_chs[-1],[-3]
-        self._upc1 = double_conv(upchs+out_chs[-3],(upchs+out_chs[-3])//2,(upchs+out_chs[-3])//2,self.padding)
-        upchs = (upchs+out_chs[-3])//2 #208
-        # out_chs[-3],[-5]
-        self._upc2 = double_conv(upchs+out_chs[-5],(upchs+out_chs[-5])//2,(upchs+out_chs[-5])//2,self.padding)
-        upchs = (upchs+out_chs[-5])//2 #120
-        # out_chs[-5]+[-6]
-        self._upc3 = double_conv(upchs+out_chs[-6],(upchs+out_chs[-6])//2,(upchs+out_chs[-6])//2,self.padding)
-        upchs = (upchs+out_chs[-6])//2 #72
-        # out_chs[-6]+make_divisible(32 * width_mult)
-        inch=make_divisible(32 * width_mult)
-        self._upc4 = double_conv(upchs+inch,(upchs+inch)//2,(upchs+inch)//2,self.padding)
-        upchs = (upchs+inch)//2 #52
-        self.final_predict_ch = upchs
-
-        self.init_weights(self._upc1.modules())
-        self.init_weights(self._upc2.modules())
-        self.init_weights(self._upc3.modules())
-        self.init_weights(self._upc4.modules())
-
-    def init_weights(self,modules):
-        for m in modules:
-            if isinstance(m, nn.Conv2d):
-                # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                # m.weight.data.normal_(0, math.sqrt(2. / n))
-                # init.xavier_normal_(m.weight.data)
-                # init.kaiming_normal_(m.weight, mode='fan_out')
-                init.xavier_uniform_(m.weight.data)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.zeros_(m.bias)
+        self.out_channels = b1b0_b0_out
+        self.out_tuple = namedtuple("MobUNet", ['upb0','upb1','upb2','upb3','b0','b1','b2','b3','b4'])
+        
+        init_weights(self.b4b3_b3.modules(),init_method)
+        init_weights(self.b3b2_b2.modules(),init_method)
+        init_weights(self.b2b1_b1.modules(),init_method)
+        init_weights(self.b1b0_b0.modules(),init_method)
         
     def forward(self,x):
-        b0=self._b0(x)
-        b1=self._b1(b0)
-        b2=self._b2(b1)
-        b3=self._b3(b2)
-        b4=self._b4(b3)
-        upc1 = self._upc1(torch.cat((F.interpolate(b4, size=b3.size()[2:], mode='bilinear', align_corners=False),b3),dim=1))
-        upc2 = self._upc2(torch.cat((F.interpolate(upc1, size=b2.size()[2:], mode='bilinear', align_corners=False),b2),dim=1))
-        upc3 = self._upc3(torch.cat((F.interpolate(upc2, size=b1.size()[2:], mode='bilinear', align_corners=False),b1),dim=1))
-        upc4 = self._upc4(torch.cat((F.interpolate(upc3, size=b0.size()[2:], mode='bilinear', align_corners=False),b0),dim=1))
-        # feat = namedtuple("MobilenetOuts", ['upc4','upc3','upc2','upc1','b4', 'b3', 'b2', 'b1'])
-        # feat(upc4,upc3,upc2,upc1,b4,b3,b2,b1)
-        return upc4
+        feat = self.basenet(x)
+        upb3 = self.b4b3_b3(torch.cat((F.interpolate(feat.b4, size=feat.b3.size()[2:], mode='bilinear', align_corners=False),feat.b3),dim=1))
+        upb2 = self.b3b2_b2(torch.cat((F.interpolate(upb3, size=feat.b2.size()[2:], mode='bilinear', align_corners=False),feat.b2),dim=1))
+        upb1 = self.b2b1_b1(torch.cat((F.interpolate(upb2, size=feat.b1.size()[2:], mode='bilinear', align_corners=False),feat.b1),dim=1))
+        upb0 = self.b1b0_b0(torch.cat((F.interpolate(upb1, size=feat.b0.size()[2:], mode='bilinear', align_corners=False),feat.b0),dim=1))
+
+        return self.out_tuple(upb0,upb1,upb2,upb3,feat.b0,feat.b1,feat.b2,feat.b3,feat.b4)
