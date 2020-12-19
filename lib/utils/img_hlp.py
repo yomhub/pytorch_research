@@ -641,13 +641,15 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
         precision_rate
         recall_rate
     """
+    id_list = [None]*pred.shape[0]
+    if(gt.shape[0]==0):
+        return id_list,0,0
     if(len(pred.shape)==2):
         pred = np.expand_dims(pred,0)
     if(len(gt.shape)==2):
         gt = np.expand_dims(gt,0)
     T = pred.shape[0]
     Tdsh = pred.shape[0]
-    id_list = [None for i in range(pred.shape[0])]
     if(not isinstance(bg,type(None))):
         if(len(bg.shape)==2):
             bg = np.expand_dims(bg,0)
@@ -1004,8 +1006,8 @@ def cv_labelmap(label_map,label_num:int=None,clr = cv2.COLORMAP_JET):
         colored_label_map: (h,w,3) in RBG
     """
     if(not label_num):
-        label_num = int(np.max(label_map))
-    img = (label_map/label_num*255).astype(np.uint8)
+        label_num = int(np.max(label_map))+1
+    img = (label_map*255/label_num).astype(np.uint8)
     if(len(img.shape)==3 and img.shape[-1]!=1):
         img = np.stack([cv2.applyColorMap(o, clr) for o in img],0)
     else:

@@ -32,6 +32,11 @@ from lib.utils.log_hlp import *
 from lib.config.train_default import cfg as tcfg
 from dirs import *
 
+DEF_MAX_TRACKING_BOX_NUMBER = 1
+DEF_MASK_CH = 3
+DEF_CE_CH = 3
+DEF_BOX_CH = 1+5*2*2 # 1 score map + 10 points polygon (x,y)
+
 def train(rank, world_size, args):
     """
     Custom training function, return 0 for join operation
@@ -78,9 +83,15 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
-        PIX_Unet_MASK(min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        model = PIX_Unet_MASK(min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
+    elif(args.net=='pix_unet_mask_box'):
+        model = PIX_Unet_MASK_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
+            min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        DEF_BOOL_TRAIN_MASK = True
+        DEF_BOOL_TRAIN_CE = True
+        DEF_BOOL_TRAIN_BOX = True
     else:
         model = PIX_MASK().float()
         DEF_BOOL_TRAIN_MASK = True
@@ -99,10 +110,6 @@ def train(rank, world_size, args):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
 
-    DEF_MAX_TRACKING_BOX_NUMBER = 1
-    DEF_MASK_CH = 3
-    DEF_CE_CH = 3
-    DEF_BOX_CH = 5 # (detcx,detcy,w,h) in (0,1) + theta
     top_ch=0
     if(DEF_BOOL_TRAIN_MASK):
         DEF_START_MASK_CH = top_ch
@@ -274,12 +281,24 @@ def train(rank, world_size, args):
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_bx = pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_CH]
+                div_num = (DEF_BOX_CH-1)//2
+                bx_loss_lst=[]
+                small_image_size_xy = np.array([pred_bx.shape[-1],pred_bx.shape[-2]])
                 for batchi in range(x.shape[0]):
                     batch_boxes = boxes[batchi]
-                    ct_box = np_polybox_center(batch_boxes)
-                    for boxi in range(batch_boxes.shape[0]):
-                        np_split_polygon(batch_boxes[boxi],DEF_BOX_CH//2)
-                        
+                    boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_bx.shape[-2:],'polyxy')
+                    ct_box = np_polybox_center(boxes_small)
+                    for boxi in range(boxes_small.shape[0]):
+                        poly_gt = np_split_polygon(boxes_small[boxi],div_num)
+                        if(poly_gt.shape==div_num):
+                            cx,cy = ct_box[boxi].astype(np.uint16)
+                            poly_gt_nor = (poly_gt.reshape(-1,2)-ct_box[boxi])/small_image_size_xy
+                            poly_gt_nor = poly_gt_nor.reshape(-1)
+                            poly_gt_nor = torch.from_numpy(poly_gt_nor).float().cuda(non_blocking=True)
+                            bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,1:,cy-1,cx-1]-poly_gt_nor)))
+                if(bx_loss_lst):
+                    loss_dict['bx_loss'] = sum(bx_loss_lst)/len(bx_loss_lst)
+                    
             if(DEF_BOOL_TRACKING):
                 tracking_loss_lst = []
                 for batchi in range(x.shape[0]):
@@ -433,12 +452,29 @@ def train(rank, world_size, args):
                 gtlabels = ce_y[log_i]
                 labels = cv_labelmap(labels)
                 gtlabels = cv_labelmap(gtlabels)
-                if(gtlabels.shape[:-1]!=labels.shape[:-1]):
-                    gtlabels = cv2.resize(gtlabels,(labels.shape[1],labels.shape[0]))
-                line = np.ones((labels.shape[0],3,3),dtype=np.uint8)*255
                 img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
-                img = np.concatenate((img,line,gtlabels,line,labels),-2)
-                logger.add_image('Labels Image|GT|Pred', img, epoch,dataformats='HWC')
+                logger.add_image('Labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+
+            if(DEF_BOOL_TRAIN_BOX):
+                pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
+                div_num = (DEF_BOX_CH-1)//2
+                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_box.shape[-1],pred_box.shape[-2]))
+                small_image_size_xy = np.array([pred_box.shape[-1],pred_box.shape[-2]])
+                batch_boxes = boxes[log_i]
+                boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_box.shape[-2:],'polyxy')
+                ct_box = np_polybox_center(boxes_small)
+                poly_gt_list = []
+                c_pred_box_list = []
+                for boxi in range(boxes_small.shape[0]):
+                    poly_gt = np_split_polygon(boxes_small[boxi],div_num)
+                    cx,cy = ct_box[boxi].astype(np.uint16)
+                    c_pred_box = pred_box[:,cy-1,cx-1].reshape(-1,2)*small_image_size_xy+ct_box[boxi]
+                    poly_gt_list.append(poly_gt)
+                    c_pred_box_list.append(c_pred_box)
+                gt_img = cv_draw_poly(smx,poly_gt_list,color=(0,255,0),point_emphasis=True)
+                pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
+                logger.add_image('BOX GT|Pred', concatenate_images([gt_img,pred_img]), epoch,dataformats='HWC')
+
             if(DEF_BOOL_TRACKING):
                 img = batch_x_np
                 img[:sub_img.shape[0],:sub_img.shape[1]] = sub_img

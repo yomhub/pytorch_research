@@ -108,6 +108,16 @@ def copyStateDict(state_dict):
         new_state_dict[name] = v
     return new_state_dict
 
+def load_net_from_pth(net,pth_dir:str):
+    print("Load network from pth at {}".format(pth_dir))
+    if(not os.path.exists(pth_dir)):
+        print("Error: pth file not exist.")
+        return net
+    para = copyStateDict(torch.load(pth_dir))
+    for o in para:
+        net.state_dict()[o]=para[o]
+    return net
+    
 def log_net_hock(net):
     for module in net.modules():
         module.register_forward_hook(lambda m, input, output: 

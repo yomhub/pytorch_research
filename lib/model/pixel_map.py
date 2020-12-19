@@ -203,9 +203,24 @@ class PIX_Unet_MASK(nn.Module):
         f_cls = b2_cls+F.interpolate(f_cls, size=b2_cls.shape[2:], mode='bilinear', align_corners=False)
         f_cls = b1_cls+F.interpolate(f_cls, size=b1_cls.shape[2:], mode='bilinear', align_corners=False)
         f_cls = F.interpolate(f_cls, size=mask.shape[2:], mode='bilinear', align_corners=False)
-        mask = torch.cat((mask,f_cls),1)
-        return mask,feat
+        return torch.cat((mask,f_cls),1),feat
 
+class PIX_Unet_MASK_BOX(PIX_Unet_MASK):
+    def __init__(self, box_ch:int, min_box_ch:int=32, 
+        init_method:str='xavier_uniform',**args):
+        super(PIX_Unet_MASK_BOX, self).__init__(init_method=init_method,**args)
+        upch = self.basenet.out_channels
+        self.box = nn.Sequential(
+            double_conv(upch,max(upch//2,min_box_ch),max(upch//4,min_box_ch)),
+            double_conv(max(upch//4,min_box_ch),max(upch//8,min_box_ch),box_ch),
+            )
+        init_weights(self.box.modules(),init_method)
+        
+    def forward(self,x):
+        pred,feat = super().forward(x)
+        box = self.box(feat.upb0)
+        return torch.cat((pred,box),1),feat
+        
 class VGG_PXMASK(nn.Module):
     def __init__(self,padding:bool=True,
         init_method:str='xavier_uniform',**args):
