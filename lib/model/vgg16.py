@@ -16,21 +16,26 @@ class VGG(nn.Module):
         basenet = basenet.lower() if(basenet.lower() in DEF_BASE_NETS)else 'vgg16_bn'
         model_urls[basenet] = model_urls[basenet].replace('https://', 'http://')
         if(basenet=='vgg11'):
-            vgg_pretrained_features = models.vgg11(pretrained=pretrained).features
+            base_cls = models.vgg11
         elif(basenet=='vgg11_bn'):
-            vgg_pretrained_features = models.vgg11_bn(pretrained=pretrained).features
+            base_cls = models.vgg11_bn
         elif(basenet=='vgg13'):
-            vgg_pretrained_features = models.vgg13(pretrained=pretrained).features
+            base_cls = models.vgg13
         elif(basenet=='vgg13_bn'):
-            vgg_pretrained_features = models.vgg13_bn(pretrained=pretrained).features
+            base_cls = models.vgg13_bn
         elif(basenet=='vgg16'):
-            vgg_pretrained_features = models.vgg16(pretrained=pretrained).features
+            base_cls = models.vgg16
         elif(basenet=='vgg16_bn'):
-            vgg_pretrained_features = models.vgg16_bn(pretrained=pretrained).features
+            base_cls = models.vgg16_bn
         elif(basenet=='vgg19'):
-            vgg_pretrained_features = models.vgg19(pretrained=pretrained).features
+            base_cls = models.vgg19
+        elif(basenet=='vgg19_bn'):
+            base_cls = models.vgg19_bn
         else:
-            vgg_pretrained_features = models.vgg19_bn(pretrained=pretrained).features
+            base_cls = models.vgg16_bn
+        basnet = base_cls(pretrained=bool(pretrained))
+        vgg_pretrained_features = basnet.features
+        
         self.output_tuple = namedtuple("VggOutputs", ['b0','b1', 'b2', 'b3', 'b4'])
         self.b0 = torch.nn.Sequential()
         self.b1 = torch.nn.Sequential()

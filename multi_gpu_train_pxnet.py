@@ -58,32 +58,29 @@ def train(rank, world_size, args):
     torch.manual_seed(0)
     torch.cuda.set_device(rank)
     dev = 'cuda:{}'.format(rank)
-    
+
+    DEF_BOOL_TRAIN_MASK = False
+    DEF_BOOL_TRAIN_CE = False
+    DEF_BOOL_TRAIN_BOX = False
+    DEF_BOOL_LOG_LEVEL_MASK = False
     if(args.net=='vgg_pur_cls'):
         model = VGG_PUR_CLS(include_b0=True,padding=False,pretrained=True).float()
-        DEF_BOOL_TRAIN_MASK = False
         DEF_BOOL_TRAIN_CE = True
-        DEF_BOOL_LOG_LEVEL_MASK = False
     elif(args.net=='vggunet_pxmask'):
         model = VGGUnet_PXMASK(include_b0=True,padding=False,pretrained=True).float()
         DEF_BOOL_TRAIN_MASK = True
-        DEF_BOOL_TRAIN_CE = False
-        DEF_BOOL_LOG_LEVEL_MASK = False
     elif(args.net=='vgg_pxmask'):
         model = VGG_PXMASK(include_b0=True,padding=False,pretrained=True).float()
         DEF_BOOL_TRAIN_MASK = True
-        DEF_BOOL_TRAIN_CE = False
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_txt'):
         model = PIX_TXT().float()
         DEF_BOOL_TRAIN_MASK = True
-        DEF_BOOL_TRAIN_CE = False
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
         PIX_Unet_MASK(min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
-        DEF_BOOL_LOG_LEVEL_MASK = False
     else:
         model = PIX_MASK().float()
         DEF_BOOL_TRAIN_MASK = True
@@ -102,11 +99,20 @@ def train(rank, world_size, args):
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
 
-    DEF_START_MASK_CH = 0
-    DEF_MASK_CH = 3
-    DEF_START_CE_CH = DEF_START_MASK_CH+DEF_MASK_CH if(DEF_BOOL_TRAIN_MASK)else 0
-    DEF_CE_CH = 3
     DEF_MAX_TRACKING_BOX_NUMBER = 1
+    DEF_MASK_CH = 3
+    DEF_CE_CH = 3
+    DEF_BOX_CH = 5 # (detcx,detcy,w,h) in (0,1) + theta
+    top_ch=0
+    if(DEF_BOOL_TRAIN_MASK):
+        DEF_START_MASK_CH = top_ch
+        top_ch+=DEF_MASK_CH
+    if(DEF_BOOL_TRAIN_CE):
+        DEF_START_CE_CH = top_ch
+        top_ch+=DEF_CE_CH
+    if(DEF_BOOL_TRAIN_BOX):
+        DEF_START_BOX_CH = top_ch
+        top_ch+=DEF_BOX_CH
 
     # define loss function (criterion) and optimizer
     criterion = MSE_2d_Loss(pixel_sum=False).cuda(rank)
@@ -252,10 +258,10 @@ def train(rank, world_size, args):
                 boundary_mask_bin_np.append(boundadrymap)
 
             if(DEF_BOOL_TRAIN_MASK):
-
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
                 region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
                 loss_dict['region_loss'] = criterion(pred[:,DEF_START_MASK_CH+2], region_mask)
+
             if(DEF_BOOL_TRAIN_CE):
                 region_mask_bin_np = np.stack(region_mask_bin_np,0).astype(np.uint8)
                 boundary_mask_bin_np = np.stack(boundary_mask_bin_np,0).astype(np.uint8)
@@ -264,7 +270,16 @@ def train(rank, world_size, args):
                 ce_y[region_mask_bin_np>0]=1
                 ce_y[boundary_mask_bin_np>0]=2
                 ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
-                loss_dict['cls_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:], ce_y_torch)
+                loss_dict['cls_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+DEF_CE_CH], ce_y_torch)
+
+            if(DEF_BOOL_TRAIN_BOX):
+                pred_bx = pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_CH]
+                for batchi in range(x.shape[0]):
+                    batch_boxes = boxes[batchi]
+                    ct_box = np_polybox_center(batch_boxes)
+                    for boxi in range(batch_boxes.shape[0]):
+                        np_split_polygon(batch_boxes[boxi],DEF_BOX_CH//2)
+                        
             if(DEF_BOOL_TRACKING):
                 tracking_loss_lst = []
                 for batchi in range(x.shape[0]):

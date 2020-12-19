@@ -162,6 +162,19 @@ def np_polybox_minrect(cv_polybox,box_format:str='polyxy'):
         ),axis=-1).reshape(-1,4,2)
     return ret[0] if(single_box)else ret
 
+def np_polybox_center(cv_polybox,box_format:str='polyxy'):
+    if(isinstance(cv_polybox,list) or cv_polybox.dtype==np.object):
+        return np.array([np_polybox_center(o,box_format) for o in cv_polybox])
+    len2=False
+    if(len(cv_polybox.shape)==2):
+        len2=True
+        cv_polybox = np.expand_dims(cv_polybox,0)
+    mean_v = np.mean(cv_polybox,axis=1)
+
+    if(box_format=='polyyx'):
+        mean_v=mean_v[:,::-1]
+    return mean_v[0] if(len2)else mean_v
+
 def np_polybox_rotate(cv_polybox,M):
     """
     Rotate polybox
@@ -867,13 +880,15 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
 
     return np.array(det), labels, mapper
 
-def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2):
+def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_emphasis:bool=False):
     """
     Arg:
         img: ndarray in (h,w,c) in [0,255]
         boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
             or (polygon point number,2 (x,y))
         color: (B,G,R) box color
+        thickness: line thickness
+        point_emphasis: set True to draw circle on each points
     Return image
     """
     image = image.astype(np.uint8)
@@ -899,8 +914,10 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2):
             cv2.putText(
                 image, text=str(text[i]), org=(boxes[i,:,0].max(),boxes[i,:,1].min()), 
                 fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=2, lineType=cv2.LINE_AA, color=(255, 255, 255))
-
-        
+        if(point_emphasis):
+            for bx in boxes:
+                for pt in bx:
+                    cv2.circle(image,(int(pt[0]),int(pt[1])),thickness*2,color,thickness)
     return image
 
 def cv_draw_rect(image,boxes,fm,text=None,color = (0,255,0)):
@@ -1093,6 +1110,66 @@ def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
 
     return np.array(matrix_list),matrix_map
 
+def np_split_polygon(cv_poly,n):
+    """
+    Split polygon into N point group
+    Args:
+        cv_poly: (2k,2) x,y polygon points 
+        n: N point group
+    Return:
+        cv_poly: (2N,2) x,y polygon points 
+    """
+    if(n<=cv_poly.shape[0]//2):
+        return cv_poly
+    if(cv_poly.shape[0]%2):
+        cv_poly = cv_poly[:-1]
+    if(cv_poly.shape[0]==4):
+        # ensure rectangle is divid by longer side
+        w = cv_poly[1]-cv_poly[0]
+        w = math.sqrt(w[0]**2+w[1]**2)
+        h = cv_poly[2]-cv_poly[1]
+        h = math.sqrt(h[0]**2+h[1]**2)
+        if(h>1.5*w):
+            cv_poly = np.array([cv_poly[1],cv_poly[2],cv_poly[3],cv_poly[0]])
+    det_list = []
+    det_sp = []
+    det_ep = []
+    total_det = 0
+    ans_up = []
+    ans_dw = []
+    # calculate center line length
+    for j in range(cv_poly.shape[0]//2-1):
+        up = cv_poly[j+1] - cv_poly[j]
+        dw = cv_poly[-j-2] - cv_poly[-j-1]
+        det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
+        total_det+=det
+        det_list.append(det)
+        det_sp.append((cv_poly[j],cv_poly[-j-1]))
+        det_ep.append((cv_poly[j+1],cv_poly[-j-2]))
+
+    single_len = max(0.1,total_det/(n-1))
+    last_length = 0.0
+
+    while(det_list and len(ans_up)<n):
+        cur_lenth = det_list.pop(0)
+        up_sp,dw_sp = det_sp.pop(0)
+        up_ep,dw_ep = det_ep.pop(0)
+
+        sp_poi = last_length
+        up = up_ep-up_sp
+        dw = dw_ep-dw_sp
+        while((cur_lenth-sp_poi)>(0.3*single_len) and len(ans_up)<n):
+            ans_up.append(up*(sp_poi/cur_lenth)+up_sp)
+            ans_dw.append(dw*(sp_poi/cur_lenth)+dw_sp)
+            sp_poi+=single_len
+
+        last_length=max(sp_poi-cur_lenth,0)
+
+    ans_up.append(cv_poly[cv_poly.shape[0]//2-1])
+    ans_dw.append(cv_poly[cv_poly.shape[0]//2])
+
+    return np.array(ans_up+ans_dw[::-1])
+    
 def cv_divd_polygon(box,n):
     """
     Divide polygon into N parts linearly
