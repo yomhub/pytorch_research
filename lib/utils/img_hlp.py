@@ -833,7 +833,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
     nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         (scoremap>=score_th).astype(np.uint8),
         connectivity=4)
-
+    
     det = []
     mapper = []
     for k in range(1, nLabels):
@@ -851,31 +851,23 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
         x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
         w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
         niter = int(math.sqrt(rsize * min(w, h) / (w * h)) * 2)
-        x0 = max(0,x - niter)
-        x1 = min(img_w,x + w + niter + 1)
-        y0 = max(0,y - niter)
-        y1 = min(img_h,y + h + niter + 1)
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1 + niter, 1 + niter))
-        tmp[y0:y1, x0:x1] = cv2.dilate(tmp[y0:y1, x0:x1], kernel)
-        
-        # make box
-        np_contours = np.roll(np.array(np.where(tmp != 0)), 1, axis=0).transpose().reshape(-1, 2)
-        rectangle = cv2.minAreaRect(np_contours)
-        box = cv2.boxPoints(rectangle)
-
-        # align diamond-shape
-        w, h = np.linalg.norm(box[0] - box[1]), np.linalg.norm(box[1] - box[2])
-        box_ratio = max(w, h) / (min(w, h) + 1e-5)
-        if abs(1 - box_ratio) <= 0.1:
-            l, r = min(np_contours[:, 0]), max(np_contours[:, 0])
-            t, b = min(np_contours[:, 1]), max(np_contours[:, 1])
-            box = np.array([[l, t], [r, t], [r, b], [l, b]], dtype=np.float32)
-
-        # make clock-wise order
-        startidx = box.sum(axis=1).argmin()
-        box = np.roll(box, 4 - startidx, 0)
-        box = np.array(box)
+        x0,y0 = max(0,x),max(0,y)
+        x1 = min(img_w-1,x + w)
+        y1 = min(img_h-1,y + h)
+        box = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]])
+        sub_img,M = cv_crop_image_by_bbox(tmp,box)
+        Minv = np.linalg.inv(M)
+        contours, hierarchy = cv2.findContours(sub_img.astype(np.uint8),cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+        slc = [o for o in contours if(o.shape[0]>1)]
+        if(len(slc)==0):
+            det.append(box)
+            continue
+        cnt = np.concatenate(slc,0)
+        hull = cv2.convexHull(cnt)
+        if(hull.shape[0]<4):
+            det.append(box)
+            continue
+        box = np_apply_matrix_to_pts(Minv,hull[:,0,:])
 
         det.append(box)
         mapper.append(k)

@@ -47,7 +47,7 @@ def adjust_learning_rate(optimizer, gamma):
 def get_final_ch(modules):
     ch=-1
     for bname in modules.state_dict():
-        if('conv' in bname and 'weight' in bname):
+        if('weight' in bname and len(modules.state_dict()[bname].shape)==4):
             ch = modules.state_dict()[bname].shape[0]
     return ch
 

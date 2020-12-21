@@ -80,37 +80,49 @@ class VGG(nn.Module):
         return self.output_tuple(b0, b1, b2, b3, b4)
 
 class VGGUnet(nn.Module):
-    def __init__(self, include_b0:bool = False, padding:bool=True, 
+    def __init__(self, padding:bool=True, min_upc_ch:int=0,
         init_method:str='xavier_uniform',**args):
         super(VGGUnet, self).__init__()
         self.basenet = VGG(padding=padding,**args)
-        self.include_b0 = bool(include_b0)
+
         b4ch = get_final_ch(self.basenet.b4)
         b3ch = get_final_ch(self.basenet.b3)
         b2ch = get_final_ch(self.basenet.b2)
         b1ch = get_final_ch(self.basenet.b1)
         b0ch = get_final_ch(self.basenet.b0)
-        self.b4b3_b2 = double_conv(b4ch+b3ch,(b4ch+b3ch)//2,b3ch,padding=padding)
-        self.b3b2_b1 = double_conv(b3ch+b2ch,(b3ch+b2ch)//2,b2ch,padding=padding)
-        self.b2b1_b0 = double_conv(b2ch+b1ch,(b2ch+b1ch)//2,b1ch,padding=padding)
-        self.final_ch = b1ch+b0ch if(self.include_b0)else b1ch
-        init_weights(self.b4b3_b2.modules(),init_method)
-        init_weights(self.b3b2_b1.modules(),init_method)
-        init_weights(self.b2b1_b0.modules(),init_method)
+        b4b3_b3_out = max(min_upc_ch,b3ch)
+        b3b2_b2_out = max(min_upc_ch,b2ch)
+        b2b1_b1_out = max(min_upc_ch,b1ch)
+        b4b3_b3_ct = max(b4b3_b3_out,(b4ch+b3ch)//2)
+        b3b2_b2_ct = max(b3b2_b2_out,(b4b3_b3_out+b2ch)//2)
+        b2b1_b1_ct = max(b2b1_b1_out,(b3b2_b2_out+b1ch)//2)
+
+        self.b4b3_b3 = double_conv(b4ch+b3ch,b4b3_b3_ct,b4b3_b3_out,padding=padding)
+        self.b3b2_b2 = double_conv(b4b3_b3_out+b2ch,b3b2_b2_ct,b3b2_b2_out,padding=padding)
+        self.b2b1_b1 = double_conv(b3b2_b2_out+b1ch,b2b1_b1_ct,b2b1_b1_out,padding=padding)
+        self.out_channels = b2b1_b1_out+b0ch
+        self.output_tuple = namedtuple("VggUnetOutputs", ['upb0','upb1','upb2','upb3','b0','b1', 'b2', 'b3', 'b4'])
+        init_weights(self.b4b3_b3.modules(),init_method)
+        init_weights(self.b3b2_b2.modules(),init_method)
+        init_weights(self.b2b1_b1.modules(),init_method)
         
     def forward(self,x):
         vgg_feat = self.basenet(x)
-        b0, b1, b2, b3, b4 = vgg_feat
-        feat = b4
-        feat = torch.cat((b3,F.interpolate(feat,b3.shape[2:], mode='bilinear', align_corners=False)),dim=1)
-        feat = self.b4b3_b2(feat)
-        feat = torch.cat((b2,F.interpolate(feat,b2.shape[2:], mode='bilinear', align_corners=False)),dim=1)
-        feat = self.b3b2_b1(feat)
-        feat = torch.cat((b1,F.interpolate(feat,b1.shape[2:], mode='bilinear', align_corners=False)),dim=1)
-        feat = self.b2b1_b0(feat)
-        if(self.include_b0):
-            feat = torch.cat((b0,F.interpolate(feat,b0.shape[2:], mode='bilinear', align_corners=False)),dim=1)
-        return feat,vgg_feat
+        feat = vgg_feat.b4
+        feat = torch.cat((vgg_feat.b3,F.interpolate(feat,vgg_feat.b3.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b4b3_b3(feat)
+        upb3 = feat
+        feat = torch.cat((vgg_feat.b2,F.interpolate(feat,vgg_feat.b2.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b3b2_b2(feat)
+        upb2 = feat
+        feat = torch.cat((vgg_feat.b1,F.interpolate(feat,vgg_feat.b1.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        feat = self.b2b1_b1(feat)
+        upb1 = feat
+
+        upb0 = torch.cat((vgg_feat.b0,F.interpolate(feat,vgg_feat.b0.shape[2:], mode='bilinear', align_corners=False)),dim=1)
+        ufeat = self.output_tuple(upb0,upb1,upb2,upb3,vgg_feat.b0,vgg_feat.b1,vgg_feat.b2,vgg_feat.b3,vgg_feat.b4)
+
+        return ufeat
                     
 class VGG16(nn.Module):
     def __init__(self, pretrained=True, freeze=True, padding:bool=True, maxpool:bool=True):

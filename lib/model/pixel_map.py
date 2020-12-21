@@ -148,17 +148,14 @@ class PIX_MASK(nn.Module):
         return mask,featout
 
 class PIX_Unet_MASK(nn.Module):
-    def __init__(self, min_map_ch:int=32, min_upc_ch:int =128,
-        init_method:str='xavier_uniform',**args):
+    def __init__(self, basenet_name:str = 'mobile',min_map_ch:int=32, min_upc_ch:int =128,
+        padding:bool=True,init_method:str='xavier_uniform',**args):
         super(PIX_Unet_MASK, self).__init__()
-        self.basenet = MobUNet(min_upc_ch=min_upc_ch,init_method=init_method,**args)
-
-        b0ch = get_final_ch(self.basenet.basenet.b0)
-        b1ch = get_final_ch(self.basenet.basenet.b1)
-        b2ch = get_final_ch(self.basenet.basenet.b2)
-        b3ch = get_final_ch(self.basenet.basenet.b3)
-        b4ch = get_final_ch(self.basenet.basenet.b4)
-        b4ch = get_final_ch(self.basenet.basenet.b4)
+        basenet_name = basenet_name.lower()
+        if('vgg' in basenet_name):
+            self.basenet = VGGUnet(min_upc_ch=min_upc_ch,padding=padding,init_method=init_method,**args)
+        else:
+            self.basenet = MobUNet(min_upc_ch=min_upc_ch,init_method=init_method,**args)
         upch = self.basenet.out_channels
         map_ch = 3
         self.mask = nn.Sequential(
@@ -166,49 +163,78 @@ class PIX_Unet_MASK(nn.Module):
             double_conv(max(upch//4,min_map_ch),max(upch//8,min_map_ch),map_ch),
             )
 
-        cls_ch = 3
-        self.b4_cls = nn.Sequential(
-            double_conv(b4ch,max(b4ch//2,min_map_ch),max(b4ch//4,min_map_ch)),
-            double_conv(max(b4ch//4,min_map_ch),max(b4ch//8,min_map_ch),cls_ch),
-            )
-        self.b3_cls = nn.Sequential(
-            double_conv(b3ch,max(b3ch//2,min_map_ch),max(b3ch//4,min_map_ch)),
-            double_conv(max(b3ch//4,min_map_ch),max(b3ch//8,min_map_ch),cls_ch),
-            )
-        # txt edge
-        self.b2_cls = nn.Sequential(
-            double_conv(b2ch,max(b2ch//2,min_map_ch),max(b2ch//4,min_map_ch)),
-            double_conv(max(b2ch//4,min_map_ch),max(b2ch//8,min_map_ch),cls_ch),
-            )
-        self.b1_cls = nn.Sequential(
-            double_conv(b1ch,max(b1ch//2,min_map_ch),max(b1ch//4,min_map_ch)),
-            double_conv(max(b1ch//4,min_map_ch),max(b1ch//8,min_map_ch),cls_ch),
-            )
-
         init_weights(self.mask.modules(),init_method)
-        init_weights(self.b4_cls.modules(),init_method)
-        init_weights(self.b3_cls.modules(),init_method)
-        init_weights(self.b2_cls.modules(),init_method)
-        init_weights(self.b1_cls.modules(),init_method)
 
     def forward(self,x):
         feat=self.basenet(x)
         mask = self.mask(feat.upb0)
-        b4_cls = self.b4_cls(feat.b4)
-        b3_cls = self.b3_cls(feat.b3)
-        b2_cls = self.b2_cls(feat.b2)
-        b1_cls = self.b1_cls(feat.b1)
-        f_cls = b4_cls
-        f_cls = b3_cls+F.interpolate(f_cls, size=b3_cls.shape[2:], mode='bilinear', align_corners=False)
-        f_cls = b2_cls+F.interpolate(f_cls, size=b2_cls.shape[2:], mode='bilinear', align_corners=False)
-        f_cls = b1_cls+F.interpolate(f_cls, size=b1_cls.shape[2:], mode='bilinear', align_corners=False)
-        f_cls = F.interpolate(f_cls, size=mask.shape[2:], mode='bilinear', align_corners=False)
-        return torch.cat((mask,f_cls),1),feat
 
-class PIX_Unet_MASK_BOX(PIX_Unet_MASK):
+        return mask,feat
+
+
+class PIX_Unet_MASK_CLS(PIX_Unet_MASK):
+    def __init__(self, multi_level:bool=True, cls_out_ch:int=3, min_cls_ch:int=32, 
+        init_method:str='xavier_uniform',**args):
+        super(PIX_Unet_MASK_CLS, self).__init__(init_method=init_method,**args)
+        upch = self.basenet.out_channels
+        self.multi_level = bool(multi_level)
+        if(self.multi_level):
+            b0ch = get_final_ch(self.basenet.basenet.b0)
+            b1ch = get_final_ch(self.basenet.basenet.b1)
+            b2ch = get_final_ch(self.basenet.basenet.b2)
+            b3ch = get_final_ch(self.basenet.basenet.b3)
+            b4ch = get_final_ch(self.basenet.basenet.b4)
+            b4ch = get_final_ch(self.basenet.basenet.b4)
+
+            self.b4_cls = nn.Sequential(
+                double_conv(b4ch,max(b4ch//2,min_cls_ch),max(b4ch//4,min_cls_ch)),
+                double_conv(max(b4ch//4,min_cls_ch),max(b4ch//8,min_cls_ch),cls_out_ch),
+                )
+            self.b3_cls = nn.Sequential(
+                double_conv(b3ch,max(b3ch//2,min_cls_ch),max(b3ch//4,min_cls_ch)),
+                double_conv(max(b3ch//4,min_cls_ch),max(b3ch//8,min_cls_ch),cls_out_ch),
+                )
+            self.b2_cls = nn.Sequential(
+                double_conv(b2ch,max(b2ch//2,min_cls_ch),max(b2ch//4,min_cls_ch)),
+                double_conv(max(b2ch//4,min_cls_ch),max(b2ch//8,min_cls_ch),cls_out_ch),
+                )
+            self.b1_cls = nn.Sequential(
+                double_conv(b1ch,max(b1ch//2,min_cls_ch),max(b1ch//4,min_cls_ch)),
+                double_conv(max(b1ch//4,min_cls_ch),max(b1ch//8,min_cls_ch),cls_out_ch),
+                )
+            init_weights(self.b4_cls.modules(),init_method)
+            init_weights(self.b3_cls.modules(),init_method)
+            init_weights(self.b2_cls.modules(),init_method)
+            init_weights(self.b1_cls.modules(),init_method)
+        else:
+            upch = self.basenet.out_channels
+            self.cls = nn.Sequential(
+                double_conv(upch,max(upch//2,min_cls_ch),max(upch//4,min_cls_ch)),
+                double_conv(max(upch//4,min_cls_ch),max(upch//8,min_cls_ch),cls_out_ch),
+                )
+            init_weights(self.cls.modules(),init_method)
+            
+    def forward(self,x):
+        pred,feat = super().forward(x)
+        if(self.multi_level):
+            b4_cls = self.b4_cls(feat.b4)
+            b3_cls = self.b3_cls(feat.b3)
+            b2_cls = self.b2_cls(feat.b2)
+            b1_cls = self.b1_cls(feat.b1)
+            f_cls = b4_cls
+            f_cls = b3_cls+F.interpolate(f_cls, size=b3_cls.size()[2:], mode='bilinear', align_corners=False)
+            f_cls = b2_cls+F.interpolate(f_cls, size=b2_cls.size()[2:], mode='bilinear', align_corners=False)
+            f_cls = b1_cls+F.interpolate(f_cls, size=b1_cls.size()[2:], mode='bilinear', align_corners=False)
+            if(f_cls.shape[2:]!=pred.shape[2:]):
+                f_cls = F.interpolate(f_cls, size=pred.size()[2:], mode='bilinear', align_corners=False)
+        else:
+            f_cls = self.cls(feat.upb0)
+        return torch.cat((pred,f_cls),1),feat
+
+class PIX_Unet_MASK_CLS_BOX(PIX_Unet_MASK_CLS):
     def __init__(self, box_ch:int, min_box_ch:int=32, 
         init_method:str='xavier_uniform',**args):
-        super(PIX_Unet_MASK_BOX, self).__init__(init_method=init_method,**args)
+        super(PIX_Unet_MASK_CLS_BOX, self).__init__(init_method=init_method,**args)
         upch = self.basenet.out_channels
         self.box = nn.Sequential(
             double_conv(upch,max(upch//2,min_box_ch),max(upch//4,min_box_ch)),
@@ -220,7 +246,7 @@ class PIX_Unet_MASK_BOX(PIX_Unet_MASK):
         pred,feat = super().forward(x)
         box = self.box(feat.upb0)
         return torch.cat((pred,box),1),feat
-        
+
 class VGG_PXMASK(nn.Module):
     def __init__(self,padding:bool=True,
         init_method:str='xavier_uniform',**args):
@@ -281,17 +307,17 @@ class VGGUnet_PXMASK(nn.Module):
         init_method:str='xavier_uniform',**args):
         super(VGGUnet_PXMASK, self).__init__()
         self.basenet = VGGUnet(padding=padding,init_method=init_method,**args)
-        self.final_ch = self.basenet.final_ch
+
         self.final_mask = nn.Sequential(
-            double_conv(self.final_ch,128,64,padding=padding),
+            double_conv(self.basenet.out_channels,128,64,padding=padding),
             double_conv(64,32,3,padding=padding),
             )
         self.init_weights(self.final_mask.modules(),init_method)
 
     def forward(self,x):
-        unet_feat,vgg_feat = self.basenet(x)
+        vgg_feat = self.basenet(x)
 
-        mask = self.final_mask(unet_feat)
+        mask = self.final_mask(vgg_feat.upb0)
         
         return mask,unet_feat
 

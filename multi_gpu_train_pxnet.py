@@ -35,7 +35,10 @@ from dirs import *
 DEF_MAX_TRACKING_BOX_NUMBER = 1
 DEF_MASK_CH = 3
 DEF_CE_CH = 3
-DEF_BOX_CH = 1+5*2*2 # 1 score map + 10 points polygon (x,y)
+DEF_BOOL_POLY_REGRESSION = False
+DEF_POLY_NUM = 10
+DEF_BOX_CH = (1+DEF_POLY_NUM*2) if(DEF_BOOL_POLY_REGRESSION)else (1+4) # 1 score map + 10 points polygon (x,y) or (dcx,dcy,w,h)
+DEF_BOOL_MULTILEVEL_CE = False
 
 def train(rank, world_size, args):
     """
@@ -83,12 +86,17 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
-        model = PIX_Unet_MASK(min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        model = PIX_Unet_MASK(basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        DEF_BOOL_TRAIN_MASK = True
+    elif(args.net=='pix_unet_mask_cls'):
+        model = PIX_Unet_MASK_CLS(multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
+            basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
-    elif(args.net=='pix_unet_mask_box'):
-        model = PIX_Unet_MASK_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
-            min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+    elif(args.net=='pix_unet_mask_cls_box'):
+        model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
+            multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
+            basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_TRAIN_BOX = True
@@ -186,6 +194,7 @@ def train(rank, world_size, args):
             b_have_mask = bool('mask' in sample)
             if(b_have_mask):
                 mask = sample['mask']
+
             boxes = sample['box']
             if(random_b):
                 angle = (np.random.random()-0.5)*2*5
@@ -214,21 +223,16 @@ def train(rank, world_size, args):
                     if(len(mask_np.shape)==3):
                         mask_np = np.expand_dims(mask_np,-1)
                     mask = torch.from_numpy(mask_np)
+                # max_v,max_id = 0,(0,0)
+                # for o in boxes:
+                #     rec_box = np_polybox_minrect(o)
+                #     areas = rec_box[:,2]-rec_box[:,0]
+                #     areas = areas[:,0]*areas[:,1]
+                #     t = np.argmax(areas)
+                #     if(areas[t]>max_v):
+                #         max_v = areas[t]
+                #         max_id = 
 
-            if(b_have_mask):
-                if(mask.shape[-1]==3): mask = mask[:,:,:,0:1]
-
-                msak_np = mask.numpy()[:,:,:,0]
-                msak_np = np.where(msak_np>0,255,0).astype(np.uint8)
-                edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in msak_np]
-                # np (batch,h,w,1)-> torch (batch,1,h,w)
-                edge_np = np.stack(edge_np,0)
-                
-                edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
-                edge = (edge>0).float().permute(0,3,1,2)
-
-                mask = mask.cuda(non_blocking=True)
-                mask = (mask>0).float().permute(0,3,1,2)
 
             xnor = x.float().cuda(non_blocking=True)
             xnor = torch_img_normalize(xnor).permute(0,3,1,2)
@@ -236,10 +240,36 @@ def train(rank, world_size, args):
             # Forward pass
             pred,feat = model(xnor)
             loss_dict = {}
-            if('mask' in sample and DEF_BOOL_TRAIN_MASK):
+            if(DEF_BOOL_TRAIN_MASK):
+                if(b_have_mask):
+                    if(mask.shape[-1]==3): mask = mask[:,:,:,0:1]
+                    msak_np = mask.numpy()[:,:,:,0]
+                    msak_np = np.where(msak_np>0,255,0).astype(np.uint8)
+                    edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in msak_np]
+                    # np (batch,h,w,1)-> torch (batch,1,h,w)
+                    edge_np = np.stack(edge_np,0)
+                                       
+                else:
+                    # weak surpress learning
+                    mask_list = []
+                    edge_list = []
+                    np_pred_mask = pred[:,DEF_START_MASK_CH+0].cpu().detach().numpy()
+                    np_pred_edge = pred[:,DEF_START_MASK_CH+1].cpu().detach().numpy()
+                    x_np = x.numpy().astype(np.uint8)
+                    for batchi in range(x_np.shape[0]):
+                        bth_mask, bth_region= cv_gen_binary_map_by_pred(x_np[batchi],boxes[batchi],predmask=np_pred_mask[batchi])
+                        bth_edge = cv2.dilate(cv2.Canny(bth_mask,100,200),kernel)
+                        mask_list.append(bth_mask)
+                        edge_list.append(bth_edge)
+                    mask_np = np.array(mask_list)
+                    edge_np = np.array(edge_list)
+                    
+                edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
+                edge = (edge>0).float().permute(0,3,1,2)
+                mask = torch.from_numpy(np.expand_dims(mask_np,-1)).cuda(non_blocking=True)
+                mask = (mask>0).float().permute(0,3,1,2)
                 loss_dict['mask_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
                 loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
-
             region_mask_np = []
             region_mask_bin_np = []
             boundary_mask_bin_np = []
@@ -281,21 +311,36 @@ def train(rank, world_size, args):
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_bx = pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_CH]
-                div_num = (DEF_BOX_CH-1)//2
+                div_num = DEF_POLY_NUM//2
                 bx_loss_lst=[]
                 small_image_size_xy = np.array([pred_bx.shape[-1],pred_bx.shape[-2]])
                 for batchi in range(x.shape[0]):
                     batch_boxes = boxes[batchi]
                     boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_bx.shape[-2:],'polyxy')
                     ct_box = np_polybox_center(boxes_small)
+                    rect_box = np_polybox_minrect(boxes_small)
+                    ct_rect_box = np_polybox_center(rect_box)
                     for boxi in range(boxes_small.shape[0]):
-                        poly_gt = np_split_polygon(boxes_small[boxi],div_num)
-                        if(poly_gt.shape==div_num):
-                            cx,cy = ct_box[boxi].astype(np.uint16)
-                            poly_gt_nor = (poly_gt.reshape(-1,2)-ct_box[boxi])/small_image_size_xy
-                            poly_gt_nor = poly_gt_nor.reshape(-1)
-                            poly_gt_nor = torch.from_numpy(poly_gt_nor).float().cuda(non_blocking=True)
-                            bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,1:,cy-1,cx-1]-poly_gt_nor)))
+                        if(boxes_small[boxi].shape[0]<4):
+                            continue
+                        cx,cy = ct_box[boxi].astype(np.uint16)
+                        if(cx>=pred_bx.shape[-1] or cy>=pred_bx.shape[-2] or cx<0 or cy<0):
+                            continue
+                        if(DEF_BOOL_POLY_REGRESSION):
+                            poly_gt = np_split_polygon(boxes_small[boxi],div_num)
+                            poly_gt = poly_gt.reshape(-1,2)
+                            if(poly_gt.size!=DEF_POLY_NUM*2):
+                                continue
+                            bx_gt_nor = (poly_gt-ct_box[boxi])/small_image_size_xy
+                            bx_gt_nor = bx_gt_nor.reshape(-1)
+                        else:
+                            w,h = (rect_box[boxi,2]-rect_box[boxi,0])/small_image_size_xy
+                            det_cx,det_cy = (ct_rect_box[boxi]-ct_box[boxi])/small_image_size_xy
+                            bx_gt_nor = np.array([det_cx,det_cy,w,h])
+
+                        bx_gt_nor = torch.from_numpy(bx_gt_nor).float().cuda(non_blocking=True)
+                        bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,1:,cy-1,cx-1]-bx_gt_nor)))
+                        
                 if(bx_loss_lst):
                     loss_dict['bx_loss'] = sum(bx_loss_lst)/len(bx_loss_lst)
                     
@@ -457,22 +502,37 @@ def train(rank, world_size, args):
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
-                div_num = (DEF_BOX_CH-1)//2
+                div_num = DEF_POLY_NUM//2
                 smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_box.shape[-1],pred_box.shape[-2]))
                 small_image_size_xy = np.array([pred_box.shape[-1],pred_box.shape[-2]])
                 batch_boxes = boxes[log_i]
                 boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_box.shape[-2:],'polyxy')
                 ct_box = np_polybox_center(boxes_small)
-                poly_gt_list = []
-                c_pred_box_list = []
-                for boxi in range(boxes_small.shape[0]):
-                    poly_gt = np_split_polygon(boxes_small[boxi],div_num)
-                    cx,cy = ct_box[boxi].astype(np.uint16)
-                    c_pred_box = pred_box[:,cy-1,cx-1].reshape(-1,2)*small_image_size_xy+ct_box[boxi]
-                    poly_gt_list.append(poly_gt)
-                    c_pred_box_list.append(c_pred_box)
-                gt_img = cv_draw_poly(smx,poly_gt_list,color=(0,255,0),point_emphasis=True)
-                pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
+                if(DEF_BOOL_POLY_REGRESSION):
+                    poly_gt_list = []
+                    c_pred_box_list = []
+                    for boxi in range(boxes_small.shape[0]):
+                        poly_gt = np_split_polygon(boxes_small[boxi],div_num)
+                        cx,cy = ct_box[boxi].astype(np.uint16)
+                        c_pred_box = pred_box[:,cy-1,cx-1].reshape(-1,2)*small_image_size_xy+ct_box[boxi]
+                        poly_gt_list.append(poly_gt)
+                        c_pred_box_list.append(c_pred_box)
+                    gt_img = cv_draw_poly(smx,poly_gt_list,color=(0,255,0),point_emphasis=True)
+                    pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
+                else:
+                    c_pred_box_list = []
+                    for boxi in range(boxes_small.shape[0]):
+                        cx,cy = ct_box[boxi].astype(np.uint16)
+                        pred_cx,pred_cy = pred_box[0:2,cy-1,cx-1]*small_image_size_xy+ct_box[boxi]
+                        pred_w,pred_h = pred_box[2:4,cy-1,cx-1]*small_image_size_xy
+                        c_pred_box_list.append(np.array([
+                            [pred_cx-pred_w/2,pred_cy-pred_h/2],
+                            [pred_cx+pred_w/2,pred_cy-pred_h/2],
+                            [pred_cx+pred_w/2,pred_cy+pred_h/2],
+                            [pred_cx-pred_w/2,pred_cy+pred_h/2],
+                            ]))
+                    gt_img = cv_draw_poly(smx,boxes_small,color=(0,255,0),point_emphasis=True)
+                    pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
                 logger.add_image('BOX GT|Pred', concatenate_images([gt_img,pred_img]), epoch,dataformats='HWC')
 
             if(DEF_BOOL_TRACKING):
@@ -518,6 +578,7 @@ if __name__ == '__main__':
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--net', help='Choose noework.', default='vgg_mask')
+    parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
     parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
@@ -542,6 +603,7 @@ if __name__ == '__main__':
         "Running with: \n"+\
         "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
         "\t Network: {}.\n".format(args.net)+\
+        "\t Base network: {}.\n".format(args.basenet)+\
         "\t Optimizer: {}.\n".format(args.opt)+\
         "\t Dataset: {}.\n".format(args.dataset)+\
         "\t Init learning rate: {}.\n".format(args.learnrate)+\
