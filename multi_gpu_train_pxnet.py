@@ -33,7 +33,8 @@ from lib.config.train_default import cfg as tcfg
 from dirs import *
 
 DEF_MAX_TRACKING_BOX_NUMBER = 1
-DEF_MASK_CH = 3
+# pixel mask, edge mask, region mask, threshold mask
+DEF_MASK_CH = 4
 DEF_CE_CH = 3
 DEF_BOOL_POLY_REGRESSION = False
 DEF_POLY_NUM = 10
@@ -86,7 +87,7 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
-        model = PIX_Unet_MASK(basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        model = PIX_Unet_MASK(basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='pix_unet_mask_cls'):
         model = PIX_Unet_MASK_CLS(multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
@@ -243,9 +244,9 @@ def train(rank, world_size, args):
             if(DEF_BOOL_TRAIN_MASK):
                 if(b_have_mask):
                     if(mask.shape[-1]==3): mask = mask[:,:,:,0:1]
-                    msak_np = mask.numpy()[:,:,:,0]
-                    msak_np = np.where(msak_np>0,255,0).astype(np.uint8)
-                    edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in msak_np]
+                    mask_np = mask.numpy()[:,:,:,0]
+                    mask_np = np.where(mask_np>0,255,0).astype(np.uint8)
+                    edge_np = [cv2.dilate(cv2.Canny(bth,100,200),kernel) for bth in mask_np]
                     # np (batch,h,w,1)-> torch (batch,1,h,w)
                     edge_np = np.stack(edge_np,0)
                                        
@@ -261,15 +262,19 @@ def train(rank, world_size, args):
                         bth_edge = cv2.dilate(cv2.Canny(bth_mask,100,200),kernel)
                         mask_list.append(bth_mask)
                         edge_list.append(bth_edge)
-                    mask_np = np.array(mask_list)
-                    edge_np = np.array(edge_list)
+                    mask_np = np.stack(mask_list,0)
+                    edge_np = np.stack(edge_list,0)
                     
                 edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
                 edge = (edge>0).float().permute(0,3,1,2)
-                mask = torch.from_numpy(np.expand_dims(mask_np,-1)).cuda(non_blocking=True)
+                if(len(mask_np.shape)==3):
+                    mask = torch.from_numpy(np.expand_dims(mask_np,-1)).cuda(non_blocking=True)
+                else:
+                    mask = torch.from_numpy(mask_np).cuda(non_blocking=True)
                 mask = (mask>0).float().permute(0,3,1,2)
                 loss_dict['mask_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
                 loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
+
             region_mask_np = []
             region_mask_bin_np = []
             boundary_mask_bin_np = []
@@ -298,6 +303,15 @@ def train(rank, world_size, args):
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
                 region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
                 loss_dict['region_loss'] = criterion(pred[:,DEF_START_MASK_CH+2], region_mask)
+                if(DEF_MASK_CH>3):
+                    img = x.numpy().astype(np.uint8)
+                    threshold_np = np.stack([cv2.cvtColor(o,cv2.COLOR_RGB2GRAY) for o in img],0)
+                    threshold_np[mask_np==0]=0
+                    if(len(threshold_np.shape)==3):
+                        threshold_np = np.expand_dims(threshold_np,-1)
+                    threshold = torch.from_numpy(threshold_np).float().cuda(non_blocking=True).permute(0,3,1,2)
+                    threshold /= 255.0
+                    loss_dict['threshold_loss'] = criterion(pred[:,DEF_START_MASK_CH+3],threshold)
 
             if(DEF_BOOL_TRAIN_CE):
                 region_mask_bin_np = np.stack(region_mask_bin_np,0).astype(np.uint8)
@@ -446,18 +460,30 @@ def train(rank, world_size, args):
                 pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
                 smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
                 smx = cv_mask_image(smx,pred_regi)
-                line = np.ones((smx.shape[0],3,3),dtype=np.uint8)*255
-                img = np.concatenate((smx,line,pred_mask,line,pred_edge),-2)
-                logger.add_image('Prediction', img, epoch,dataformats='HWC')
-                if(b_have_mask):
-                    gt_mask = np.stack([msak_np[log_i],msak_np[log_i],msak_np[log_i]],-1)
-                    gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
-                    gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
-                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
-                    smx = cv_mask_image(smx,gt_regi)
-                    line = np.ones((smx.shape[0],3,3),dtype=np.uint8)*255
-                    img = np.concatenate((smx,line,gt_mask,line,gt_edge),-2)
-                    logger.add_image('GT', img, epoch,dataformats='HWC')
+                logimg = [smx,pred_mask,pred_edge]
+                if(DEF_MASK_CH>3):
+                    pred_threshold = pred[log_i,DEF_START_MASK_CH+3].to('cpu').detach().numpy()
+                    pred_threshold = (pred_threshold*255).astype(np.uint8)
+                    pred_threshold = np.stack([pred_threshold,pred_threshold,pred_threshold],-1)
+                    logimg.append(pred_threshold)
+
+                logger.add_image('Prediction', concatenate_images(logimg), epoch,dataformats='HWC')
+                
+                gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
+                gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
+                gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
+                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
+                smx = cv_mask_image(smx,gt_regi)
+                logimg = [smx,gt_mask,gt_edge]
+                if(DEF_MASK_CH>3):
+                    gt_threshold = threshold_np[log_i]
+                    if(len(gt_threshold.shape)==2):
+                        gt_threshold = np.expand_dims(gt_threshold,-1)
+                    if(gt_threshold.shape[-1]==1):
+                        gt_threshold = np.concatenate([gt_threshold,gt_threshold,gt_threshold],-1)
+                    logimg.append(gt_threshold)
+
+                logger.add_image('GT', concatenate_images(logimg), epoch,dataformats='HWC')
 
                 if(DEF_BOOL_LOG_LEVEL_MASK):
                     try:
@@ -577,7 +603,7 @@ if __name__ == '__main__':
     parser.add_argument('--multi_gpu', help='Set --multi_gpu to enable multi gpu training.',action="store_true")
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
-    parser.add_argument('--net', help='Choose noework.', default='vgg_mask')
+    parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK')
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
     parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
@@ -594,10 +620,12 @@ if __name__ == '__main__':
     args.net = args.net.lower()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
     args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
-    
+
+    # args.multi_gpu = False
     # args.debug = True
     # args.random=True
     # args.batch=2
+    
     summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(DEF_WORK_DIR)+\
         "Running with: \n"+\

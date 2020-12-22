@@ -148,7 +148,7 @@ class PIX_MASK(nn.Module):
         return mask,featout
 
 class PIX_Unet_MASK(nn.Module):
-    def __init__(self, basenet_name:str = 'mobile',min_map_ch:int=32, min_upc_ch:int =128,
+    def __init__(self, basenet_name:str = 'mobile', mask_ch:int = 3,min_map_ch:int=32, min_upc_ch:int =128,
         padding:bool=True,init_method:str='xavier_uniform',**args):
         super(PIX_Unet_MASK, self).__init__()
         basenet_name = basenet_name.lower()
@@ -157,10 +157,10 @@ class PIX_Unet_MASK(nn.Module):
         else:
             self.basenet = MobUNet(min_upc_ch=min_upc_ch,init_method=init_method,**args)
         upch = self.basenet.out_channels
-        map_ch = 3
+
         self.mask = nn.Sequential(
             double_conv(upch,max(upch//2,min_map_ch),max(upch//4,min_map_ch)),
-            double_conv(max(upch//4,min_map_ch),max(upch//8,min_map_ch),map_ch),
+            double_conv(max(upch//4,min_map_ch),max(upch//8,min_map_ch),mask_ch),
             )
 
         init_weights(self.mask.modules(),init_method)
