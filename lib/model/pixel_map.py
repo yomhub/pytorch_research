@@ -173,7 +173,7 @@ class PIX_Unet_MASK(nn.Module):
 
 
 class PIX_Unet_MASK_CLS(PIX_Unet_MASK):
-    def __init__(self, multi_level:bool=True, cls_out_ch:int=3, min_cls_ch:int=32, 
+    def __init__(self, cls_ch:int=3, multi_level:bool=True, min_cls_ch:int=32, 
         init_method:str='xavier_uniform',**args):
         super(PIX_Unet_MASK_CLS, self).__init__(init_method=init_method,**args)
         upch = self.basenet.out_channels
@@ -188,19 +188,19 @@ class PIX_Unet_MASK_CLS(PIX_Unet_MASK):
 
             self.b4_cls = nn.Sequential(
                 double_conv(b4ch,max(b4ch//2,min_cls_ch),max(b4ch//4,min_cls_ch)),
-                double_conv(max(b4ch//4,min_cls_ch),max(b4ch//8,min_cls_ch),cls_out_ch),
+                double_conv(max(b4ch//4,min_cls_ch),max(b4ch//8,min_cls_ch),cls_ch),
                 )
             self.b3_cls = nn.Sequential(
                 double_conv(b3ch,max(b3ch//2,min_cls_ch),max(b3ch//4,min_cls_ch)),
-                double_conv(max(b3ch//4,min_cls_ch),max(b3ch//8,min_cls_ch),cls_out_ch),
+                double_conv(max(b3ch//4,min_cls_ch),max(b3ch//8,min_cls_ch),cls_ch),
                 )
             self.b2_cls = nn.Sequential(
                 double_conv(b2ch,max(b2ch//2,min_cls_ch),max(b2ch//4,min_cls_ch)),
-                double_conv(max(b2ch//4,min_cls_ch),max(b2ch//8,min_cls_ch),cls_out_ch),
+                double_conv(max(b2ch//4,min_cls_ch),max(b2ch//8,min_cls_ch),cls_ch),
                 )
             self.b1_cls = nn.Sequential(
                 double_conv(b1ch,max(b1ch//2,min_cls_ch),max(b1ch//4,min_cls_ch)),
-                double_conv(max(b1ch//4,min_cls_ch),max(b1ch//8,min_cls_ch),cls_out_ch),
+                double_conv(max(b1ch//4,min_cls_ch),max(b1ch//8,min_cls_ch),cls_ch),
                 )
             init_weights(self.b4_cls.modules(),init_method)
             init_weights(self.b3_cls.modules(),init_method)
@@ -210,7 +210,7 @@ class PIX_Unet_MASK_CLS(PIX_Unet_MASK):
             upch = self.basenet.out_channels
             self.cls = nn.Sequential(
                 double_conv(upch,max(upch//2,min_cls_ch),max(upch//4,min_cls_ch)),
-                double_conv(max(upch//4,min_cls_ch),max(upch//8,min_cls_ch),cls_out_ch),
+                double_conv(max(upch//4,min_cls_ch),max(upch//8,min_cls_ch),cls_ch),
                 )
             init_weights(self.cls.modules(),init_method)
             
@@ -369,8 +369,8 @@ class VGG_PUR_CLS(nn.Module):
         b1_clsp = self.b1_cls(b1)
         b0_clsp = self.b0_cls(b0)
         final_cls = b4_clsp
-        final_cls = b3_clsp+F.interpolate(final_cls, size=b3_clsp.size()[2:], mode='nearest')
-        final_cls = b2_clsp+F.interpolate(final_cls, size=b2_clsp.size()[2:], mode='nearest')
-        final_cls = b1_clsp+F.interpolate(final_cls, size=b1_clsp.size()[2:], mode='nearest')
-        final_cls = b0_clsp+F.interpolate(final_cls, size=b0_clsp.size()[2:], mode='nearest')
+        final_cls = b3_clsp+F.interpolate(final_cls, size=b3_clsp.size()[2:], mode='bilinear')
+        final_cls = b2_clsp+F.interpolate(final_cls, size=b2_clsp.size()[2:], mode='bilinear')
+        final_cls = b1_clsp+F.interpolate(final_cls, size=b1_clsp.size()[2:], mode='bilinear')
+        final_cls = b0_clsp+F.interpolate(final_cls, size=b0_clsp.size()[2:], mode='bilinear')
         return final_cls,vgg_feat

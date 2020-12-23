@@ -35,7 +35,8 @@ from dirs import *
 DEF_MAX_TRACKING_BOX_NUMBER = 1
 # pixel mask, edge mask, region mask, threshold mask
 DEF_MASK_CH = 4
-DEF_CE_CH = 3
+# [bg, fg, boundary] | [text bg, text fg]
+DEF_CE_CH = 3+2
 DEF_BOOL_POLY_REGRESSION = False
 DEF_POLY_NUM = 10
 DEF_BOX_CH = (1+DEF_POLY_NUM*2) if(DEF_BOOL_POLY_REGRESSION)else (1+4) # 1 score map + 10 points polygon (x,y) or (dcx,dcy,w,h)
@@ -90,14 +91,14 @@ def train(rank, world_size, args):
         model = PIX_Unet_MASK(basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='pix_unet_mask_cls'):
-        model = PIX_Unet_MASK_CLS(multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        model = PIX_Unet_MASK_CLS(cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
+            mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
     elif(args.net=='pix_unet_mask_cls_box'):
         model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
-            multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+            cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
+            mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_TRAIN_BOX = True
@@ -254,11 +255,15 @@ def train(rank, world_size, args):
                     # weak surpress learning
                     mask_list = []
                     edge_list = []
-                    np_pred_mask = pred[:,DEF_START_MASK_CH+0].cpu().detach().numpy()
-                    np_pred_edge = pred[:,DEF_START_MASK_CH+1].cpu().detach().numpy()
+                    if(DEF_BOOL_TRAIN_CE):
+                        labels = torch.argmax(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],dim=1)
+                        np_pred_mask = (labels>0).cpu().detach().numpy()
+                    else:
+                        np_pred_mask = (pred[:,DEF_START_MASK_CH+0]>0.3).cpu().detach().numpy()
+
                     x_np = x.numpy().astype(np.uint8)
                     for batchi in range(x_np.shape[0]):
-                        bth_mask, bth_region= cv_gen_binary_map_by_pred(x_np[batchi],boxes[batchi],predmask=np_pred_mask[batchi])
+                        bth_mask = cv_gen_binary_map_by_pred(x_np[batchi],boxes[batchi],np_pred_mask[batchi])
                         bth_edge = cv2.dilate(cv2.Canny(bth_mask,100,200),kernel)
                         mask_list.append(bth_mask)
                         edge_list.append(bth_edge)
@@ -272,7 +277,7 @@ def train(rank, world_size, args):
                 else:
                     mask = torch.from_numpy(mask_np).cuda(non_blocking=True)
                 mask = (mask>0).float().permute(0,3,1,2)
-                loss_dict['mask_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
+                loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
                 loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
 
             region_mask_np = []
@@ -321,7 +326,11 @@ def train(rank, world_size, args):
                 ce_y[region_mask_bin_np>0]=1
                 ce_y[boundary_mask_bin_np>0]=2
                 ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
-                loss_dict['cls_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+DEF_CE_CH], ce_y_torch)
+                loss_dict['region_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3], ce_y_torch)
+                if(DEF_CE_CH>3):
+                    mask_ce = F.interpolate(mask,size=pred.shape[2:], mode='bilinear', align_corners=False)
+                    mask_ce = (mask_ce[:,0]>0).type(torch.int64)
+                    loss_dict['txt_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH], mask_ce)
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_bx = pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_CH]
@@ -518,13 +527,20 @@ def train(rank, world_size, args):
                         print(str(e))
 
             if(DEF_BOOL_TRAIN_CE):
-                labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:],dim=1)
+                labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:DEF_START_CE_CH+3],dim=1)
                 labels = labels[0].cpu().detach().numpy()
                 gtlabels = ce_y[log_i]
                 labels = cv_labelmap(labels)
                 gtlabels = cv_labelmap(gtlabels)
                 img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
-                logger.add_image('Labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+                logger.add_image('Region labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+                if(DEF_CE_CH>3):
+                    labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
+                    labels = labels[0].cpu().detach().numpy()
+                    gtlabels = (mask_np[log_i]>0).astype(np.uint8)
+                    gtlabels = cv_labelmap(gtlabels)
+                    labels = cv_labelmap(labels)
+                    logger.add_image('Text labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
@@ -603,7 +619,7 @@ if __name__ == '__main__':
     parser.add_argument('--multi_gpu', help='Set --multi_gpu to enable multi gpu training.',action="store_true")
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
-    parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK')
+    parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK_CLS_BOX')
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
     parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')

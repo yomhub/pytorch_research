@@ -186,7 +186,7 @@ class MobileNetV2(nn.Module):
 class MobNetBlk(nn.Module):
     def __init__(self, width_mult=1.,pretrained=False,
         inverted_residual_setting = DEF_INTERVERTED_RESIDUAL_SETTING,
-        **args
+        include_final:bool=False,**args
         ):
         super(MobNetBlk, self).__init__()
         mob = models.mobilenet_v2(
@@ -205,11 +205,15 @@ class MobNetBlk(nn.Module):
         blk_idx,feat_idx=0,1
         for t, c, n, s in inverted_residual_setting:
             if(s>1):
+                # down sampling, go to next block
                 blk_idx = min(blk_idx+1,len(blk_lst)-1)
             for i in range(n):
                 blk_lst[blk_idx].add_module(
                     str(feat_idx+i)+mob.features[feat_idx+i].__class__.__name__,mob.features[feat_idx+i])
             feat_idx+=n
+        
+        if(include_final):
+            blk_lst[-1].add_module(str(feat_idx)+mob.features[feat_idx].__class__.__name__,mob.features[feat_idx])
 
         self.out_tuple = namedtuple("MobNetBlk", ['b{}'.format(i) for i in range(len(blk_lst))])
 
