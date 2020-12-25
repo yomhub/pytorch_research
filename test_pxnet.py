@@ -34,6 +34,7 @@ from dirs import *
 DEF_BOOL_TRAIN_MASK = True
 DEF_BOOL_TRAIN_CE = True
 DEF_BOOL_TRAIN_BOX = True
+DEF_BOOL_SENTENCES_BOX = False
 
 @torch.no_grad()
 def test(net,dataloader,save_dir):
@@ -200,6 +201,7 @@ if __name__ == "__main__":
             os.path.join(DEF_MSRA_DIR,'test'),
             os.path.join(DEF_MSRA_DIR,'test'),
             image_size=image_size)
+        DEF_BOOL_SENTENCES_BOX = True
     elif(dataset=="ic19"):
         train_dataset = ICDAR19(
             os.path.join(DEF_IC19_DIR,'images','test'),

@@ -118,10 +118,11 @@ class MSE_2d_Loss(nn.Module):
         self.pixel_sum = bool(pixel_sum)
         self.positive_th = positive_th
 
-    def mse_loss_single(self,x,y):
+    def mse_loss_single(self,x,y,weight_mask=None):
         positive_mask = y > self.positive_th
         sample_loss = self.mse_loss(x, y)
-
+        if(not isinstance(weight_mask,type(None))):
+            sample_loss*=weight_mask
         num_positive = torch.sum(positive_mask).item()
 
         k = int(num_positive * self.positive_mult)
@@ -141,12 +142,15 @@ class MSE_2d_Loss(nn.Module):
 
         return sample_loss
 
-    def forward(self, x, y):
+    def forward(self, *args):
         """
         Args:
             x: prediction (batch,(ch),h,w)
             y: true value (batch,(ch),h,w)
+            weight_mask (optical): loss weight mask in [0,1]
         """
+        x,y = args[0],args[1]
+
         if(isinstance(x,tuple)):
             x = x[0]
         if(len(x.shape)==3):
@@ -155,10 +159,20 @@ class MSE_2d_Loss(nn.Module):
             y = y.reshape((y.shape[0],1,y.shape[1],y.shape[2]))
 
         y = F.interpolate(y,size=x.shape[2:], mode='bilinear', align_corners=False)
+
+        b_have_weight_mask = False
+        if(len(args)>2):
+            b_have_weight_mask = True
+            weight_mask = args[2]
+            if(len(weight_mask.shape)==3):
+                weight_mask = weight_mask.reshape((weight_mask.shape[0],1,weight_mask.shape[1],weight_mask.shape[2]))
+            weight_mask = F.interpolate(weight_mask,size=x.shape[2:], mode='bilinear', align_corners=False)
+            weight_mask = weight_mask.reshape(weight_mask.shape[0],-1)
+
         x = x.reshape(x.shape[0],-1)
         y = y.reshape(y.shape[0],-1)
         loss_every_sample = []
         for i in range(x.shape[0]):
-            loss_every_sample.append(self.mse_loss_single(x[i],y[i]))
+            loss_every_sample.append(self.mse_loss_single(x[i],y[i],weight_mask[i] if(b_have_weight_mask)else None))
             
         return torch.stack(loss_every_sample, 0).mean()

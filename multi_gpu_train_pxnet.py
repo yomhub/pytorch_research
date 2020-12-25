@@ -59,7 +59,7 @@ def train(rank, world_size, args):
     work_dir = os.path.join(work_dir,'log')
     if(args.name):
         work_dir = os.path.join(work_dir,args.name)
-    if(rank==0):
+    if(rank==0 and not(args.debug)):
         logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S")))
     else:
         logger = None
@@ -153,11 +153,12 @@ def train(rank, world_size, args):
             os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
             os.path.join(DEF_TTT_DIR,'gt_txt','train'),
             image_size=image_size,)
-    elif(args.dataset=="msra"):
-        train_dataset = MSRA(
-            os.path.join(DEF_MSRA_DIR,'train'),
-            os.path.join(DEF_MSRA_DIR,'train'),
-            image_size=image_size)
+    # elif(args.dataset=="msra"):
+    # # ONLY PROVIDE SENTENCE LEVEL BOX
+    #     train_dataset = MSRA(
+    #         os.path.join(DEF_MSRA_DIR,'train'),
+    #         os.path.join(DEF_MSRA_DIR,'train'),
+    #         image_size=image_size)
     elif(args.dataset=="ic19"):
         train_dataset = ICDAR19(
             os.path.join(DEF_IC19_DIR,'images','train'),
@@ -191,7 +192,7 @@ def train(rank, world_size, args):
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
     for epoch in range(args.epoch):
-        for i, sample in enumerate(train_loader):
+        for stepi, sample in enumerate(train_loader):
             x = sample['image']
             b_have_mask = bool('mask' in sample)
             if(b_have_mask):
@@ -255,21 +256,28 @@ def train(rank, world_size, args):
                     # weak surpress learning
                     mask_list = []
                     edge_list = []
-                    if(DEF_BOOL_TRAIN_CE):
-                        labels = torch.argmax(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],dim=1)
-                        np_pred_mask = (labels>0).cpu().detach().numpy()
+                    gen_mask_prob_list = []
+                    if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
+                        labels= torch.argmax(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
+                        np_pred_mask = (labels==1).cpu().detach().numpy()
+                        np_pred_mask = np.logical_or(np_pred_mask,(pred[:,DEF_START_MASK_CH+0]>0.3).cpu().detach().numpy())
                     else:
                         np_pred_mask = (pred[:,DEF_START_MASK_CH+0]>0.3).cpu().detach().numpy()
 
                     x_np = x.numpy().astype(np.uint8)
                     for batchi in range(x_np.shape[0]):
-                        bth_mask = cv_gen_binary_map_by_pred(x_np[batchi],boxes[batchi],np_pred_mask[batchi])
+                        bth_mask,gen_mask_prob  = cv_gen_binary_map_by_pred(x_np[batchi],boxes[batchi],np_pred_mask[batchi])
                         bth_edge = cv2.dilate(cv2.Canny(bth_mask,100,200),kernel)
                         mask_list.append(bth_mask)
                         edge_list.append(bth_edge)
+                        gen_mask_prob_list.append(gen_mask_prob)
+
                     mask_np = np.stack(mask_list,0)
                     edge_np = np.stack(edge_list,0)
-                    
+                    gen_mask_prob_np = np.stack(gen_mask_prob_list,0)
+                    gen_mask_prob = torch.from_numpy(np.expand_dims(gen_mask_prob_np,-1)).cuda(non_blocking=True)
+                    gen_mask_prob = gen_mask_prob.float().permute(0,3,1,2)
+                
                 edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
                 edge = (edge>0).float().permute(0,3,1,2)
                 if(len(mask_np.shape)==3):
@@ -277,8 +285,12 @@ def train(rank, world_size, args):
                 else:
                     mask = torch.from_numpy(mask_np).cuda(non_blocking=True)
                 mask = (mask>0).float().permute(0,3,1,2)
-                loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
-                loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
+                if(b_have_mask):
+                    loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
+                    loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
+                else:
+                    loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask, gen_mask_prob)
+                    loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge, gen_mask_prob)
 
             region_mask_np = []
             region_mask_bin_np = []
@@ -431,12 +443,154 @@ def train(rank, world_size, args):
             optimizer.step()
 
             if(logger and rank==0):
-                logger.add_scalar('Loss/total loss', loss.item(), epoch*total_step+i)
+                logger.add_scalar('Loss/total loss', loss.item(), epoch*total_step+stepi)
                 for keyn,value in loss_dict.items():
-                    logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+i)
+                    logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+stepi)
 
                 logger.flush()
+        
+            if(logger and rank==0):
+                log_i,box_num = 0,boxes[0].shape[0]
+                for i,o in enumerate(boxes):
+                    if(box_num<o.shape[0]):
+                        log_i=i
+                        box_num = o.shape[0]
+                if(DEF_BOOL_TRAIN_MASK):
+                    pred_mask = pred[log_i,DEF_START_MASK_CH+0].to('cpu').detach().numpy()
+                    pred_edge = pred[log_i,DEF_START_MASK_CH+1].to('cpu').detach().numpy()
+                    pred_regi = pred[log_i,DEF_START_MASK_CH+2].to('cpu').detach().numpy()
+                    pred_mask = (pred_mask*255.0).astype(np.uint8)
+                    pred_edge = (pred_edge*255.0).astype(np.uint8)
+                    pred_regi = cv_heatmap(pred_regi)
+                    pred_mask = np.stack([pred_mask,pred_mask,pred_mask],-1)
+                    pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
+                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
+                    smx = cv_mask_image(smx,pred_regi)
+                    logimg = [smx,pred_mask,pred_edge]
+                    if(DEF_MASK_CH>3):
+                        pred_threshold = pred[log_i,DEF_START_MASK_CH+3].to('cpu').detach().numpy()
+                        pred_threshold = (pred_threshold*255).astype(np.uint8)
+                        pred_threshold = np.stack([pred_threshold,pred_threshold,pred_threshold],-1)
+                        logimg.append(pred_threshold)
 
+                    logger.add_image('Prediction', concatenate_images(logimg), epoch,dataformats='HWC')
+                    
+                    gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
+                    gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
+                    gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
+                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
+                    smx = cv_mask_image(smx,gt_regi)
+                    logimg = [smx,gt_mask,gt_edge]
+                    if(DEF_MASK_CH>3):
+                        gt_threshold = threshold_np[log_i]
+                        if(len(gt_threshold.shape)==2):
+                            gt_threshold = np.expand_dims(gt_threshold,-1)
+                        if(gt_threshold.shape[-1]==1):
+                            gt_threshold = np.concatenate([gt_threshold,gt_threshold,gt_threshold],-1)
+                        logimg.append(gt_threshold)
+
+                    logger.add_image('GT', concatenate_images(logimg), epoch,dataformats='HWC')
+
+                    if(DEF_BOOL_LOG_LEVEL_MASK):
+                        try:
+                            b1_mask = feat.b1_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                            b2_mask = feat.b2_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                            b3_mask = feat.b3_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+                            b4_mask = feat.b4_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
+
+                            b2_mask = cv2.resize(b2_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+                            b3_mask = cv2.resize(b3_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+                            b4_mask = cv2.resize(b4_mask,(b1_mask.shape[1],b1_mask.shape[0]))
+                            line = np.ones((b1_mask.shape[0],3,3),dtype=np.uint8)*255
+                            img = np.concatenate((
+                                cv_heatmap(b3_mask[:,:,0]),line,
+                                cv_heatmap(b4_mask[:,:,0])),-2)
+                            logger.add_image('B3|B4 BG', img, epoch,dataformats='HWC')
+                            img = np.concatenate((
+                                cv_heatmap(b3_mask[:,:,1]),line,
+                                cv_heatmap(b4_mask[:,:,1])),-2)
+                            logger.add_image('B3|B4 region', img, epoch,dataformats='HWC')
+                            img = np.concatenate((
+                                cv_heatmap(b1_mask[:,:,1]),line,
+                                cv_heatmap(b2_mask[:,:,1])),-2)
+                            logger.add_image('B1|B2 edge', img, epoch,dataformats='HWC')
+                            img = np.concatenate((
+                                cv_heatmap(b1_mask[:,:,0]),line,
+                                cv_heatmap(b2_mask[:,:,0]),line,
+                                cv_heatmap(b3_mask[:,:,2]),line,
+                                cv_heatmap(b4_mask[:,:,2])),-2)
+                            logger.add_image('B1|B2|B3|B4 txt', img, epoch,dataformats='HWC')
+                        except Exception as e:
+                            print(str(e))
+
+                if(DEF_BOOL_TRAIN_CE):
+                    labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:DEF_START_CE_CH+3],dim=1)
+                    labels = labels[0].cpu().detach().numpy()
+                    gtlabels = ce_y[log_i]
+                    labels = cv_labelmap(labels)
+                    gtlabels = cv_labelmap(gtlabels)
+                    img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
+                    logger.add_image('Region labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+                    if(DEF_CE_CH>3):
+                        labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
+                        labels = labels[0].cpu().detach().numpy()
+                        gtlabels = (mask_np[log_i]>0).astype(np.uint8)
+                        gtlabels = cv_labelmap(gtlabels)
+                        labels = cv_labelmap(labels)
+                        logger.add_image('Text labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+
+                if(DEF_BOOL_TRAIN_BOX):
+                    pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
+                    div_num = DEF_POLY_NUM//2
+                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_box.shape[-1],pred_box.shape[-2]))
+                    small_image_size_xy = np.array([pred_box.shape[-1],pred_box.shape[-2]])
+                    batch_boxes = boxes[log_i]
+                    boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_box.shape[-2:],'polyxy')
+                    ct_box = np_polybox_center(boxes_small)
+                    if(DEF_BOOL_POLY_REGRESSION):
+                        poly_gt_list = []
+                        c_pred_box_list = []
+                        for boxi in range(boxes_small.shape[0]):
+                            poly_gt = np_split_polygon(boxes_small[boxi],div_num)
+                            cx,cy = ct_box[boxi].astype(np.uint16)
+                            if(cx>=pred_box.shape[2] or cy>=pred_box.shape[1]):
+                                continue
+                            c_pred_box = pred_box[:,cy-1,cx-1].reshape(-1,2)*small_image_size_xy+ct_box[boxi]
+                            poly_gt_list.append(poly_gt)
+                            c_pred_box_list.append(c_pred_box)
+                        gt_img = cv_draw_poly(smx,poly_gt_list,color=(0,255,0),point_emphasis=True)
+                        pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
+                    else:
+                        c_pred_box_list = []
+                        for boxi in range(boxes_small.shape[0]):
+                            cx,cy = ct_box[boxi].astype(np.uint16)
+                            if(cx>=pred_box.shape[2] or cy>=pred_box.shape[1]):
+                                continue
+                            pred_cx,pred_cy = pred_box[0:2,cy-1,cx-1]*small_image_size_xy+ct_box[boxi]
+                            pred_w,pred_h = pred_box[2:4,cy-1,cx-1]*small_image_size_xy
+                            c_pred_box_list.append(np.array([
+                                [pred_cx-pred_w/2,pred_cy-pred_h/2],
+                                [pred_cx+pred_w/2,pred_cy-pred_h/2],
+                                [pred_cx+pred_w/2,pred_cy+pred_h/2],
+                                [pred_cx-pred_w/2,pred_cy+pred_h/2],
+                                ]))
+                        gt_img = cv_draw_poly(smx,boxes_small,color=(0,255,0),point_emphasis=True)
+                        pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
+                    logger.add_image('BOX GT|Pred', concatenate_images([gt_img,pred_img]), epoch,dataformats='HWC')
+
+                if(DEF_BOOL_TRACKING):
+                    img = batch_x_np
+                    img[:sub_img.shape[0],:sub_img.shape[1]] = sub_img
+                    match_map_np = match_map[0,0].to('cpu').detach().numpy()
+                    track_gt = cv_mask_image(img,cv_heatmap(sub_ch_mask))
+                    track_pred = cv_mask_image(img,cv_heatmap(match_map_np))
+                    if(track_pred.shape!=track_gt.shape):
+                        track_gt = cv2.resize(track_gt,(track_pred.shape[1],track_pred.shape[0]))
+                    line = np.ones((track_pred.shape[0],3,3),dtype=np.uint8)*255
+                    img = np.concatenate((track_gt,line,track_pred),-2)
+                    logger.add_image('Tracking GT|Pred', img, epoch,dataformats='HWC')
+                    
+                logger.flush()
 
         if(rank == 0):
             time_usage = datetime.now() - time_c
@@ -452,144 +606,7 @@ def train(rank, world_size, args):
             # model_cpu = model.cpu()
             print("Saving model at {}...".format(args.save))
             torch.save(model.state_dict(),args.save)
-        if(logger and rank==0):
-            log_i,box_num = 0,boxes[0].shape[0]
-            for i,o in enumerate(boxes):
-                if(box_num<o.shape[0]):
-                    log_i=i
-                    box_num = o.shape[0]
-            if(DEF_BOOL_TRAIN_MASK):
-                pred_mask = pred[log_i,DEF_START_MASK_CH+0].to('cpu').detach().numpy()
-                pred_edge = pred[log_i,DEF_START_MASK_CH+1].to('cpu').detach().numpy()
-                pred_regi = pred[log_i,DEF_START_MASK_CH+2].to('cpu').detach().numpy()
-                pred_mask = (pred_mask*255.0).astype(np.uint8)
-                pred_edge = (pred_edge*255.0).astype(np.uint8)
-                pred_regi = cv_heatmap(pred_regi)
-                pred_mask = np.stack([pred_mask,pred_mask,pred_mask],-1)
-                pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
-                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
-                smx = cv_mask_image(smx,pred_regi)
-                logimg = [smx,pred_mask,pred_edge]
-                if(DEF_MASK_CH>3):
-                    pred_threshold = pred[log_i,DEF_START_MASK_CH+3].to('cpu').detach().numpy()
-                    pred_threshold = (pred_threshold*255).astype(np.uint8)
-                    pred_threshold = np.stack([pred_threshold,pred_threshold,pred_threshold],-1)
-                    logimg.append(pred_threshold)
-
-                logger.add_image('Prediction', concatenate_images(logimg), epoch,dataformats='HWC')
-                
-                gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
-                gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
-                gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
-                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
-                smx = cv_mask_image(smx,gt_regi)
-                logimg = [smx,gt_mask,gt_edge]
-                if(DEF_MASK_CH>3):
-                    gt_threshold = threshold_np[log_i]
-                    if(len(gt_threshold.shape)==2):
-                        gt_threshold = np.expand_dims(gt_threshold,-1)
-                    if(gt_threshold.shape[-1]==1):
-                        gt_threshold = np.concatenate([gt_threshold,gt_threshold,gt_threshold],-1)
-                    logimg.append(gt_threshold)
-
-                logger.add_image('GT', concatenate_images(logimg), epoch,dataformats='HWC')
-
-                if(DEF_BOOL_LOG_LEVEL_MASK):
-                    try:
-                        b1_mask = feat.b1_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
-                        b2_mask = feat.b2_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
-                        b3_mask = feat.b3_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
-                        b4_mask = feat.b4_mask[log_i].to('cpu').permute(1,2,0).detach().numpy()
-
-                        b2_mask = cv2.resize(b2_mask,(b1_mask.shape[1],b1_mask.shape[0]))
-                        b3_mask = cv2.resize(b3_mask,(b1_mask.shape[1],b1_mask.shape[0]))
-                        b4_mask = cv2.resize(b4_mask,(b1_mask.shape[1],b1_mask.shape[0]))
-                        line = np.ones((b1_mask.shape[0],3,3),dtype=np.uint8)*255
-                        img = np.concatenate((
-                            cv_heatmap(b3_mask[:,:,0]),line,
-                            cv_heatmap(b4_mask[:,:,0])),-2)
-                        logger.add_image('B3|B4 BG', img, epoch,dataformats='HWC')
-                        img = np.concatenate((
-                            cv_heatmap(b3_mask[:,:,1]),line,
-                            cv_heatmap(b4_mask[:,:,1])),-2)
-                        logger.add_image('B3|B4 region', img, epoch,dataformats='HWC')
-                        img = np.concatenate((
-                            cv_heatmap(b1_mask[:,:,1]),line,
-                            cv_heatmap(b2_mask[:,:,1])),-2)
-                        logger.add_image('B1|B2 edge', img, epoch,dataformats='HWC')
-                        img = np.concatenate((
-                            cv_heatmap(b1_mask[:,:,0]),line,
-                            cv_heatmap(b2_mask[:,:,0]),line,
-                            cv_heatmap(b3_mask[:,:,2]),line,
-                            cv_heatmap(b4_mask[:,:,2])),-2)
-                        logger.add_image('B1|B2|B3|B4 txt', img, epoch,dataformats='HWC')
-                    except Exception as e:
-                        print(str(e))
-
-            if(DEF_BOOL_TRAIN_CE):
-                labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH:DEF_START_CE_CH+3],dim=1)
-                labels = labels[0].cpu().detach().numpy()
-                gtlabels = ce_y[log_i]
-                labels = cv_labelmap(labels)
-                gtlabels = cv_labelmap(gtlabels)
-                img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
-                logger.add_image('Region labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
-                if(DEF_CE_CH>3):
-                    labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
-                    labels = labels[0].cpu().detach().numpy()
-                    gtlabels = (mask_np[log_i]>0).astype(np.uint8)
-                    gtlabels = cv_labelmap(gtlabels)
-                    labels = cv_labelmap(labels)
-                    logger.add_image('Text labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
-
-            if(DEF_BOOL_TRAIN_BOX):
-                pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
-                div_num = DEF_POLY_NUM//2
-                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_box.shape[-1],pred_box.shape[-2]))
-                small_image_size_xy = np.array([pred_box.shape[-1],pred_box.shape[-2]])
-                batch_boxes = boxes[log_i]
-                boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_box.shape[-2:],'polyxy')
-                ct_box = np_polybox_center(boxes_small)
-                if(DEF_BOOL_POLY_REGRESSION):
-                    poly_gt_list = []
-                    c_pred_box_list = []
-                    for boxi in range(boxes_small.shape[0]):
-                        poly_gt = np_split_polygon(boxes_small[boxi],div_num)
-                        cx,cy = ct_box[boxi].astype(np.uint16)
-                        c_pred_box = pred_box[:,cy-1,cx-1].reshape(-1,2)*small_image_size_xy+ct_box[boxi]
-                        poly_gt_list.append(poly_gt)
-                        c_pred_box_list.append(c_pred_box)
-                    gt_img = cv_draw_poly(smx,poly_gt_list,color=(0,255,0),point_emphasis=True)
-                    pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
-                else:
-                    c_pred_box_list = []
-                    for boxi in range(boxes_small.shape[0]):
-                        cx,cy = ct_box[boxi].astype(np.uint16)
-                        pred_cx,pred_cy = pred_box[0:2,cy-1,cx-1]*small_image_size_xy+ct_box[boxi]
-                        pred_w,pred_h = pred_box[2:4,cy-1,cx-1]*small_image_size_xy
-                        c_pred_box_list.append(np.array([
-                            [pred_cx-pred_w/2,pred_cy-pred_h/2],
-                            [pred_cx+pred_w/2,pred_cy-pred_h/2],
-                            [pred_cx+pred_w/2,pred_cy+pred_h/2],
-                            [pred_cx-pred_w/2,pred_cy+pred_h/2],
-                            ]))
-                    gt_img = cv_draw_poly(smx,boxes_small,color=(0,255,0),point_emphasis=True)
-                    pred_img = cv_draw_poly(smx,c_pred_box_list,color=(0,0,255),point_emphasis=True)
-                logger.add_image('BOX GT|Pred', concatenate_images([gt_img,pred_img]), epoch,dataformats='HWC')
-
-            if(DEF_BOOL_TRACKING):
-                img = batch_x_np
-                img[:sub_img.shape[0],:sub_img.shape[1]] = sub_img
-                match_map_np = match_map[0,0].to('cpu').detach().numpy()
-                track_gt = cv_mask_image(img,cv_heatmap(sub_ch_mask))
-                track_pred = cv_mask_image(img,cv_heatmap(match_map_np))
-                if(track_pred.shape!=track_gt.shape):
-                    track_gt = cv2.resize(track_gt,(track_pred.shape[1],track_pred.shape[0]))
-                line = np.ones((track_pred.shape[0],3,3),dtype=np.uint8)*255
-                img = np.concatenate((track_gt,line,track_pred),-2)
-                logger.add_image('Tracking GT|Pred', img, epoch,dataformats='HWC')
-                
-            logger.flush()
+        # End of for
 
     if(rank == 0):
         time_usage = datetime.now() - time_start
@@ -630,7 +647,7 @@ if __name__ == '__main__':
     parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
     parser.add_argument('--epoch', type=int, help='Epoch size.',default=tcfg['EPOCH'])
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
-    parser.add_argument('--bxrefine', help='Set --debug if want to debug.', action="store_true")
+    parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
 
     args = parser.parse_args()
     args.net = args.net.lower()
@@ -641,7 +658,10 @@ if __name__ == '__main__':
     # args.debug = True
     # args.random=True
     # args.batch=2
-    
+    # args.load = "/BACKUP/yom_backup/saved_model/PIX_Unet_MASK_CLS_BOX.pth"
+    # args.net = 'pix_unet_mask_cls_box'
+    # args.dataset = 'ic19'
+
     summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(DEF_WORK_DIR)+\
         "Running with: \n"+\

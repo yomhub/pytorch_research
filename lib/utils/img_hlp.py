@@ -84,6 +84,8 @@ def np_box_resize(box:np.ndarray,org_size:tuple,new_size,box_format:str):
     if(not isinstance(new_size,Iterable)):
         new_size = (int(new_size),int(new_size))
     if(org_size==new_size):return box
+    if(org_size[0]==0 or org_size[1]==0):
+        raise "Dicide by zero.\n"
     return np_box_rescale(box,np.divide(new_size,org_size),box_format)
 
 def np_box_rescale(box,scale,box_format:str):
@@ -789,8 +791,8 @@ def cv_crop_image_by_polygon(image, box, w_multi:int=None, h_multi:int=None,w_mi
         M: mapping matrix
     """
     box_rect = np_polybox_minrect(box)
-    w,h = (box_rect[2]-box_rect[0]).astype(np.int16)
     sub_img,M = cv_crop_image_by_bbox(image, box_rect, w_multi, h_multi,w_min, h_min)
+    w,h = box_rect[2]-box_rect[0]
     pts = box-box_rect[0]
     pts = np_box_resize(pts,(h,w),sub_img.shape[:2],'polyxy')
     # Generate polygon mask, 2 for outline, 1 for inside pixels
@@ -1524,13 +1526,13 @@ def scipy_histogram_peaks(datas,peaks:int=3,bins:int=256,distance:int=30,min_val
 
     dist = slc_values[1:]-slc_values[:-1]
 
-def cv_gen_binary_map_by_pred(x,boxes,predmask,gtmask=None,
+def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
     bin_nums:int = 256,peak_distance:int = 20,max_single_peak_range:int = 10,
     counter_ignore_th:int = 5):
     """
     Image binarization for weakly supervised learning
     Args:
-        x: image (H,W,3)
+        image: image (H,W,3)
         boxes: GT cv polygon box ((N),k,2) for (x,y)
         predmask: binary mask in 0 or 255
         gtmask: binary mask in 0 or 255
@@ -1540,44 +1542,57 @@ def cv_gen_binary_map_by_pred(x,boxes,predmask,gtmask=None,
         counter_ignore_th: threshold of counter
     Return:
         mask: np.uint8 (H,W) in 0 or 255
+        probility: np.float32 (H,W) in [0,1]
+            gt=1.0, pred=0.8, edge=0.4 for have gtmask
+            pred=1.0, edge=0.5 for prediction only
     """  
     
     if(isinstance(gtmask,type(None))):
         b_have_gtmask=False
-        gtmask = np.zeros(x.shape[0:2],dtype=np.uint8)
+        gtmask = np.zeros(image.shape[0:2],dtype=np.uint8)
     else:
         b_have_gtmask=True
-        if(gtmask.dtype!=np.uint8):
-            gtmask = (gtmask>0).astype(np.uint8)*255
+        gtmask = np.where(gtmask>0,255,0).astype(np.uint8)
     if(isinstance(predmask,type(None))):
         b_have_predmask = False
-        # predmask = np.zeros(x.shape[0:2],dtype=np.uint8)
+        # predmask = np.zeros(image.shape[0:2],dtype=np.uint8)
     else:
         b_have_predmask = True
         if(predmask.dtype!=np.uint8):
             predmask = (predmask>0).astype(np.uint8)*255
     if(b_have_gtmask and len(gtmask.shape)==3):gtmask = gtmask[:,:,0]
     if(b_have_predmask and len(predmask.shape)==3):predmask = predmask[:,:,0]
-    if(b_have_gtmask and gtmask.shape!=x.shape[0:2]):
-        gtmask = cv2.resize(gtmask,(x.shape[1],x.shape[0]))
-    if(b_have_predmask and predmask.shape!=x.shape[0:2]):
-        predmask = cv2.resize(predmask,(x.shape[1],x.shape[0]))
+    if(b_have_gtmask and gtmask.shape!=image.shape[0:2]):
+        gtmask = cv2.resize(gtmask,(image.shape[1],image.shape[0]))
+    if(b_have_predmask and predmask.shape!=image.shape[0:2]):
+        predmask = cv2.resize(predmask,(image.shape[1],image.shape[0]))
+
+    probility = np.ones(image.shape[:2],dtype=np.float32)
     # for erode/dilate
     kernel = np.ones((3,3),np.uint8)
     for box in boxes:
-        sub_x,M,sub_x_fg_map = cv_crop_image_by_polygon(x,box,return_mask=True)
+        box_rect = np_polybox_minrect(box).astype(np.uint16)
+        box_rect = np.where(box_rect>0,box_rect,0)
+        w,h = box_rect[2]-box_rect[0]
+        if(w<4 or h<4):
+            continue
+        sub_x,M,sub_x_fg_map = cv_crop_image_by_polygon(image,box,return_mask=True)
+        if(sub_x.shape[0]<4 or sub_x.shape[1]<4):
+            continue
         sub_x_bg_map = ~sub_x_fg_map
 
-        box_rect = np_polybox_minrect(box).astype(np.uint16)
         sub_gt_mask = gtmask[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]
+        if(sub_gt_mask.shape[:2]!=sub_x_bg_map.shape[:2]):
+            sub_x = sub_x[:sub_gt_mask.shape[0],:sub_gt_mask.shape[1]]
+            sub_x_fg_map = sub_x_fg_map[:sub_gt_mask.shape[0],:sub_gt_mask.shape[1]]
+            sub_x_bg_map = sub_x_bg_map[:sub_gt_mask.shape[0],:sub_gt_mask.shape[1]]
+
         sub_gt_mask[sub_x_bg_map] = 0
 
         if(b_have_gtmask):
             # ensure gt mask is available in this box
-            fg_map = sub_gt_mask[sub_x_fg_map]
-            mean_v = np.mean(fg_map)
-            min_v,max_v = np.min(fg_map),np.max(fg_map)
-            if(max_v!=0 and min_v!=255 and max(mean_v-min_v,max_v-mean_v)>100):
+            fg_map = sub_gt_mask[sub_x_fg_map>0]
+            if(np.sum(fg_map>0)>(fg_map.size//3)):
                 # gt mask is available in this box
                 continue
 
@@ -1588,57 +1603,104 @@ def cv_gen_binary_map_by_pred(x,boxes,predmask,gtmask=None,
                 slc_sub_x = sub_x[sub_x_fg_map]
                 var_sub_x = np.var(slc_sub_x,axis=0)
                 sub_x = sub_x[:,:,np.argmax(var_sub_x)]
-        sub_x_ch = sub_x
 
-        # the total pixel number outside 0 of the polygon
-        zero_cnt = np.sum(sub_x_bg_map)
-        # get polygon box boundary
-        
-        dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8),kernel,iterations = 1)
-        boundary = np.where(sub_x_bg_map,0,dilate)
-
-        vote_mask = np.zeros(sub_x,dtype=np.uint8)
-
-        counts,pvalues = np.histogram(sub_x[sub_x_fg_map],bin_nums,[0,256])
+        counts,pvalues = np.histogram(sub_x[sub_x_fg_map>0],bin_nums,[0,256])
         counts[counts<counter_ignore_th] = 0
 
         # find 2 val range from global peaks
         # peaks: indices of peaks
         peaks, _ = find_peaks(counts,distance=peak_distance)
+        if(peaks.size==0):
+            probility[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]=0.0
+            continue
 
         # TODO: find low_txt_v,high_txt_v s.t. text pixels in [low_txt_v,high_txt_v]
         sub_pred_mask = predmask[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]
         sub_pred_mask[sub_x_bg_map] = 0
-        pred_txt_cnt,_ = np.histogram(sub_x[sub_pred_mask],bin_nums,[0,256])
-        # GLOBAL text color
-        idc = np.argmax(pred_txt_cnt)
-        # find nearest peak
-        idp,min_dst = peaks[0],abs(peaks[0]-idc)
-        last_peak,next_peak = peaks[0],peaks[1]
-        for i,o in enumerate(peaks[1:]):
-            if(abs(o-idc)<min_dst):
-                min_dst = abs(o-idc)
-                idp=o
-                last_peak = peaks[i]
-                next_peak = peaks[min(i+2,len(peaks)-1)]
-            elif(abs(o-idc)>(min_dst)*1.5):
-                break
-        last_peak_dst = abs(idp-last_peak) if(last_peak!=idp)else idp
-        next_peak_dst = abs(idp-next_peak) if(next_peak!=idp)else len(counts)-1-idp
-        last_peak_dst = min(last_peak_dst,max_single_peak_range)
-        next_peak_dst = min(next_peak_dst,max_single_peak_range)
+        # generate low_txt_v,high_txt_v from prediction
+        if(np.sum(sub_pred_mask>0)>(sub_pred_mask.size//4)):
+            pred_txt_cnt,_ = np.histogram(sub_x[sub_pred_mask>0],bin_nums,[0,256])
+            # GLOBAL text color
+            idc = np.argmax(pred_txt_cnt)
+            # find nearest peak
+            idp,min_dst = peaks[0],abs(peaks[0]-idc)
+            last_peak,next_peak = peaks[0],peaks[min(peaks.shape[0]-1,1)]
+            for i,o in enumerate(peaks[1:]):
+                if(abs(o-idc)<min_dst):
+                    min_dst = abs(o-idc)
+                    idp=o
+                    last_peak = peaks[i]
+                    next_peak = peaks[min(i+2,len(peaks)-1)]
+                elif(abs(o-idc)>(min_dst)*1.5):
+                    break
+            last_peak_dst = abs(idp-last_peak) if(last_peak!=idp)else idp
+            next_peak_dst = abs(idp-next_peak) if(next_peak!=idp)else len(counts)-1-idp
+            last_peak_dst = min(last_peak_dst,max_single_peak_range)
+            next_peak_dst = min(next_peak_dst,max_single_peak_range)
+            last_peak_dst = max(3,last_peak_dst)
+            next_peak_dst = max(3,next_peak_dst)
 
-        cur_counts_v = counts[idp]
-        idp_l = idp
-        while(idp_l>0 and counts[idp_l]>=cur_counts_v//5 and (idp-idp_l)<=last_peak_dst//2):
-            idp_l-=1
-        idp_r = idp
-        while(idp_r<len(counts) and counts[idp_r]>=cur_counts_v//5 and (idp_r-idp)<=next_peak_dst//2):
-            idp_r+=1
-        low_txt_v,high_txt_v = pvalues[idp_l],pvalues[idp_r]
+            cur_counts_v = counts[idp]
+            idp_l = idp
+            while(idp_l>0 and counts[idp_l]>=cur_counts_v//5 and (idp-idp_l)<=last_peak_dst//2):
+                idp_l-=1
+            idp_r = idp
+            while(idp_r<len(counts) and counts[idp_r]>=cur_counts_v//5 and (idp_r-idp)<=next_peak_dst//2):
+                idp_r+=1
+            low_txt_v,high_txt_v = pvalues[idp_l],pvalues[idp_r]
+            if(b_have_gtmask):
+                probility[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]=0.8
+        # generate low_txt_v,high_txt_v from boundary
+        else:
+            # get polygon box boundary
+            dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8),kernel,iterations = 1)
+            boundary = np.where(sub_x_bg_map,0,dilate)
+            edge = cv2.Canny(sub_x,80,200)
+
+            vote_mask = np.zeros(sub_x.shape,dtype=np.uint8)
+            
+            pred_bg_cnt,_ = np.histogram(sub_x[boundary>0],bin_nums,[0,256])
+            pred_txt_cnt,_ = np.histogram(sub_x[edge>0],bin_nums,[0,256])
+            bg_idc1,bg_idc2 = np_topk_inc(pred_bg_cnt,2)
+            txt_idc = np.argmax(pred_txt_cnt)
+            if(bg_idc1!=bg_idc2):
+                bg_idc=bg_idc2 if(abs(txt_idc-bg_idc1)<abs(txt_idc-bg_idc2))else bg_idc1
+            else:
+                bg_idc=bg_idc1
+
+            # find nearest TXT peak
+            idp,min_dst = peaks[0],abs(peaks[0]-txt_idc)
+            last_peak,next_peak = peaks[0],peaks[min(peaks.shape[0]-1,1)]
+            for i,o in enumerate(peaks[1:]):
+                # if find more nearst peak AND peak is more closed to txt inc
+                if(abs(o-txt_idc)<min_dst and abs(o-txt_idc)<abs(o-bg_idc)):
+                    min_dst = abs(o-txt_idc)
+                    idp=o
+                    last_peak = peaks[i]
+                    next_peak = peaks[min(i+2,len(peaks)-1)]
+
+            last_peak_dst = abs(idp-last_peak) if(last_peak!=idp)else idp
+            next_peak_dst = abs(idp-next_peak) if(next_peak!=idp)else len(counts)-1-idp
+            last_peak_dst = min(last_peak_dst,max_single_peak_range,abs(txt_idc-bg_idc)//2)
+            next_peak_dst = min(next_peak_dst,max_single_peak_range,abs(txt_idc-bg_idc)//2)
+            last_peak_dst = max(3,last_peak_dst)
+            next_peak_dst = max(3,next_peak_dst)
+
+            cur_counts_v = counts[idp]
+            idp_l = idp
+            while(idp_l>0 and counts[idp_l]>=cur_counts_v//5 and (idp-idp_l)<=last_peak_dst//2):
+                idp_l-=1
+            idp_r = idp
+            while(idp_r<len(counts) and counts[idp_r]>=cur_counts_v//5 and (idp_r-idp)<=next_peak_dst//2):
+                idp_r+=1
+
+            low_txt_v,high_txt_v = pvalues[idp_l],pvalues[idp_r]
+            probility[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]]=0.4 if(b_have_gtmask)else 0.5
+
+        gtmask[box_rect[0,1]:box_rect[0,1]+sub_x.shape[0],box_rect[0,0]:box_rect[0,0]+sub_x.shape[1]][np.logical_and(sub_x>=low_txt_v, sub_x<=high_txt_v)]=255
         
-        gtmask[np.logical_and(sub_x>=low_txt_v and sub_x<=high_txt_v)]=255
-    return gtmask
+        
+    return gtmask,probility
 
 # 
 # ===============================================
