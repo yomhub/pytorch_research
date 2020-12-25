@@ -78,7 +78,7 @@ def test(net,dataloader,save_dir):
             bth_edge_np = pred_np[:,DEF_START_MASK_CH+1]
             bth_region_np = pred_np[:,DEF_START_MASK_CH+2]
         if(DEF_BOOL_TRAIN_CE):
-            argmap = torch.argmax(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+DEF_CE_CH],axis=1)
+            argmap = torch.argmax(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
             bth_bin_ce_map = argmap.cpu().numpy().astype(np.uint8)
             bth_float_ce_map = (bth_bin_ce_map>0).astype(np.float32)
         if(DEF_BOOL_TRAIN_BOX):
@@ -184,9 +184,9 @@ def test(net,dataloader,save_dir):
     f.close()
         
 if __name__ == "__main__":
-    fdir = "/BACKUP/yom_backup/saved_model/VGG_PIX_Unet_MASK_CLS_BOX.pth"
+    fdir = """D:\\PIX_Unet_MASK_CLS_BOX.pth"""
     dataset = 'ttt'
-    work_dir = "/BACKUP/yom_backup/eval/pixtxt"
+    work_dir = "D:\\eval\\pixtxt"
     work_dir = os.path.join(work_dir,dataset)
     batch_size = 8
     image_size = (640, 640)
@@ -228,8 +228,8 @@ if __name__ == "__main__":
                                                pin_memory=True,
                                                collate_fn=train_dataset.default_collate_fn,)
     model = PIX_Unet_MASK_CLS_BOX(box_ch=5,min_box_ch=32,
-        multi_level=False,min_cls_ch=32,
-        basenet_name='vgg',min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        cls_ch=5,multi_level=False,min_cls_ch=32,
+        mask_ch=4,basenet_name='mobile',min_map_ch=32,min_upc_ch=128,pretrained=False).float()
     DEF_BOOL_TRAIN_MASK = True
     DEF_BOOL_TRAIN_CE = True
     DEF_BOOL_TRAIN_BOX = True

@@ -824,12 +824,14 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
+def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,box_prediction:np.ndarray=None,box_format:str='cxywh'):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
         scoremap: confidence map, ndarray in (h,w,1) or (h,w), range in [0,1], float
         score_th: threshold of score, float
+        box_prediction:
+        box_format:
     Ret:
         detections: (N,4,2) box with polyxy format
         labels: map of labeled number
@@ -858,6 +860,8 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.5,):
 
         x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
         w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
+        if(w<3 or h<3):
+            continue
         niter = int(math.sqrt(rsize * min(w, h) / (w * h)) * 2)
         x0,y0 = max(0,x),max(0,y)
         x1 = min(img_w-1,x + w)
@@ -1653,7 +1657,7 @@ def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
         # generate low_txt_v,high_txt_v from boundary
         else:
             # get polygon box boundary
-            dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8),kernel,iterations = 1)
+            dilate = cv2.dilate(sub_x_bg_map.astype(np.uint8)*255,kernel,iterations = 1)
             boundary = np.where(sub_x_bg_map,0,dilate)
             edge = cv2.Canny(sub_x,80,200)
 
