@@ -74,14 +74,19 @@ def train(rank, world_size, args):
     DEF_BOOL_TRAIN_CE = False
     DEF_BOOL_TRAIN_BOX = False
     DEF_BOOL_LOG_LEVEL_MASK = False
+    net_args = "Save dir: {}, net: {}.\n".format(args.save,args.net)
+    
     if(args.net=='vgg_pur_cls'):
         model = VGG_PUR_CLS(include_b0=True,padding=False,pretrained=True).float()
+        net_args+="include_b0={},padding={},pretrained={}\n".format(True,False,True)
         DEF_BOOL_TRAIN_CE = True
     elif(args.net=='vggunet_pxmask'):
         model = VGGUnet_PXMASK(include_b0=True,padding=False,pretrained=True).float()
+        net_args+="include_b0={},padding={},pretrained={}\n".format(True,False,True)
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='vgg_pxmask'):
         model = VGG_PXMASK(include_b0=True,padding=False,pretrained=True).float()
+        net_args+="include_b0={},padding={},pretrained={}\n".format(True,False,True)
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_txt'):
@@ -90,16 +95,22 @@ def train(rank, world_size, args):
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
         model = PIX_Unet_MASK(basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='pix_unet_mask_cls'):
         model = PIX_Unet_MASK_CLS(cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
             mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
+        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
     elif(args.net=='pix_unet_mask_cls_box'):
         model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
             cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
             mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        net_args+="box_ch={},min_box_ch={}\n".format(DEF_BOX_CH,32)
+        net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
+        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_TRAIN_BOX = True
@@ -108,7 +119,12 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_LOG_LEVEL_MASK = True
-        
+    
+    if(not args.debug and rank==0):
+        arglog = open(args.save.split['.'][0]+'_args.txt','w')
+        arglog.write(net_args)
+        arglog.close()
+
     DEF_BOOL_TRACKING = False
     if(args.tracker=='siamesemask'):
         model = SiameseMask(basenet=model).float()
@@ -542,7 +558,7 @@ def train(rank, world_size, args):
                                 recall=ce_recall
                         recall_list.append(recall)
                         precision_list.append(precision)
-                    if(logger and range==0 and stepi in log_eval_id):
+                    if(logger and rank==0 and stepi in log_eval_id):
                         bximg=eva_image[-1]
                         bximg = cv_draw_poly(bximg,eva_boxes[-1],text='GT',color=(0,255,0))
                         if(DEF_BOOL_TRAIN_MASK and det_boxes):
@@ -573,13 +589,16 @@ def train(rank, world_size, args):
                 all_precision.append(precision_np)
 
                 if(last_max_recall<recall_np):
-                    bool_hit_max=True
+                    if(last_max_recall!=0):
+                        bool_hit_max=True
                     last_max_recall = recall_np
                 if(last_max_precision<precision_np):
-                    bool_hit_max=True
+                    if(last_max_precision!=0):
+                        bool_hit_max=True
                     last_max_precision = precision_np
                 if(last_max_fscore<f_np):
-                    bool_hit_max=True
+                    if(last_max_fscore!=0):
+                        bool_hit_max=True
                     last_max_fscore = f_np
 
                 if(mask_loss_list):
@@ -766,6 +785,8 @@ def train(rank, world_size, args):
             time_usage = datetime.now() - time_c
             time_c = datetime.now()
             log.write('Epoch [{}/{}], Loss: {:.4f}\n'.format(epoch + 1, args.epoch,loss.item()))
+            if(args.eval):
+                log.write('\tRecall: {:.4f},Precision: {:.4f}, F-score: {:.4f}\n'.format(recall_np, precision_np,f_np))
             try:                         
                 log.write("Time usage: {} Day {} Second.\n\n".format(time_usage.days,time_usage.seconds))
             except:
