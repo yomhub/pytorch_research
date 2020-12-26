@@ -904,7 +904,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_
         boxes=boxes.reshape((1,-1,2))
     if(isinstance(text,np.ndarray)):
         text = text.reshape((-1))        
-    elif(not isinstance(text,type(None)) and isinstance(text,Iterable)):
+    elif(isinstance(text,str)):
         text = [text]*boxes.shape[0]
 
     for i in range(boxes.shape[0]):

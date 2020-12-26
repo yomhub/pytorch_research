@@ -29,6 +29,7 @@ from lib.dataloader.base import BaseDataset
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
+from lib.utils.net_hlp import adjust_learning_rate
 from lib.config.train_default import cfg as tcfg
 from dirs import *
 
@@ -169,10 +170,18 @@ def train(rank, world_size, args):
             os.path.join(DEF_IC19_DIR,'images','train'),
             os.path.join(DEF_IC19_DIR,'gt_txt','train'),
             image_size=image_size)
+        eval_dataset = ICDAR19(
+            os.path.join(DEF_IC19_DIR,'images','test'),
+            os.path.join(DEF_IC19_DIR,'gt_txt','test'),
+            image_size=image_size,)
     elif(args.dataset=="ic15"):
         train_dataset = ICDAR15(
             os.path.join(DEF_IC15_DIR,'images','train'),
             os.path.join(DEF_IC15_DIR,'gt_txt','train'),
+            image_size=image_size)
+        eval_dataset = ICDAR15(
+            os.path.join(DEF_IC15_DIR,'images','test'),
+            os.path.join(DEF_IC15_DIR,'gt_txt','test'),
             image_size=image_size)
     else:
         train_dataset = ICDAR13(
@@ -180,6 +189,11 @@ def train(rank, world_size, args):
             os.path.join(DEF_IC13_DIR,'gt_txt','train'),
             os.path.join(DEF_IC13_DIR,'gt_pixel','train'),
             image_size=image_size,)
+        eval_dataset = ICDAR13(
+            os.path.join(DEF_IC13_DIR,'images','test'),
+            os.path.join(DEF_IC13_DIR,'gt_txt','test'),
+            os.path.join(DEF_IC13_DIR,'gt_pixel','test'),
+            image_size=image_size)
 
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset,
@@ -193,16 +207,17 @@ def train(rank, world_size, args):
                                                pin_memory=True,
                                                sampler=train_sampler,
                                                collate_fn=train_dataset.default_collate_fn,)
-    eval_sampler = torch.utils.data.distributed.DistributedSampler(eval_dataset,
-                                                                    num_replicas=world_size,
-                                                                    rank=rank)
-    eval_loader = torch.utils.data.DataLoader(dataset=eval_dataset,
-                                            batch_size=batch_size,
-                                            shuffle=False,
-                                            num_workers=0,
-                                            pin_memory=True,
-                                            sampler=eval_sampler,
-                                            collate_fn=eval_dataset.default_collate_fn,)
+    if(args.eval):
+        eval_sampler = torch.utils.data.distributed.DistributedSampler(eval_dataset,
+                                                                        num_replicas=world_size,
+                                                                        rank=rank)
+        eval_loader = torch.utils.data.DataLoader(dataset=eval_dataset,
+                                                batch_size=batch_size,
+                                                shuffle=False,
+                                                num_workers=0,
+                                                pin_memory=True,
+                                                sampler=eval_sampler,
+                                                collate_fn=eval_dataset.default_collate_fn,)
     time_c = datetime.now()
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
@@ -467,105 +482,142 @@ def train(rank, world_size, args):
 
                 logger.flush()
         
+        # ==============
         # End of epoch
-        ovlap_th = 0.5
-        recall_list,precision_list = [],[]
-        mask_loss_list = []
-        bool_hit_max,bool_low_fscore = False,False
-        with torch.no_grad():
-            for stepi, sample in enumerate(eval_loader):
-                eva_bth_x = sample['image']
-                eva_boxes = sample['box']
-                eva_xnor = eva_bth_x.float().cuda(non_blocking=True)
-                eva_xnor = torch_img_normalize(eva_xnor).permute(0,3,1,2)
-                eva_pred,eva_feat = model(eva_xnor)
-                eva_pred_np = eva_pred.cpu().numpy()
-                if('mask' in sample):
-                    eval_mask = sample['mask'].cuda(non_blocking=True)
-                    eval_mask = (eval_mask>0).float()
-                    if(len(eval_mask.shape)==4):
-                        eval_mask = eval_mask.permute(0,3,1,2)
-                    eval_mask_loss = criterion(eva_pred[:,DEF_START_MASK_CH+0], eval_mask)
-                    mask_loss_list.append(eval_mask_loss)
-                    
-                if(DEF_BOOL_TRAIN_CE):
-                    argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
-                    eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
-
-                for bthi in range(batch_size):
-                    eva_image = eva_bth_x[bthi].numpy().astype(np.uint8)
-                    eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
-                    eva_region_np = np.where(eva_region_np>0.4,255,0).astype(np.uint8)
-                    eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
-                    eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
-                    eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
-                    det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
-                    if(det_boxes.shape[0]>0):
-                        det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
-                        ids,precision,recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
-                    else:
-                        precision,recall=0.0,0.0
-                    fscore = precision*recall/(precision+recall) if(precision+recall>0)else 0.0
+        # ==============
+        if(args.eval):
+            ovlap_th = 0.5
+            recall_list,precision_list = [],[]
+            mask_loss_list = []
+            bool_hit_max,bool_low_fscore = False,False
+            log_eval_num = 5
+            rng = np.random.default_rng()
+            log_eval_id = rng.choice(len(eval_loader)-1, size=log_eval_num, replace=False)
+            eval_img_log_cnt = 0
+            with torch.no_grad():
+                for stepi, sample in enumerate(eval_loader):
+                    eva_bth_x = sample['image']
+                    eva_boxes = sample['box']
+                    eva_xnor = eva_bth_x.float().cuda(non_blocking=True)
+                    eva_xnor = torch_img_normalize(eva_xnor).permute(0,3,1,2)
+                    eva_pred,eva_feat = model(eva_xnor)
+                    eva_pred_np = eva_pred.cpu().numpy()
+                    if('mask' in sample):
+                        eval_mask = sample['mask'].cuda(non_blocking=True)
+                        eval_mask = (eval_mask>0).float()
+                        if(len(eval_mask.shape)==4):
+                            eval_mask = eval_mask.permute(0,3,1,2)
+                        eval_mask_loss = criterion(eva_pred[:,DEF_START_MASK_CH+0], eval_mask)
+                        mask_loss_list.append(eval_mask_loss)
+                        
                     if(DEF_BOOL_TRAIN_CE):
-                        ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
-                        ce_det_boxes, ce_label_mask, ce_label_list = cv_get_box_from_mask(ce_map)
+                        argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
+                        eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
+
+                    for bthi in range(eva_bth_x.shape[0]):
+                        eva_image = eva_bth_x[bthi].numpy().astype(np.uint8)
+                        eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
+                        eva_region_np = np.where(eva_region_np>0.4,255,0).astype(np.uint8)
+                        eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
+                        eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
+                        eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
+                        det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
                         if(det_boxes.shape[0]>0):
-                            ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
-                            ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                            det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
+                            ids,precision,recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
                         else:
-                            ce_precision,ce_recall=0.0,0.0
-                        ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
-                        if(ce_fscore>fscore):
-                            precision=ce_precision
-                            recall=ce_recall
-                    recall_list.append(recall)
-                    precision_list.append(precision)
-            recall_np = np.mean(np.array(recall_list,dtype=np.float32))
-            recall_gpu = torch.from_numpy(recall_np).gpu(non_blocking=True)
-            precision_np = np.mean(np.array(precision_list,dtype=np.float32))
-            precision_gpu = torch.from_numpy(precision_np).gpu(non_blocking=True)
-            if(world_size>1):
-                recall_gpu = dist.all_reduce(recall_gpu)
-                precision_gpu = dist.all_reduce(precision_gpu)
-                
-            recall_np = recall_gpu.item()/world_size
-            precision_np = precision_gpu.item()/world_size
-            f_np = precision_np*recall_np/(precision_np+recall_np) if(precision_np+recall_np>0)else 0.0
-            all_recall.append(recall_np)
-            all_precision.append(precision_np)
+                            precision,recall=0.0,0.0
+                        fscore = precision*recall/(precision+recall) if(precision+recall>0)else 0.0
+                        if(DEF_BOOL_TRAIN_CE):
+                            ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
+                            ce_det_boxes, ce_label_mask, ce_label_list = cv_get_box_from_mask(ce_map)
+                            if(det_boxes.shape[0]>0):
+                                ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
+                                ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                            else:
+                                ce_precision,ce_recall=0.0,0.0
+                            ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
+                            if(ce_fscore>fscore):
+                                precision=ce_precision
+                                recall=ce_recall
+                        recall_list.append(recall)
+                        precision_list.append(precision)
+                    if(logger and range==0 and stepi in log_eval_id):
+                        bximg=eva_image[-1]
+                        bximg = cv_draw_poly(bximg,eva_boxes[-1],text='GT',color=(0,255,0))
+                        if(DEF_BOOL_TRAIN_MASK and det_boxes):
+                            bximg = cv_draw_poly(bximg,det_boxes,text='Pmk',color=(255,0,0))
+                        if(DEF_BOOL_TRAIN_CE and ce_det_boxes):
+                            bximg = cv_draw_poly(bximg,ce_det_boxes,text='Pce',color=(0,0,255))
+                        imgs = [bximg]
+                        if(DEF_BOOL_TRAIN_MASK):
+                            imgs.append(cv_heatmap(eva_pred_np[-1,DEF_START_MASK_CH+2]))
+                        if(DEF_BOOL_TRAIN_CE):
+                            bince = eva_bth_bin_ce_map[-1]*255
+                            imgs.append(np.stack([bince,bince,bince],-1))
+                        logger.add_image('Eval in epoch {}'.format(epoch), concatenate_images(imgs), eval_img_log_cnt,dataformats='HWC')
+                        logger.flush()
+                        eval_img_log_cnt+=1
+                recall_np = np.mean(np.array(recall_list,dtype=np.float32))
+                recall_gpu = torch.tensor(recall_np).cuda(non_blocking=True)
+                precision_np = np.mean(np.array(precision_list,dtype=np.float32))
+                precision_gpu = torch.tensor(precision_np).cuda(non_blocking=True)
+                if(world_size>1):
+                    dist.all_reduce(recall_gpu)
+                    dist.all_reduce(precision_gpu)
+                    
+                recall_np = recall_gpu.item()/world_size
+                precision_np = precision_gpu.item()/world_size
+                f_np = precision_np*recall_np/(precision_np+recall_np) if(precision_np+recall_np>0)else 0.0
+                all_recall.append(recall_np)
+                all_precision.append(precision_np)
 
-            if(last_max_recall<recall_np):
-                bool_hit_max=True
-                last_max_recall = recall_np
-            if(last_max_precision<precision_np):
-                bool_hit_max=True
-                last_max_precision = precision_np
-            if(last_max_fscore<f_np):
-                bool_hit_max=True
-                last_max_fscore = f_np
+                if(last_max_recall<recall_np):
+                    bool_hit_max=True
+                    last_max_recall = recall_np
+                if(last_max_precision<precision_np):
+                    bool_hit_max=True
+                    last_max_precision = precision_np
+                if(last_max_fscore<f_np):
+                    bool_hit_max=True
+                    last_max_fscore = f_np
 
-            if(mask_loss_list):
-                mask_loss_gpu=torch.mean(torch.stack(mask_loss_list))
-                mask_loss_gpu = dist.all_reduce(mask_loss_gpu)
-                all_mask_det.append(mask_loss_gpu.item()/world_size)
-
-            if(logger and rank==0):
-                logger.add_scalar('Eval/recall', recall_np, epoch)
-                logger.add_scalar('Eval/precision', precision_np, epoch)
-                logger.add_scalar('Eval/F-score',f_np, epoch)
                 if(mask_loss_list):
-                    logger.add_scalar('Eval/text loss',all_mask_det[-1], epoch)
-                logger.flush()
-            
-            if((last_max_fscore-f_np)>0.2*last_max_fscore):
-                bool_low_fscore=True
+                    mask_loss_gpu=torch.mean(torch.stack(mask_loss_list))
+                    dist.all_reduce(mask_loss_gpu)
+                    all_mask_det.append(mask_loss_gpu.item()/world_size)
 
-            if(bool_hit_max and rank==0):
-                fmdir,fmname = os.path.split(args.save)
-                fmname = 'max_eval_'+fmname
-                finalname = os.path.join(fmdir,fmname)
-                print("Saving model at {}...".format(finalname))
-                torch.save(model.state_dict(),finalname)
+                if(logger and rank==0):
+                    logger.add_scalar('Eval/recall', recall_np, epoch)
+                    logger.add_scalar('Eval/precision', precision_np, epoch)
+                    logger.add_scalar('Eval/F-score',f_np, epoch)
+                    if(mask_loss_list):
+                        logger.add_scalar('Eval/text loss',all_mask_det[-1], epoch)
+                    logger.flush()
+                
+                if(last_max_fscore>0.4 and (last_max_fscore-f_np)>0.5*last_max_fscore):
+                    bool_low_fscore=True
+
+                if(bool_hit_max and rank==0):
+                    fmdir,fmname = os.path.split(args.save)
+                    fmname = 'max_eval_'+fmname
+                    finalname = os.path.join(fmdir,fmname)
+                    print("Saving model at {}...".format(finalname))
+                    torch.save(model.state_dict(),finalname)
+
+                if((epoch+1)%10==0):
+                    last_recall = all_recall[-10:]
+                    last_precision = all_precision[-10:]
+                    if(last_max_recall>0.4 and last_max_precision>0.4 and last_max_recall not in last_recall and last_max_precision not in last_precision):
+                        last_recall_mean = np.mean(np.array(last_recall))
+                        last_precision_mean = np.mean(np.array(last_precision))
+                        if((last_max_recall-last_recall_mean)<0.2*last_max_recall or (last_max_precision-last_precision_mean)<0.2*last_max_precision):
+                            for param_group in optimizer.param_groups:
+                                curlr = param_group['lr']
+                                break
+                            print("Adjust learning rate {}->{}.".format(curlr,curlr*0.9))
+                            adjust_learning_rate(optimizer,0.9)
+
 
         if(logger and rank==0):
             log_i,box_num = 0,boxes[0].shape[0]
@@ -719,7 +771,7 @@ def train(rank, world_size, args):
             except:
                 log.write("Time usage: {} Day {} Second.\n\n".format(time_usage.day,time_usage.second))
             log.flush()
-        if(bool_low_fscore):
+        if(args.eval and bool_low_fscore):
             break
 
         if(args.save and rank == 0):
@@ -756,6 +808,7 @@ if __name__ == '__main__':
     parser.add_argument('--multi_gpu', help='Set --multi_gpu to enable multi gpu training.',action="store_true")
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default='adag')
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
+    parser.add_argument('--eval', help='Set --eval to enable eval.', action="store_true")
     parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK_CLS_BOX')
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
     parser.add_argument('--tracker', type=str,help='Choose tracker.')
