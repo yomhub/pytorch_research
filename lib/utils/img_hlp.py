@@ -459,7 +459,7 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
 
 def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
     """
-    Refine box by binary map
+    Refine box by binary map, return small one in original and refined
     Args:
         cv_box: ((n),k,2) polygon box
         binary_map: (H,W,(1)) binary map

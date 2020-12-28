@@ -25,7 +25,7 @@ from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
-from lib.dataloader.base import BaseDataset
+from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -121,7 +121,8 @@ def train(rank, world_size, args):
         DEF_BOOL_LOG_LEVEL_MASK = True
     
     if(not args.debug and rank==0):
-        arglog = open(args.save.split['.'][0]+'_args.txt','w')
+        fname = args.save.split('.')[0]+'_args.txt'
+        arglog = open(fname,'w')
         arglog.write(net_args)
         arglog.close()
 
@@ -182,14 +183,18 @@ def train(rank, world_size, args):
     #         os.path.join(DEF_MSRA_DIR,'train'),
     #         image_size=image_size)
     elif(args.dataset=="ic19"):
-        train_dataset = ICDAR19(
+        # train_dataset = ICDAR19(
+        #     os.path.join(DEF_IC19_DIR,'images','train'),
+        #     os.path.join(DEF_IC19_DIR,'gt_txt','train'),
+        #     image_size=image_size)
+        # eval_dataset = ICDAR19(
+        #     os.path.join(DEF_IC19_DIR,'images','test'),
+        #     os.path.join(DEF_IC19_DIR,'gt_txt','test'),
+        #     image_size=image_size,)
+        train_dataset,eval_dataset = split_dataset_cls_to_train_eval(ICDAR19,0.2,
             os.path.join(DEF_IC19_DIR,'images','train'),
             os.path.join(DEF_IC19_DIR,'gt_txt','train'),
             image_size=image_size)
-        eval_dataset = ICDAR19(
-            os.path.join(DEF_IC19_DIR,'images','test'),
-            os.path.join(DEF_IC19_DIR,'gt_txt','test'),
-            image_size=image_size,)
     elif(args.dataset=="ic15"):
         train_dataset = ICDAR15(
             os.path.join(DEF_IC15_DIR,'images','train'),
@@ -301,7 +306,7 @@ def train(rank, world_size, args):
                     # np (batch,h,w,1)-> torch (batch,1,h,w)
                     edge_np = np.stack(edge_np,0)
                                        
-                else:
+                elif(args.genmask):
                     # weak surpress learning
                     mask_list = []
                     edge_list = []
@@ -327,19 +332,20 @@ def train(rank, world_size, args):
                     gen_mask_prob = torch.from_numpy(np.expand_dims(gen_mask_prob_np,-1)).cuda(non_blocking=True)
                     gen_mask_prob = gen_mask_prob.float().permute(0,3,1,2)
                 
-                edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
-                edge = (edge>0).float().permute(0,3,1,2)
-                if(len(mask_np.shape)==3):
-                    mask = torch.from_numpy(np.expand_dims(mask_np,-1)).cuda(non_blocking=True)
-                else:
-                    mask = torch.from_numpy(mask_np).cuda(non_blocking=True)
-                mask = (mask>0).float().permute(0,3,1,2)
-                if(b_have_mask):
-                    loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
-                    loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
-                else:
-                    loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask, gen_mask_prob)
-                    loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge, gen_mask_prob)
+                if(b_have_mask or args.genmask):
+                    edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
+                    edge = (edge>0).float().permute(0,3,1,2)
+                    if(len(mask_np.shape)==3):
+                        mask = torch.from_numpy(np.expand_dims(mask_np,-1)).cuda(non_blocking=True)
+                    else:
+                        mask = torch.from_numpy(mask_np).cuda(non_blocking=True)
+                    mask = (mask>0).float().permute(0,3,1,2)
+                    if(b_have_mask):
+                        loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask)
+                        loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge)
+                    elif(args.genmask):
+                        loss_dict['txt_loss'] = criterion(pred[:,DEF_START_MASK_CH+0], mask, gen_mask_prob)
+                        loss_dict['edge_loss'] = criterion(pred[:,DEF_START_MASK_CH+1], edge, gen_mask_prob)
 
             region_mask_np = []
             region_mask_bin_np = []
@@ -366,10 +372,11 @@ def train(rank, world_size, args):
                 boundary_mask_bin_np.append(boundadrymap)
 
             if(DEF_BOOL_TRAIN_MASK):
+                # based on box and optional text mask
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
                 region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
                 loss_dict['region_loss'] = criterion(pred[:,DEF_START_MASK_CH+2], region_mask)
-                if(DEF_MASK_CH>3):
+                if((b_have_mask or args.genmask) and DEF_MASK_CH>3):
                     img = x.numpy().astype(np.uint8)
                     threshold_np = np.stack([cv2.cvtColor(o,cv2.COLOR_RGB2GRAY) for o in img],0)
                     threshold_np[mask_np==0]=0
@@ -380,6 +387,7 @@ def train(rank, world_size, args):
                     loss_dict['threshold_loss'] = criterion(pred[:,DEF_START_MASK_CH+3],threshold)
 
             if(DEF_BOOL_TRAIN_CE):
+                # based on region mask
                 region_mask_bin_np = np.stack(region_mask_bin_np,0).astype(np.uint8)
                 boundary_mask_bin_np = np.stack(boundary_mask_bin_np,0).astype(np.uint8)
 
@@ -388,7 +396,8 @@ def train(rank, world_size, args):
                 ce_y[boundary_mask_bin_np>0]=2
                 ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
                 loss_dict['region_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3], ce_y_torch)
-                if(DEF_CE_CH>3):
+                # text binarization mask, based on text mask
+                if((b_have_mask or args.genmask) and DEF_CE_CH>3):
                     mask_ce = F.interpolate(mask,size=pred.shape[2:], mode='bilinear', align_corners=False)
                     mask_ce = (mask_ce[:,0]>0).type(torch.int64)
                     loss_dict['txt_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH], mask_ce)
@@ -547,7 +556,7 @@ def train(rank, world_size, args):
                         if(DEF_BOOL_TRAIN_CE):
                             ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
                             ce_det_boxes, ce_label_mask, ce_label_list = cv_get_box_from_mask(ce_map)
-                            if(det_boxes.shape[0]>0):
+                            if(ce_det_boxes.shape[0]>0):
                                 ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
                                 ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
                             else:
@@ -559,11 +568,11 @@ def train(rank, world_size, args):
                         recall_list.append(recall)
                         precision_list.append(precision)
                     if(logger and rank==0 and stepi in log_eval_id):
-                        bximg=eva_image[-1]
+                        bximg = eva_image
                         bximg = cv_draw_poly(bximg,eva_boxes[-1],text='GT',color=(0,255,0))
-                        if(DEF_BOOL_TRAIN_MASK and det_boxes):
+                        if(DEF_BOOL_TRAIN_MASK and det_boxes.shape[0]>0):
                             bximg = cv_draw_poly(bximg,det_boxes,text='Pmk',color=(255,0,0))
-                        if(DEF_BOOL_TRAIN_CE and ce_det_boxes):
+                        if(DEF_BOOL_TRAIN_CE and ce_det_boxes.shape[0]>0):
                             bximg = cv_draw_poly(bximg,ce_det_boxes,text='Pce',color=(0,0,255))
                         imgs = [bximg]
                         if(DEF_BOOL_TRAIN_MASK):
@@ -571,7 +580,7 @@ def train(rank, world_size, args):
                         if(DEF_BOOL_TRAIN_CE):
                             bince = eva_bth_bin_ce_map[-1]*255
                             imgs.append(np.stack([bince,bince,bince],-1))
-                        logger.add_image('Eval in epoch {}'.format(epoch), concatenate_images(imgs), eval_img_log_cnt,dataformats='HWC')
+                        logger.add_image('Eval/epoch {}'.format(epoch), concatenate_images(imgs), eval_img_log_cnt,dataformats='HWC')
                         logger.flush()
                         eval_img_log_cnt+=1
                 recall_np = np.mean(np.array(recall_list,dtype=np.float32))
@@ -588,18 +597,18 @@ def train(rank, world_size, args):
                 all_recall.append(recall_np)
                 all_precision.append(precision_np)
 
-                if(last_max_recall<recall_np):
-                    if(last_max_recall!=0):
-                        bool_hit_max=True
-                    last_max_recall = recall_np
+                # if(last_max_recall<recall_np):
+                #     if(last_max_recall!=0):
+                #         bool_hit_max=True
+                #     last_max_recall = recall_np
                 if(last_max_precision<precision_np):
                     if(last_max_precision!=0):
                         bool_hit_max=True
                     last_max_precision = precision_np
-                if(last_max_fscore<f_np):
-                    if(last_max_fscore!=0):
-                        bool_hit_max=True
-                    last_max_fscore = f_np
+                # if(last_max_fscore<f_np):
+                #     if(last_max_fscore!=0):
+                #         bool_hit_max=True
+                #     last_max_fscore = f_np
 
                 if(mask_loss_list):
                     mask_loss_gpu=torch.mean(torch.stack(mask_loss_list))
@@ -663,22 +672,22 @@ def train(rank, world_size, args):
                     logimg.append(pred_threshold)
 
                 logger.add_image('Prediction', concatenate_images(logimg), epoch,dataformats='HWC')
-                
-                gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
-                gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
-                gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
-                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
-                smx = cv_mask_image(smx,gt_regi)
-                logimg = [smx,gt_mask,gt_edge]
-                if(DEF_MASK_CH>3):
-                    gt_threshold = threshold_np[log_i]
-                    if(len(gt_threshold.shape)==2):
-                        gt_threshold = np.expand_dims(gt_threshold,-1)
-                    if(gt_threshold.shape[-1]==1):
-                        gt_threshold = np.concatenate([gt_threshold,gt_threshold,gt_threshold],-1)
-                    logimg.append(gt_threshold)
+                if(b_have_mask or args.genmask):
+                    gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
+                    gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
+                    gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
+                    smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(gt_mask.shape[1],gt_mask.shape[0]))
+                    smx = cv_mask_image(smx,gt_regi)
+                    logimg = [smx,gt_mask,gt_edge]
+                    if(DEF_MASK_CH>3):
+                        gt_threshold = threshold_np[log_i]
+                        if(len(gt_threshold.shape)==2):
+                            gt_threshold = np.expand_dims(gt_threshold,-1)
+                        if(gt_threshold.shape[-1]==1):
+                            gt_threshold = np.concatenate([gt_threshold,gt_threshold,gt_threshold],-1)
+                        logimg.append(gt_threshold)
 
-                logger.add_image('GT', concatenate_images(logimg), epoch,dataformats='HWC')
+                    logger.add_image('GT', concatenate_images(logimg), epoch,dataformats='HWC')
 
                 if(DEF_BOOL_LOG_LEVEL_MASK):
                     try:
@@ -721,12 +730,17 @@ def train(rank, world_size, args):
                 img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
                 logger.add_image('Region labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
                 if(DEF_CE_CH>3):
+                    t='Text labels Image'
+                    img_lst = [img]
+                    if(b_have_mask or args.genmask):
+                        t+='|GT'
+                        gtlabels = (mask_np[log_i]>0).astype(np.uint8)
+                        img_lst.append(cv_labelmap(gtlabels))
+                    t+='|Pred'
                     labels = torch.argmax(pred[log_i:log_i+1,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
-                    labels = labels[0].cpu().detach().numpy()
-                    gtlabels = (mask_np[log_i]>0).astype(np.uint8)
-                    gtlabels = cv_labelmap(gtlabels)
-                    labels = cv_labelmap(labels)
-                    logger.add_image('Text labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
+                    labels = labels[0].cpu().detach().numpy() 
+                    img_lst.append(cv_labelmap(labels))
+                    logger.add_image(t, concatenate_images(img_lst), epoch,dataformats='HWC')
 
             if(DEF_BOOL_TRAIN_BOX):
                 pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
@@ -842,6 +856,7 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=int, help='Epoch size.',default=10)
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
     parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
+    parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
 
     args = parser.parse_args()
     args.net = args.net.lower()
@@ -868,6 +883,8 @@ if __name__ == '__main__':
         "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
         "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
         "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
+        "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
+        "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
         "========\n"
         # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
         # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\

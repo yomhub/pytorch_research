@@ -10,6 +10,15 @@ from torch.utils.data import Dataset
 from torchvision import transforms, utils
 from lib.utils.img_hlp import np_box_transfrom,np_box_nor,np_box_resize,np_img_normalize
 
+def split_dataset_cls_to_train_eval(data_class,eval_percent:float=0.2,*paras,**parasdic):
+    eval_percent = min(0.5,max(0.1,eval_percent))
+    dc = data_class(*paras,**parasdic)
+    total_len = len(dc)
+    eva = data_class(*paras,**parasdic)
+    eva.img_names = eva.img_names[-int(total_len*eval_percent):]
+    dc.img_names = dc.img_names[:-int(total_len*eval_percent)]
+    return dc,eva
+    
 def default_collate_fn(batch):
     # batch: list of dict
     try:
