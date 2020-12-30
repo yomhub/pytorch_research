@@ -410,11 +410,14 @@ def train(rank, world_size, args):
                 box_oneheat_map =[]
                 for batchi in range(x.shape[0]):
                     batch_boxes = boxes[batchi]
+                    ct_box_oneheat_map = np.zeros(pred_bx.shape[-2:],dtype=np.float32)
+                    if(batch_boxes.shape[0]==0):
+                        box_oneheat_map.append(ct_box_oneheat_map)
+                        continue
                     boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_bx.shape[-2:],'polyxy')
                     ct_box = np_polybox_center(boxes_small)
                     rect_box = np_polybox_minrect(boxes_small)
                     ct_rect_box = np_polybox_center(rect_box)
-                    ct_box_oneheat_map = np.zeros(pred_bx.shape[-2:],dtype=np.float32)
                     for boxi in range(boxes_small.shape[0]):
                         if(boxes_small[boxi].shape[0]<4):
                             continue
