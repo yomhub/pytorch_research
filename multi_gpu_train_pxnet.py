@@ -407,18 +407,21 @@ def train(rank, world_size, args):
                 div_num = DEF_POLY_NUM//2
                 bx_loss_lst=[]
                 small_image_size_xy = np.array([pred_bx.shape[-1],pred_bx.shape[-2]])
+                box_oneheat_map =[]
                 for batchi in range(x.shape[0]):
                     batch_boxes = boxes[batchi]
                     boxes_small = np_box_resize(batch_boxes,x.shape[1:3],pred_bx.shape[-2:],'polyxy')
                     ct_box = np_polybox_center(boxes_small)
                     rect_box = np_polybox_minrect(boxes_small)
                     ct_rect_box = np_polybox_center(rect_box)
+                    ct_box_oneheat_map = np.zeros(pred_bx.shape[-2:],dtype=np.float32)
                     for boxi in range(boxes_small.shape[0]):
                         if(boxes_small[boxi].shape[0]<4):
                             continue
                         cx,cy = ct_box[boxi].astype(np.uint16)
                         if(cx>=pred_bx.shape[-1] or cy>=pred_bx.shape[-2] or cx<0 or cy<0):
                             continue
+                        ct_box_oneheat_map[cy:cv+2,cx:cx+2]=1.0
                         if(DEF_BOOL_POLY_REGRESSION):
                             poly_gt = np_split_polygon(boxes_small[boxi],div_num)
                             poly_gt = poly_gt.reshape(-1,2)
@@ -433,9 +436,13 @@ def train(rank, world_size, args):
 
                         bx_gt_nor = torch.from_numpy(bx_gt_nor).float().cuda(non_blocking=True)
                         bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,1:,cy-1,cx-1]-bx_gt_nor)))
-                        
+                    box_oneheat_map.append(ct_box_oneheat_map)
+
                 if(bx_loss_lst):
                     loss_dict['bx_loss'] = sum(bx_loss_lst)/len(bx_loss_lst)
+                    box_oneheat_map = np.expand_dims(np.stack(box_oneheat_map,0),-1)
+                    box_oneheat_map = torch.from_numpy(box_oneheat_map).float().cuda(non_blocking=True).permute(0,3,1,2)
+                    loss_dict['bx_oneheat_loss'] = criterion(pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+1],box_oneheat_map)
                     
             if(DEF_BOOL_TRACKING):
                 tracking_loss_lst = []

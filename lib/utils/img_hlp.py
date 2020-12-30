@@ -165,6 +165,9 @@ def np_polybox_minrect(cv_polybox,box_format:str='polyxy'):
     return ret[0] if(single_box)else ret
 
 def np_polybox_center(cv_polybox,box_format:str='polyxy'):
+    """
+    Return center (x,y) of polygon.
+    """
     if(isinstance(cv_polybox,list) or cv_polybox.dtype==np.object):
         return np.array([np_polybox_center(o,box_format) for o in cv_polybox])
     len2=False
@@ -824,14 +827,12 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,box_prediction:np.ndarray=None,box_format:str='cxywh'):
+def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_split:bool=False):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
         scoremap: confidence map, ndarray in (h,w,1) or (h,w), range in [0,1], float
         score_th: threshold of score, float
-        box_prediction:
-        box_format:
     Ret:
         detections: (N,4,2) box with polyxy format
         labels: map of labeled number
@@ -840,7 +841,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,box_prediction:
     img_h, img_w = scoremap.shape[0], scoremap.shape[1]
     scoremap = scoremap.reshape((img_h, img_w))
 
-    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+    nLabels, label_map, states, centroids = cv2.connectedComponentsWithStats(
         (scoremap>=score_th).astype(np.uint8),
         connectivity=4)
     
@@ -848,18 +849,55 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,box_prediction:
     mapper = []
     for k in range(1, nLabels):
         # size filtering
-        rsize = stats[k, cv2.CC_STAT_AREA]
-        if rsize < 10: continue
-
+        rsize = states[k, cv2.CC_STAT_AREA]
+        if(rsize < 10): continue
+        slc_pix = scoremap[label_map == k]
         # thresholding
-        if np.max(scoremap[labels == k]) < score_th: continue
+        if(np.max(slc_pix) < score_th): continue
+        if(region_mean_split):
+            kernel = np.ones((3,3),dtype=np.uint8)
+            mean_v = np.mean(slc_pix)
+            f_erode_map = np.where(label_map == k, scoremap, 0.0).astype(scoremap.dtype)
+            loc_nLabels, loc_label_map, loc_states, loc_centroids = cv2.connectedComponentsWithStats(
+                (f_erode_map>mean_v).astype(np.uint8),
+                connectivity=8)
+            if(loc_nLabels>2):
+                for j in range(1, loc_nLabels):
+                    x, y = loc_states[j, cv2.CC_STAT_LEFT], loc_states[j, cv2.CC_STAT_TOP]
+                    w, h = loc_states[j, cv2.CC_STAT_WIDTH], loc_states[j, cv2.CC_STAT_HEIGHT]
+                    cx,cy = x+w/2,y+h/2
+                    w*=1.1
+                    h*=1.1
+                    x0,y0 = max(0,cx-w/2),max(0,cy-h/2)
+                    x1 = min(img_w-1,cx + w/2)
+                    y1 = min(img_h-1,cy + h/2)
+                    box = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]])
+                    tmp = np.where(loc_label_map==j, 255,0).astype(np.uint8)
+                    tmp = cv2.dilate(tmp,kernel,iterations=3)
+                    contours, hierarchy = cv2.findContours(tmp,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+                    slc = [o for o in contours if(o.shape[0]>1)]
+                    if(len(slc)==0):
+                        det.append(box)
+                        mapper.append(k)
+                        continue
+                    cnt = np.concatenate(slc,0)
+                    hull = cv2.convexHull(cnt)
+                    if(hull.shape[0]<4):
+                        det.append(box)
+                        mapper.append(k)
+                        continue
+                    box = hull[:,0,:]
+                    det.append(box)
+                    mapper.append(k)
+                # end of this k iteration
+                continue 
+            # else continue global detection
 
         # make segmentation map
-        tmp = np.zeros(scoremap.shape, dtype=np.uint8)
-        tmp[labels == k] = 255
+        tmp = np.where(label_map==k, 255,0).astype(np.uint8)
 
-        x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
-        w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
+        x, y = states[k, cv2.CC_STAT_LEFT], states[k, cv2.CC_STAT_TOP]
+        w, h = states[k, cv2.CC_STAT_WIDTH], states[k, cv2.CC_STAT_HEIGHT]
         if(w<3 or h<3):
             continue
         niter = int(math.sqrt(rsize * min(w, h) / (w * h)) * 2)
@@ -869,22 +907,25 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,box_prediction:
         box = np.array([[x0,y0],[x1,y0],[x1,y1],[x0,y1]])
         sub_img,M = cv_crop_image_by_bbox(tmp,box)
         Minv = np.linalg.inv(M)
+        # try to find minimum convex hull
         contours, hierarchy = cv2.findContours(sub_img.astype(np.uint8),cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
         slc = [o for o in contours if(o.shape[0]>1)]
         if(len(slc)==0):
             det.append(box)
+            mapper.append(k)
             continue
         cnt = np.concatenate(slc,0)
         hull = cv2.convexHull(cnt)
         if(hull.shape[0]<4):
             det.append(box)
+            mapper.append(k)
             continue
         box = np_apply_matrix_to_pts(Minv,hull[:,0,:])
 
         det.append(box)
         mapper.append(k)
 
-    return np.array(det), labels, mapper
+    return np.array(det), label_map, mapper
 
 def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_emphasis:bool=False):
     """

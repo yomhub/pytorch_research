@@ -211,8 +211,10 @@ class MobNetBlk(nn.Module):
                 blk_lst[blk_idx].add_module(
                     str(feat_idx+i)+mob.features[feat_idx+i].__class__.__name__,mob.features[feat_idx+i])
             feat_idx+=n
-        
-        if(include_final):
+        self.include_final = bool(include_final)
+        if(self.include_final):
+            self.b5=torch.nn.Sequential()
+            blk_lst.append(self.b5)
             blk_lst[-1].add_module(str(feat_idx)+mob.features[feat_idx].__class__.__name__,mob.features[feat_idx])
 
         self.out_tuple = namedtuple("MobNetBlk", ['b{}'.format(i) for i in range(len(blk_lst))])
@@ -223,6 +225,9 @@ class MobNetBlk(nn.Module):
         b2 = self.b2(b1)
         b3 = self.b3(b2)
         b4 = self.b4(b3)
+        if(self.include_final):
+            b5 = self.b5(b4)
+            return self.out_tuple(b0,b1,b2,b3,b4,b5)
         return self.out_tuple(b0,b1,b2,b3,b4)
 
 class MobUNet(nn.Module):
