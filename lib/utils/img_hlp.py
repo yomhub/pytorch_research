@@ -120,7 +120,7 @@ def np_polybox_minrect(cv_polybox,box_format:str='polyxy'):
     Find minimum rectangle for cv ploy box
         cv_polybox: ((Box number), point number, 2)
         box_format: 'polyxy' or 'polyyx'
-    Return: ((Box number),4,2) in 'polyxy' or 'polyyx'
+    Return: ((Box number),4,2) in polyxy
     """
     single_box = False
     if(len(cv_polybox.shape)==2):
@@ -150,10 +150,10 @@ def np_polybox_minrect(cv_polybox,box_format:str='polyxy'):
     
     if(box_format.lower()=='polyyx'):
         ret = np.concatenate((
-            dim_0s_min,dim_1s_min,
-            dim_0s_min,dim_1s_max,
-            dim_0s_max,dim_1s_max,
-            dim_0s_max,dim_1s_min,
+            dim_1s_min,dim_0s_min,
+            dim_1s_max,dim_0s_min,
+            dim_1s_max,dim_0s_max,
+            dim_1s_min,dim_0s_max,
             ),axis=-1).reshape(-1,4,2)
     else:    
         ret = np.concatenate((
@@ -241,9 +241,24 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
     src_format = src_format.lower()
     dst_format = dst_format.lower()
     if(src_format==dst_format):return box
-
     # convert all to 'cxywh'
-    if(src_format=='yxyx'):
+    if('poly' in src_format):
+        if('poly' in dst_format):
+            # poly xy->yx
+            if(len(box.shape)==1):
+                # np.object with (k,2)
+                return np.array([o[:,::-1] for o in box])
+            elif(len(box.shape)==2):
+                return box[:,::-1]
+            else:
+                return box[:,:,::-1]
+        else:
+            box = np_polybox_minrect(box,src_format)
+            if(len(box.shape)==2):
+                box = np.expand_dims(box,0)
+            wh = box[:,2]-box[:,0]
+            ret = np.concatenate((box[:,0]+wh/2,wh),-1)
+    elif(src_format=='yxyx'):
         ret = np.stack([
             (box[:,-1]+box[:,-3])/2,#cx
             (box[:,-2]+box[:,-4])/2,#cy
@@ -289,8 +304,31 @@ def np_box_transfrom(box:np.ndarray,src_format:str,dst_format:str)->np.ndarray:
             ret[:,-4]+ret[:,-2]/2,#x2
             ret[:,-3]+ret[:,-1]/2,#y2
             ],axis=-1)
+    elif('poly' in dst_format):
+        if(dst_format=='polyxy'):
+            ret = np.stack([
+                ret[:,-4]-ret[:,-2]/2,#x1
+                ret[:,-3]-ret[:,-1]/2,#y1
+                ret[:,-4]+ret[:,-2]/2,#x2
+                ret[:,-3]-ret[:,-1]/2,#y1
+                ret[:,-4]+ret[:,-2]/2,#x2
+                ret[:,-3]+ret[:,-1]/2,#y2
+                ret[:,-4]-ret[:,-2]/2,#x1
+                ret[:,-3]+ret[:,-1]/2,#y2
+                ],axis=-1).reshape(-1,4,2)
+        else:
+            ret = np.stack([
+                ret[:,-3]-ret[:,-1]/2,#y1
+                ret[:,-4]-ret[:,-2]/2,#x1
+                ret[:,-3]-ret[:,-1]/2,#y1
+                ret[:,-4]+ret[:,-2]/2,#x2
+                ret[:,-3]+ret[:,-1]/2,#y2
+                ret[:,-4]+ret[:,-2]/2,#x2
+                ret[:,-3]+ret[:,-1]/2,#y2
+                ret[:,-4]-ret[:,-2]/2,#x1
+                ],axis=-1).reshape(-1,4,2)
 
-    if(box.shape[-1]>4):
+    if(len(box.shape)==2 and box.shape[-1]>4):
         ret = np.concatenate([box[:,0].reshape((-1,1)),ret],axis=-1)
     return ret
 
@@ -827,7 +865,7 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_split:bool=False):
+def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_split:bool=False,region_th:float=0.6):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
@@ -856,7 +894,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
         if(np.max(slc_pix) < score_th): continue
         if(region_mean_split):
             kernel = np.ones((3,3),dtype=np.uint8)
-            mean_v = np.mean(slc_pix)
+            mean_v = max(region_th,np.mean(slc_pix))
             f_erode_map = np.where(label_map == k, scoremap, 0.0).astype(scoremap.dtype)
             loc_nLabels, loc_label_map, loc_states, loc_centroids = cv2.connectedComponentsWithStats(
                 (f_erode_map>mean_v).astype(np.uint8),
@@ -933,7 +971,7 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_
         img: ndarray in (h,w,c) in [0,255]
         boxes: ndarray, shape (boxes number,polygon point number,2 (x,y)) 
             or (polygon point number,2 (x,y))
-        color: (B,G,R) box color
+        color: (R,G,B) box color
         thickness: line thickness
         point_emphasis: set True to draw circle on each points
     Return image
@@ -1747,6 +1785,122 @@ def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
         
     return gtmask,probility
 
+def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
+    crop_to_box:bool=True,
+    rotate:float=10.0,random_90:bool=True,
+    shift:float=14,
+    scale_weight:float=0.2,scale_base:float=0.8,
+    ):
+    """
+    Random process for image
+    Args:
+        image: image (H,W,(1 or 3))
+        poly_xy (optional): poly xy boxes with shape ((N),k,2)
+        crop_to_box: set True to enable crop to lagerse object group
+        rotate: rotate degree in [-rotate,+rotate]
+        random_90: True to enable random 90 rotate
+        shift: shift in [-rotate,+rotate]
+        scale: scale_weight in [-rotate,+rotate] + scale_base
+
+        set value above to minus to disable transform
+    Return:
+        image: (H,W,(1 or 3))
+        poly_xy: if have poly_xy, return transformed poly_xy
+        M: transform matrix
+
+    """
+    org_image_size = image.shape[0:2]
+    if(len(poly_xy.shape)==2):
+        poly_xy = np.expand_dims(poly_xy,0)
+    M = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
+    if(crop_to_box and not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):
+        cxywh = np_box_transfrom(poly_xy,'polyxy','cxywh')
+        remain = np.zeros(cxywh.shape[0],dtype=np.bool)
+        bxi=np.argmax(cxywh[:,2]*cxywh[:,3])
+        remain[bxi]=True
+        bx_max = cxywh[bxi]
+        tcx,tcy,tw,th = bx_max
+        det_d = np.sqrt(np.sum(np.square(cxywh[:,0:2]-bx_max[0:2]),axis=-1))
+        bxi_sort = np.argsort(det_d)
+        
+        # group near boxes into final crop target from near to far
+        for bxi in bxi_sort[1:]:
+            cx,cy,w,h = cxywh[bxi]
+            maxd = max(w/2,h/2)+max(tw/2,th/2)
+            if(np.sqrt((tcx-cx)**2+(tcy-cy)**2)<maxd*1.3):
+                remain[bxi]=True
+                tcx,tcy = (tcx+cx)/2,(tcy+cy)/2
+                tw=abs(tcx-cx)+tw/2+w/2
+                th=abs(tcy-cy)+th/2+h/2
+        
+        # remove outside boxes
+        poly_xy = poly_xy[remain]
+        rect_poly_xy = np_polybox_minrect(poly_xy)
+        # re-calculate bounding box
+        x1 = np.min(rect_poly_xy[:,0,0])
+        y1 = np.min(rect_poly_xy[:,0,1])
+        x2 = np.max(rect_poly_xy[:,2,0])
+        y2 = np.max(rect_poly_xy[:,2,1])
+        tw = x2-x1
+        th = y2-y1
+        tcx = x1+tw/2
+        tcy = y1+th/2
+        # orginal polygon
+        poly_org = np.array([
+            [tcx-tw/2,tcy-th/2],
+            [tcx+tw/2,tcy-th/2],
+            [tcx+tw/2,tcy+th/2],
+            [tcx-tw/2,tcy+th/2],
+            ],dtype=np.float32)
+
+        # keep same ratio
+        ratio = org_image_size[0]/org_image_size[1]
+        if(th<tw*org_image_size[0]/org_image_size[1]):
+            th = tw*org_image_size[0]/org_image_size[1]
+        else:
+            tw = th*org_image_size[1]/org_image_size[0]
+        # resize in [current,1]
+        sc = min(org_image_size[1]/tw,org_image_size[0]/th)
+        sc = np.random.random()*(sc-1)+1
+        th*=sc
+        tw*=sc
+        tcx = org_image_size[1]/2
+        tcy = org_image_size[0]/2
+        poly_rect = np.array([
+            [tcx-tw/2,tcy-th/2],
+            [tcx+tw/2,tcy-th/2],
+            [tcx+tw/2,tcy+th/2],
+            [tcx-tw/2,tcy+th/2],
+            ],dtype=np.float32)
+        M = cv2.getPerspectiveTransform(poly_org,poly_rect)
+        
+    if(rotate>0):
+        angle = (np.random.random()-0.5)*2*rotate
+        angle += 90*int(np.random.random()*4)
+        Mr = cv2.getRotationMatrix2D(((org_image_size[1]-1)/2,(org_image_size[0]-1)/2), angle, 1.0)
+        Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=M.dtype)),0)
+        M = np.dot(Mr,M)
+
+    if(scale_weight>0):
+        scale_x = ((np.random.random()-0.5)*2*scale_weight+scale_base)
+        scale_y = ((np.random.random()-0.5)*2*scale_weight+scale_base)
+        Ms = np.array([[scale_x,0,0],[0,scale_y,0],[0,0,1]],dtype=M.dtype)
+        M = np.dot(Ms,M)
+
+    if(shift>0):
+        shift_x = (np.random.random()-0.5)*2*shift
+        shift_y = (np.random.random()-0.5)*2*shift
+        Mt = np.array([[1,0,shift_x],[0,1,shift_y],[0,0,1]],dtype=M.dtype)
+        M = np.dot(Mt,M)
+
+    image = cv2.warpAffine(image, M[:-1], org_image_size[::-1])
+
+    if(not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):
+        poly_xy = np_apply_matrix_to_pts(M,poly_xy)
+    else:
+        poly_xy = None
+
+    return image,poly_xy,M
 # 
 # ===============================================
 # ==================== Class ====================

@@ -254,42 +254,27 @@ def train(rank, world_size, args):
 
             boxes = sample['box']
             if(random_b):
-                angle = (np.random.random()-0.5)*2*5
-                angle += 90*int(np.random.random()*4)
-                h, w = x.shape[-3:-1]
-                Mr = cv2.getRotationMatrix2D(((w-1)/2, (h-1)/2), angle, 1.0)
-                Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=Mr.dtype)),0)
-
-                scale_x = (np.random.random()*0.2+0.9)
-                scale_y = (np.random.random()*0.2+0.9)
-                Ms = np.array([[scale_x,0,0],[0,scale_y,0],[0,0,1]],dtype=Mr.dtype)
-
-                shift_x = (np.random.random()-0.5)*2*7
-                shift_y = (np.random.random()-0.5)*2*7
-                Mt = np.array([[1,0,shift_x],[0,1,shift_y],[0,0,1]],dtype=Mr.dtype)
-                
-                Mtsr = np.dot(Mt,np.dot(Ms,Mr))
+                boxest_list = []
+                xt_list = []
                 image = x.numpy()
-                image = np.stack([cv2.warpAffine(bt_image, Mtsr[:-1], (w, h)) for bt_image in image],0).astype(np.uint8)
-                x = torch.from_numpy(image)
-
-                boxes = [np_apply_matrix_to_pts(Mtsr,bth_box) if(bth_box.shape[0]>0)else bth_box for bth_box in boxes]
                 if(b_have_mask):
+                    maskt_list = []
                     mask_np = mask.numpy()
-                    mask_np = np.stack([cv2.warpAffine(bt_mask, Mtsr[:-1], (w, h)) for bt_mask in mask_np],0).astype(np.uint8)
+                
+                for i in range(image.shape[0]):
+                    imgt,boxt,M = cv_random_image_process(image[i],boxes[i] if(boxes[i].size>0)else None,np.random.random()>0.5)
+                    xt_list.append(imgt)
+                    boxest_list.append(boxt if(boxes[i].size>0)else boxes[i])
+                    if(b_have_mask):
+                        maskt_list.append(cv2.warpAffine(mask_np[i], M[:-1], (image.shape[2],image.shape[1])))
+                
+                image = np.stack(xt_list)
+                x = torch.from_numpy(image)
+                if(b_have_mask):
+                    mask_np = np.stack(maskt_list).astype(np.uint8)
                     if(len(mask_np.shape)==3):
                         mask_np = np.expand_dims(mask_np,-1)
                     mask = torch.from_numpy(mask_np)
-                # max_v,max_id = 0,(0,0)
-                # for o in boxes:
-                #     rec_box = np_polybox_minrect(o)
-                #     areas = rec_box[:,2]-rec_box[:,0]
-                #     areas = areas[:,0]*areas[:,1]
-                #     t = np.argmax(areas)
-                #     if(areas[t]>max_v):
-                #         max_v = areas[t]
-                #         max_id = 
-
 
             xnor = x.float().cuda(non_blocking=True)
             xnor = torch_img_normalize(xnor).permute(0,3,1,2)
