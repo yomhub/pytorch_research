@@ -242,7 +242,7 @@ def train(rank, world_size, args):
     time_c = datetime.now()
     total_step = len(train_loader)
     kernel = np.ones((3,3),dtype=np.uint8)
-    all_recall, all_precision, all_mask_det = [],[],[]
+    all_recall, all_precision = [],[]
     last_max_recall, last_max_precision, last_max_fscore = 0.0,0.0,0.0
 
     for epoch in range(args.epoch):
@@ -512,6 +512,9 @@ def train(rank, world_size, args):
             ovlap_th = 0.5
             recall_list,precision_list = [],[]
             mask_loss_list = []
+            mask_ce_loss_list = []
+            mask_box_map_list = []
+            mask_box_ce_map_list = []
             bool_hit_max,bool_low_fscore = False,False
             log_eval_num = 5
             rng = np.random.default_rng()
@@ -525,14 +528,41 @@ def train(rank, world_size, args):
                     eva_xnor = torch_img_normalize(eva_xnor).permute(0,3,1,2)
                     eva_pred,eva_feat = model(eva_xnor)
                     eva_pred_np = eva_pred.cpu().numpy()
+                    eva_small_boxes = np_box_resize(eva_boxes,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy')
                     if('mask' in sample):
-                        eval_mask = sample['mask'].cuda(non_blocking=True)
-                        eval_mask = (eval_mask>0).float()
-                        if(len(eval_mask.shape)==4):
-                            eval_mask = eval_mask.permute(0,3,1,2)
-                        eval_mask_loss = criterion(eva_pred[:,DEF_START_MASK_CH+0], eval_mask)
-                        mask_loss_list.append(eval_mask_loss)
-                        
+                        # eval_mask = sample['mask'].cuda(non_blocking=True)
+                        # eval_mask = (eval_mask>0).float()
+                        # if(len(eval_mask.shape)==4):
+                        #     eval_mask = eval_mask.permute(0,3,1,2)
+                        # eval_mask_loss = criterion(eva_pred[:,DEF_START_MASK_CH+0], eval_mask)
+                        # mask_loss_list.append(eval_mask_loss)
+
+                        # global mAP 
+                        eva_pred_mask_bin_np = (eva_pred_np[:,DEF_START_MASK_CH+0]*255).astype(np.uint8)
+                        eva_gt_mask_bin_np = sample['mask'].numpy().astype(np.uint8)
+                        if(len(eva_gt_mask_bin_np.shape)==4):
+                            eva_gt_mask_bin_np=eva_gt_mask_bin_np[:,:,:,0]
+                        eva_gt_mask_bin_np = [cv2.resize(o,(eva_pred.shape[3],eva_pred.shape[2])) for o in eva_gt_mask_bin_np]
+                        mask_loss_list.append(np.sum(eva_pred_mask_bin_np!=eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
+
+                        if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
+                            labels = torch.argmax(eva_pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH])
+                            labels = labels.cpu().detach().numpy().astype(np.uint8)*255
+                            mask_ce_loss_list.append(np.sum(labels!=eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
+
+                        # box level mAP
+                        for bthi in range(eva_bth_x.shape[0]):
+                            bth_eva_small_boxes = eva_small_boxes[bthi]
+                            for smbx in eva_small_boxes:
+                                sub_gt_mask_bin_np,M,blmask = cv_crop_image_by_polygon(eva_gt_mask_bin_np[bthi],smbx,return_mask=True)
+                                sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (eva_pred.shape[-1], eva_pred.shape[-2]))
+                                sub_pred_mask_bin_np[~blmask] = 0
+                                mask_box_map_list.append(np.sum(sub_pred_mask_bin_np!=sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
+                                if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
+                                    sub_labels = cv2.warpPerspective(labels[bthi], M, (eva_pred.shape[-1], eva_pred.shape[-2]))
+                                    sub_labels[~blmask] = 0
+                                    mask_box_ce_map_list.append(np.sum(labels!=sub_gt_mask_bin_np)/labels.size)
+
                     if(DEF_BOOL_TRAIN_CE):
                         argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
                         eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
@@ -608,17 +638,26 @@ def train(rank, world_size, args):
                 #         bool_hit_max=True
                 #     last_max_fscore = f_np
 
-                if(mask_loss_list):
-                    mask_loss_gpu=torch.mean(torch.stack(mask_loss_list))
-                    dist.all_reduce(mask_loss_gpu)
-                    all_mask_det.append(mask_loss_gpu.item()/world_size)
-
                 if(logger and rank==0):
                     logger.add_scalar('Eval/recall', recall_np, epoch)
                     logger.add_scalar('Eval/precision', precision_np, epoch)
                     logger.add_scalar('Eval/F-score',f_np, epoch)
                     if(mask_loss_list):
-                        logger.add_scalar('Eval/text loss',all_mask_det[-1], epoch)
+                        mask_loss_gpu=torch.mean(torch.stack(mask_loss_list).cuda(non_blocking=True))
+                        dist.all_reduce(mask_loss_gpu)
+                        logger.add_scalar('Eval/global text loss',mask_loss_gpu.item()/world_size, epoch)
+                    if(mask_ce_loss_list):
+                        mask_loss_gpu=torch.mean(torch.stack(mask_ce_loss_list).cuda(non_blocking=True))
+                        dist.all_reduce(mask_loss_gpu)
+                        logger.add_scalar('Eval/global CE text loss',mask_loss_gpu.item()/world_size, epoch)
+                    if(mask_box_map_list):
+                        mask_loss_gpu=torch.mean(torch.stack(mask_box_map_list).cuda(non_blocking=True))
+                        dist.all_reduce(mask_loss_gpu)
+                        logger.add_scalar('Eval/global text loss',mask_loss_gpu.item()/world_size, epoch)
+                    if(mask_box_ce_map_list):
+                        mask_loss_gpu=torch.mean(torch.stack(mask_box_ce_map_list).cuda(non_blocking=True))
+                        dist.all_reduce(mask_loss_gpu)
+                        logger.add_scalar('Eval/boxes CE text loss',mask_loss_gpu.item()/world_size, epoch)
                     logger.flush()
                 
                 if(last_max_fscore>0.4 and (last_max_fscore-f_np)>0.5*last_max_fscore):

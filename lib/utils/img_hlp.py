@@ -98,7 +98,7 @@ def np_box_rescale(box,scale,box_format:str):
             'polyxy','polyyx' for polygon
     """
     if(not isinstance(box,np.ndarray)):box = np.array(box)
-    if(box.dtype==np.object):
+    if(isinstance(box,list) or box.dtype==np.object):
         tmp = [np_box_rescale(o,scale,box_format) for o in box]
         return np.array(tmp)
     if(box.max()<=1.0): 
