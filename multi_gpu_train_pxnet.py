@@ -262,12 +262,13 @@ def train(rank, world_size, args):
                     mask_np = mask.numpy()
                 
                 for i in range(image.shape[0]):
-                    imgt,boxt,M = cv_random_image_process(image[i],boxes[i] if(boxes[i].size>0)else None,np.random.random()>0.5)
+                    imgt,boxt,M = cv_random_image_process(image[i],boxes[i] if(boxes[i].shape[0]>0)else None,np.random.random()>0.5)
                     xt_list.append(imgt)
-                    boxest_list.append(boxt if(boxes[i].size>0)else boxes[i])
+                    boxest_list.append(boxt if(not isinstance(boxt,type(None)))else boxes[i])
                     if(b_have_mask):
                         maskt_list.append(cv2.warpAffine(mask_np[i], M[:-1], (image.shape[2],image.shape[1])))
-                
+
+                boxes = boxest_list
                 image = np.stack(xt_list)
                 x = torch.from_numpy(image)
                 if(b_have_mask):
@@ -350,6 +351,8 @@ def train(rank, world_size, args):
                     gas_map,blmap = cv_gen_gaussian_by_poly(batch_boxes,x.shape[-3:-1],return_mask=True)
                     blmap = np.where(blmap>0,255,0).astype(np.uint8)
                     blmap = cv2.resize(blmap,(pred.shape[-1],pred.shape[-2]))
+                    # slightly shrink the region to enhance boundary
+                    blmap = cv2.erode(blmap,kernel,iterations=1)
                     boundadrymap = blmap-cv2.erode(blmap,kernel,iterations=2)
         
                 region_mask_np.append(gas_map)
@@ -409,7 +412,7 @@ def train(rank, world_size, args):
                         cx,cy = ct_box[boxi].astype(np.uint16)
                         if(cx>=pred_bx.shape[-1] or cy>=pred_bx.shape[-2] or cx<0 or cy<0):
                             continue
-                        ct_box_oneheat_map[cy:cv+2,cx:cx+2]=1.0
+                        ct_box_oneheat_map[cy:cy+2,cx:cx+2]=1.0
                         if(DEF_BOOL_POLY_REGRESSION):
                             poly_gt = np_split_polygon(boxes_small[boxi],div_num)
                             poly_gt = poly_gt.reshape(-1,2)

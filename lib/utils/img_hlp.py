@@ -1788,8 +1788,8 @@ def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
 def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
     crop_to_box:bool=True,
     rotate:float=10.0,random_90:bool=True,
-    shift:float=14,
-    scale_weight:float=0.2,scale_base:float=0.8,
+    shift:float=10,
+    scale_weight:float=0.1,scale_base:float=0.9,
     ):
     """
     Random process for image
@@ -1799,8 +1799,8 @@ def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
         crop_to_box: set True to enable crop to lagerse object group
         rotate: rotate degree in [-rotate,+rotate]
         random_90: True to enable random 90 rotate
-        shift: shift in [-rotate,+rotate]
-        scale: scale_weight in [-rotate,+rotate] + scale_base
+        shift: shift in [-shift,+shift]
+        scale: scale_weight in [-scale,+scale] + scale_base
 
         set value above to minus to disable transform
     Return:
@@ -1876,7 +1876,8 @@ def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
         
     if(rotate>0):
         angle = (np.random.random()-0.5)*2*rotate
-        angle += 90*int(np.random.random()*4)
+        if(not crop_to_box):
+            angle += 90*int(np.random.random()*4)
         Mr = cv2.getRotationMatrix2D(((org_image_size[1]-1)/2,(org_image_size[0]-1)/2), angle, 1.0)
         Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=M.dtype)),0)
         M = np.dot(Mr,M)
