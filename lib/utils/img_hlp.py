@@ -885,6 +885,7 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
     
     det = []
     mapper = []
+    kernel = np.ones((3,3),dtype=np.uint8)
     for k in range(1, nLabels):
         # size filtering
         rsize = states[k, cv2.CC_STAT_AREA]
@@ -893,14 +894,17 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
         # thresholding
         if(np.max(slc_pix) < score_th): continue
         if(region_mean_split):
-            kernel = np.ones((3,3),dtype=np.uint8)
             mean_v = max(region_th,np.mean(slc_pix))
+            # same with orginal scoremap size
             f_erode_map = np.where(label_map == k, scoremap, 0.0).astype(scoremap.dtype)
+            b_erode_map = (f_erode_map>mean_v*0.5).astype(np.uint8)
+            b_erode_map = cv2.erode(b_erode_map,kernel,iterations=2)
+            b_erode_map = cv2.dilate(b_erode_map,kernel,iterations=2)
             loc_nLabels, loc_label_map, loc_states, loc_centroids = cv2.connectedComponentsWithStats(
-                (f_erode_map>mean_v).astype(np.uint8),
-                connectivity=8)
+                b_erode_map,connectivity=8)
             if(loc_nLabels>2):
                 for j in range(1, loc_nLabels):
+                    if(loc_states[j, cv2.CC_STAT_AREA] < 10): continue
                     x, y = loc_states[j, cv2.CC_STAT_LEFT], loc_states[j, cv2.CC_STAT_TOP]
                     w, h = loc_states[j, cv2.CC_STAT_WIDTH], loc_states[j, cv2.CC_STAT_HEIGHT]
                     cx,cy = x+w/2,y+h/2

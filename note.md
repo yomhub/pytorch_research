@@ -60,3 +60,21 @@
 ## 12.08
     Proposel: add multi level 3 classes classifier: BG, region boundary, region inside
 
+## 12.15
+    Net: PIX_Unet_MASK_CLS_BOX
+    Eval: 
+        total-txt: RPF: 28+%-,31%+,30%+
+        ic19: RPF: 30%+,30%+,30%+
+
+    Phenomena:
+        1. CE loss dominate loss value (50%+), major decay component in 
+        initial stage
+        2. after Adag(lr0.001-0.0004), SGD(lr0.0001) can sharply decay CE loss
+        3. CE Recall < [0,1] region regression 
+
+## 01.02
+    Problem: word segmentation in intensive word region
+    [0,1] region regression: high value in center line of single word, low value in boundary 
+    different region value related to region size in global image,
+    the higher max(w,h) is, the higher peak values are
+    Proposel: localized threshold segmentation, use CC to loacte components and calculate local mean as threshold
