@@ -11,7 +11,7 @@ from lib.utils.net_hlp import init_weights,SoftMaxPool2d,get_final_ch,double_con
 DEF_BASE_NETS = ['vgg11','vgg11_bn','vgg13','vgg13_bn','vgg16','vgg16_bn','vgg19','vgg19_bn']
 
 class VGG(nn.Module):
-    def __init__(self, basenet='vgg16_bn', pretrained=True, padding:bool=True, maxpool:bool=True, loadnet:str=None,**args):
+    def __init__(self, basenet='vgg16_bn', pretrained=True, padding:bool=True, maxpool:bool=True, loadnet:str=None,include_final:bool=False,**args):
         super(VGG, self).__init__()
         basenet = basenet.lower() if(basenet.lower() in DEF_BASE_NETS)else 'vgg16_bn'
         model_urls[basenet] = model_urls[basenet].replace('https://', 'http://')
@@ -36,7 +36,6 @@ class VGG(nn.Module):
         basnet = base_cls(pretrained=bool(pretrained))
         vgg_pretrained_features = basnet.features
         
-        self.output_tuple = namedtuple("VggOutputs", ['b0','b1', 'b2', 'b3', 'b4'])
         self.b0 = torch.nn.Sequential()
         self.b1 = torch.nn.Sequential()
         self.b2 = torch.nn.Sequential()
@@ -51,7 +50,15 @@ class VGG(nn.Module):
                     break
                 cnt+=1
             cnt+=1
-
+        self.include_final = bool(include_final)
+        if(self.include_final):
+            self.b5 = torch.nn.Sequential(
+                nn.Conv2d(get_final_ch(self.b4), 1024, kernel_size=1),
+                nn.BatchNorm2d(1024),
+                nn.ReLU(inplace=True),
+            )
+            cnt+=1
+            init_list.append(self.b5)
 
         if(loadnet and os.path.exists(loadnet)):
             para = torch.load(loadnet)
@@ -60,9 +67,6 @@ class VGG(nn.Module):
         elif(not pretrained):
             for block in init_list:
                 init_weights(block.modules())
-                init_weights(block.modules())
-                init_weights(block.modules())
-                init_weights(block.modules())
 
         if((not padding) or (not maxpool)):
             for m in self.modules():
@@ -70,6 +74,8 @@ class VGG(nn.Module):
                     m.padding=(0,0)
                 if((not maxpool) and isinstance(m,nn.MaxPool2d)):
                     m=SoftMaxPool2d(kernel_size=(2,2),stride=(2,2),padding=(0,0))
+        
+        self.output_tuple = namedtuple("VggOutputs", ['b{}'.format(i) for i in range(len(init_list))])
 
     def forward(self, x):
         b0 = self.b0(x)
@@ -77,19 +83,28 @@ class VGG(nn.Module):
         b2 = self.b2(b1)
         b3 = self.b3(b2)
         b4 = self.b4(b3)
+        if(self.include_final):
+            b5 = self.b5(b4)
+            return self.output_tuple(b0, b1, b2, b3, b4, b5)
         return self.output_tuple(b0, b1, b2, b3, b4)
 
 class VGGUnet(nn.Module):
     def __init__(self, padding:bool=True, min_upc_ch:int=0,
-        init_method:str='xavier_uniform',**args):
+        init_method:str='xavier_uniform',include_final:bool=False,**args):
         super(VGGUnet, self).__init__()
-        self.basenet = VGG(padding=padding,**args)
+        self.basenet = VGG(include_final=include_final,padding=padding,**args)
 
         b4ch = get_final_ch(self.basenet.b4)
         b3ch = get_final_ch(self.basenet.b3)
         b2ch = get_final_ch(self.basenet.b2)
         b1ch = get_final_ch(self.basenet.b1)
         b0ch = get_final_ch(self.basenet.b0)
+        self.include_final = bool(include_final)
+        if(self.include_final):
+            b5ch = get_final_ch(self.basenet.b5)
+            self.b5b4_b4 = double_conv(b4ch+b5ch,(b4ch+b5ch)//2,b4ch,padding=padding)
+            init_weights(self.b5b4_b4.modules(),init_method)
+
         b4b3_b3_out = max(min_upc_ch,b3ch)
         b3b2_b2_out = max(min_upc_ch,b2ch)
         b2b1_b1_out = max(min_upc_ch,b1ch)
@@ -101,7 +116,10 @@ class VGGUnet(nn.Module):
         self.b3b2_b2 = double_conv(b4b3_b3_out+b2ch,b3b2_b2_ct,b3b2_b2_out,padding=padding)
         self.b2b1_b1 = double_conv(b3b2_b2_out+b1ch,b2b1_b1_ct,b2b1_b1_out,padding=padding)
         self.out_channels = b2b1_b1_out+b0ch
-        self.output_tuple = namedtuple("VggUnetOutputs", ['upb0','upb1','upb2','upb3','b0','b1', 'b2', 'b3', 'b4'])
+        out_tuples = ['upb0','upb1','upb2','upb3','b0','b1', 'b2', 'b3', 'b4']
+        if(self.include_final):
+            out_tuples.append('b5')
+        self.output_tuple = namedtuple("VggUnetOutputs", out_tuples)
         init_weights(self.b4b3_b3.modules(),init_method)
         init_weights(self.b3b2_b2.modules(),init_method)
         init_weights(self.b2b1_b1.modules(),init_method)
@@ -109,6 +127,8 @@ class VGGUnet(nn.Module):
     def forward(self,x):
         vgg_feat = self.basenet(x)
         feat = vgg_feat.b4
+        if(self.include_final):
+            feat = self.b5b4_b4(torch.cat((vgg_feat.b5,vgg_feat.b4),1))
         feat = torch.cat((vgg_feat.b3,F.interpolate(feat,vgg_feat.b3.shape[2:], mode='bilinear', align_corners=False)),dim=1)
         feat = self.b4b3_b3(feat)
         upb3 = feat
@@ -120,7 +140,10 @@ class VGGUnet(nn.Module):
         upb1 = feat
 
         upb0 = torch.cat((vgg_feat.b0,F.interpolate(feat,vgg_feat.b0.shape[2:], mode='bilinear', align_corners=False)),dim=1)
-        ufeat = self.output_tuple(upb0,upb1,upb2,upb3,vgg_feat.b0,vgg_feat.b1,vgg_feat.b2,vgg_feat.b3,vgg_feat.b4)
+        if(self.include_final):
+            ufeat = self.output_tuple(upb0,upb1,upb2,upb3,vgg_feat.b0,vgg_feat.b1,vgg_feat.b2,vgg_feat.b3,vgg_feat.b4,vgg_feat.b5)
+        else:
+            ufeat = self.output_tuple(upb0,upb1,upb2,upb3,vgg_feat.b0,vgg_feat.b1,vgg_feat.b2,vgg_feat.b3,vgg_feat.b4)
 
         return ufeat
                     

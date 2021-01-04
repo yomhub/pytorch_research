@@ -94,23 +94,23 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
-        model = PIX_Unet_MASK(basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
-        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
+        model = PIX_Unet_MASK(include_final=args.have_fc,basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='pix_unet_mask_cls'):
         model = PIX_Unet_MASK_CLS(cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
-        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
+        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
     elif(args.net=='pix_unet_mask_cls_box'):
         model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
             cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
         net_args+="box_ch={},min_box_ch={}\n".format(DEF_BOX_CH,32)
         net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
-        net_args+="basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.basenet,DEF_MASK_CH,32,128,False)
+        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_TRAIN_BOX = True
@@ -543,25 +543,27 @@ def train(rank, world_size, args):
                         if(len(eva_gt_mask_bin_np.shape)==4):
                             eva_gt_mask_bin_np=eva_gt_mask_bin_np[:,:,:,0]
                         eva_gt_mask_bin_np = [cv2.resize(o,(eva_pred.shape[3],eva_pred.shape[2])) for o in eva_gt_mask_bin_np]
-                        mask_loss_list.append(np.sum(eva_pred_mask_bin_np!=eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
+                        eva_gt_mask_bin_np = np.stack(eva_gt_mask_bin_np)
+                        mask_loss_list.append(np.sum(eva_pred_mask_bin_np==eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
 
                         if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
-                            labels = torch.argmax(eva_pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH])
-                            labels = labels.cpu().detach().numpy().astype(np.uint8)*255
-                            mask_ce_loss_list.append(np.sum(labels!=eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
+                            labels = torch.argmax(eva_pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
+                            labels = labels.cpu().detach().numpy()
+                            labels = np.where(labels==1,255,0).astype(np.uint8)
+                            mask_ce_loss_list.append(np.sum(labels==eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
 
                         # box level mAP
                         for bthi in range(eva_bth_x.shape[0]):
                             bth_eva_small_boxes = eva_small_boxes[bthi]
-                            for smbx in eva_small_boxes:
+                            for smbx in bth_eva_small_boxes:
                                 sub_gt_mask_bin_np,M,blmask = cv_crop_image_by_polygon(eva_gt_mask_bin_np[bthi],smbx,return_mask=True)
-                                sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (eva_pred.shape[-1], eva_pred.shape[-2]))
+                                sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (blmask.shape[1], blmask.shape[0]))
                                 sub_pred_mask_bin_np[~blmask] = 0
-                                mask_box_map_list.append(np.sum(sub_pred_mask_bin_np!=sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
+                                mask_box_map_list.append(np.sum(sub_pred_mask_bin_np==sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
                                 if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
-                                    sub_labels = cv2.warpPerspective(labels[bthi], M, (eva_pred.shape[-1], eva_pred.shape[-2]))
+                                    sub_labels = cv2.warpPerspective(labels[bthi], M, (blmask.shape[1], blmask.shape[0]))
                                     sub_labels[~blmask] = 0
-                                    mask_box_ce_map_list.append(np.sum(labels!=sub_gt_mask_bin_np)/labels.size)
+                                    mask_box_ce_map_list.append(np.sum(sub_labels==sub_gt_mask_bin_np)/sub_labels.size)
 
                     if(DEF_BOOL_TRAIN_CE):
                         argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
@@ -643,21 +645,13 @@ def train(rank, world_size, args):
                     logger.add_scalar('Eval/precision', precision_np, epoch)
                     logger.add_scalar('Eval/F-score',f_np, epoch)
                     if(mask_loss_list):
-                        mask_loss_gpu=torch.mean(torch.stack(mask_loss_list).cuda(non_blocking=True))
-                        dist.all_reduce(mask_loss_gpu)
-                        logger.add_scalar('Eval/global text loss',mask_loss_gpu.item()/world_size, epoch)
+                        logger.add_scalar('Eval/global text map',np.mean(np.stack(mask_loss_list)), epoch)
                     if(mask_ce_loss_list):
-                        mask_loss_gpu=torch.mean(torch.stack(mask_ce_loss_list).cuda(non_blocking=True))
-                        dist.all_reduce(mask_loss_gpu)
-                        logger.add_scalar('Eval/global CE text loss',mask_loss_gpu.item()/world_size, epoch)
+                        logger.add_scalar('Eval/global ce text map',np.mean(np.stack(mask_ce_loss_list)), epoch)
                     if(mask_box_map_list):
-                        mask_loss_gpu=torch.mean(torch.stack(mask_box_map_list).cuda(non_blocking=True))
-                        dist.all_reduce(mask_loss_gpu)
-                        logger.add_scalar('Eval/global text loss',mask_loss_gpu.item()/world_size, epoch)
+                        logger.add_scalar('Eval/box text map',np.mean(np.stack(mask_box_map_list)), epoch)
                     if(mask_box_ce_map_list):
-                        mask_loss_gpu=torch.mean(torch.stack(mask_box_ce_map_list).cuda(non_blocking=True))
-                        dist.all_reduce(mask_loss_gpu)
-                        logger.add_scalar('Eval/boxes CE text loss',mask_loss_gpu.item()/world_size, epoch)
+                        logger.add_scalar('Eval/box ce text map',np.mean(np.stack(mask_box_ce_map_list)), epoch)
                     logger.flush()
                 
                 if(last_max_fscore>0.4 and (last_max_fscore-f_np)>0.5*last_max_fscore):
@@ -894,6 +888,7 @@ if __name__ == '__main__':
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
     parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
     parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
+    parser.add_argument('--have_fc', help='Set --have_fc to include final level.', action="store_true")
 
     args = parser.parse_args()
     args.net = args.net.lower()
@@ -914,6 +909,7 @@ if __name__ == '__main__':
         "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
         "\t Network: {}.\n".format(args.net)+\
         "\t Base network: {}.\n".format(args.basenet)+\
+        "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
         "\t Optimizer: {}.\n".format(args.opt)+\
         "\t Dataset: {}.\n".format(args.dataset)+\
         "\t Init learning rate: {}.\n".format(args.learnrate)+\

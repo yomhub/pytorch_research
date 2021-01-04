@@ -231,16 +231,23 @@ class MobNetBlk(nn.Module):
         return self.out_tuple(b0,b1,b2,b3,b4)
 
 class MobUNet(nn.Module):
-    def __init__(self,min_upc_ch:int=128,init_method:str='xavier_uniform',**args):
+    def __init__(self,min_upc_ch:int=128,init_method:str='xavier_uniform',
+        include_final:bool=False,**args):
         super(MobUNet, self).__init__()
 
-        self.basenet = MobNetBlk(**args)
-        
+        self.basenet = MobNetBlk(include_final=include_final,**args)
+        out_tuples = ['upb0','upb1','upb2','upb3','upb4','b0','b1','b2','b3','b4']
         b0ch = get_final_ch(self.basenet.b0)
         b1ch = get_final_ch(self.basenet.b1)
         b2ch = get_final_ch(self.basenet.b2)
         b3ch = get_final_ch(self.basenet.b3)
         b4ch = get_final_ch(self.basenet.b4)
+        self.include_final = bool(include_final)
+        if(self.include_final):
+            out_tuples.append('b5')
+            b5ch = get_final_ch(self.basenet.b5)
+            self.b5b4_b4 = double_conv(b5ch+b4ch,(b5ch+b4ch)//2,b4ch,padding=True)
+            init_weights(self.b5b4_b4.modules(),init_method)
         if(min_upc_ch==None):
             min_upc_ch=0
         b4b3_b3_out = max(min_upc_ch,b3ch)
@@ -257,7 +264,7 @@ class MobUNet(nn.Module):
         self.b1b0_b0 = double_conv(b2b1_b1_out+b0ch,b1b0_b0_ct,b1b0_b0_out,padding=True)
 
         self.out_channels = b1b0_b0_out
-        self.out_tuple = namedtuple("MobUNet", ['upb0','upb1','upb2','upb3','b0','b1','b2','b3','b4'])
+        self.out_tuple = namedtuple("MobUNet", out_tuples)
         
         init_weights(self.b4b3_b3.modules(),init_method)
         init_weights(self.b3b2_b2.modules(),init_method)
@@ -266,9 +273,13 @@ class MobUNet(nn.Module):
         
     def forward(self,x):
         feat = self.basenet(x)
-        upb3 = self.b4b3_b3(torch.cat((F.interpolate(feat.b4, size=feat.b3.size()[2:], mode='bilinear', align_corners=False),feat.b3),dim=1))
+        upb4 = feat.b4
+        if(self.include_final):
+            upb4 = self.b5b4_b4(torch.cat((feat.b5,upb4),dim=1))
+        upb3 = self.b4b3_b3(torch.cat((F.interpolate(upb4, size=feat.b3.size()[2:], mode='bilinear', align_corners=False),feat.b3),dim=1))
         upb2 = self.b3b2_b2(torch.cat((F.interpolate(upb3, size=feat.b2.size()[2:], mode='bilinear', align_corners=False),feat.b2),dim=1))
         upb1 = self.b2b1_b1(torch.cat((F.interpolate(upb2, size=feat.b1.size()[2:], mode='bilinear', align_corners=False),feat.b1),dim=1))
         upb0 = self.b1b0_b0(torch.cat((F.interpolate(upb1, size=feat.b0.size()[2:], mode='bilinear', align_corners=False),feat.b0),dim=1))
-
-        return self.out_tuple(upb0,upb1,upb2,upb3,feat.b0,feat.b1,feat.b2,feat.b3,feat.b4)
+        if(self.include_final):
+            return self.out_tuple(upb0,upb1,upb2,upb3,upb4,feat.b0,feat.b1,feat.b2,feat.b3,feat.b4,feat.b5)
+        return self.out_tuple(upb0,upb1,upb2,upb3,upb4,feat.b0,feat.b1,feat.b2,feat.b3,feat.b4)
