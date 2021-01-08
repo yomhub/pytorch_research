@@ -9,6 +9,7 @@ from collections import Iterable,defaultdict
 import Polygon as plg
 from PIL import Image, ImageDraw
 from shapely.geometry import Polygon, Point
+from bisect import bisect_left
 # ======================
 from . import log_hlp
 
@@ -1101,71 +1102,6 @@ def cv_labelmap(label_map,label_num:int=None,clr = cv2.COLORMAP_JET):
         img = cv2.applyColorMap(img, clr)
     return img.astype(np.uint8)
 
-def cv_watershed(org_img, mask, viz=False):
-    """
-    Watershed algorithm
-    Args:
-        org_img: original image, (h,w,chs) in np.uint8
-        mask: mask image, (h,w) in np.float in [0,1]
-    Return:
-
-    """
-    if(org_img.shape[0:2]!=mask.shape[0:2]):
-        org_img = cv2.resize(org_img,(mask.shape[1],mask.shape[0]))
-    org_img = org_img.astype(np.uint8)
-    viz = lambda *args:None if(not viz)else cv2.imshow
-
-    # apply threshold
-    if(mask.max()>1.1):mask /= mask.max()
-    mask*=255
-    threshold = mask.max()*0.2
-    b_mask = np.where(mask>=threshold,255,0).astype(np.uint8)
-    viz("surface_bmask", b_mask)
-
-    # apply filter
-    kr = np.ones((3, 3), np.uint8)
-    b_mask = cv2.morphologyEx(b_mask, cv2.MORPH_OPEN, kr, iterations=1)
-    viz("surface_fg", b_mask)
-
-    # find background
-    sure_bg = cv2.dilate(b_mask, kr, iterations=3) 
-    viz("sure_bg", sure_bg)
-
-    # find foreground
-    threshold = mask.max()*0.5
-    sure_fg = np.where(mask>=threshold,255,0).astype(np.uint8)
-    viz("sure_fg", sure_fg)
-
-    unknown = sure_bg - sure_fg
-    viz("unknown", unknown)
-
-    nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(sure_fg,
-                                                                         connectivity=4)
-    
-    markers = labels + 1
-    markers[unknown == 255] = 0
-
-    markers = cv2.watershed(org_img, markers=markers)
-    org_img[markers == -1] = [0, 0, 255]
-    viz("markers", markers)
-    viz("org_img", org_img)
-
-    boxes = []
-    for i in range(2, np.max(markers) + 1):
-        np_contours = np.roll(np.array(np.where(markers == i)), 1, axis=0).transpose().reshape(-1, 2)
-        rectangle = cv2.minAreaRect(np_contours)
-        box = cv2.boxPoints(rectangle)
-
-        startidx = box.sum(axis=1).argmin()
-        box = np.roll(box, 4 - startidx, 0)
-        poly = plg.Polygon(box)
-        area = poly.area()
-        if area < 10:
-            continue
-        box = np.array(box)
-        boxes.append(box)
-    return np.array(boxes)
-
 def cv_box_moving_vector(cv_src_box,cv_dst_box,image_size=None):
     """
     Calculate pixel level box moving vector
@@ -1259,74 +1195,19 @@ def np_split_polygon(cv_poly,n):
 
     return np.array(ans_up+ans_dw[::-1])
     
-def cv_divd_polygon(box,n):
+def np_divd_polygon(cv_poly,n):
     """
     Divide polygon into N parts linearly
-    v 0.5, need refine
     Args:
         box: (2k,2) x,y polygon points 
         n: n part
     Return:
         divplg: (n,4,2) x,y polygon points
     """
-    # box: (2k,2) for polygon xy
-    det_list = []
-    total_det = 0
-    ans = []
-    # calculate center line length
-    for j in range(box.shape[0]//2-1):
-        up = box[j+1] - box[j]
-        dw = box[-j-2] - box[-j-1]
-        det = (math.sqrt(up[0]**2+up[1]**2)+math.sqrt(dw[0]**2+dw[1]**2))/2
-        total_det+=det
-        det_list.append(det)
+    divbox = np_split_polygon(cv_poly,n+1)
+    ans = [[divbox[i],divbox[i+1],divbox[-i-2],divbox[-i-1]] for i in range(divbox.shape[0]//2-1)]
 
-    # single text lenth
-    single_len = total_det/n
-    last_length = 0.0
-    last_ps = None
-    for j in range(len(det_list)):
-        # Skip small segment 
-        if(det_list[j]+last_length<=single_len):
-            last_length+=det_list[j]
-            if(not isinstance(last_ps,type(None))):
-                # Don't have last remnant
-                last_ps = np.array((box[j],box[-j]))
-            continue
-        
-        if(last_length>0.0):
-            bx_len = det_list[j] + last_length
-        else:
-            bx_len = det_list[j]
-        # total splited box number
-        divs = int(bx_len/single_len)
-
-        up_line = box[j+1] - box[j]
-        dw_line = box[-j-2] - box[-j-1]
-        up_sp,dw_sp = box[j],box[-j-1]
-        sp_len = single_len - last_length
-        up_last,dw_last = up_sp + up_line*sp_len/det_list[j],dw_sp + dw_line*sp_len/det_list[j]
-        # add 1st box
-        if(not isinstance(last_ps,type(None))):
-            ans.append((last_ps[0],up_last,dw_last,last_ps[1]))
-        else:
-            ans.append((up_sp,up_last,dw_last,dw_sp))
-        
-        up_dxy = np.linspace(box[0],box[1],n+1)
-        # add 2nd~end boxes
-        for sub_bxi in range(divs-1):
-            # append single polygon
-            new_up_last,new_dw_last = up_last + up_line*single_len/det_list[j],dw_last + dw_line*single_len/det_list[j]
-            ans.append((up_last,new_up_last,new_dw_last,dw_last))
-            up_last,dw_last = new_up_last,new_dw_last
-
-        # remain lenth for next last_length
-        last_length = bx_len - single_len*divs
-        last_ps = np.array((up_last,dw_last))
-    if(last_length>=0.6*single_len):
-        bxi = box.shape[0]//2-1
-        ans.append((up_last,box[bxi],box[-bxi-1],dw_last))
-    return np.stack(ans,axis=0)
+    return np.array(ans).reshape(-1,4,2)
 
 DEF_SP_LENTH = {
     # refer normal as 1.0
@@ -1531,87 +1412,123 @@ def cv_gen_gaussian(cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.n
     
     return ch_mask,af_mask,ch_boxes_list,aff_boxes_list
 
-def cv_watershed_gen_gaussian(img,cv_boxes,texts,img_size,ch_mask:np.ndarray=None,af_mask:np.ndarray=None,affin:bool=True):
-    """
-    Generate text level gaussian distribution use watershed
-    if watershed can't generate correct text region, use cv_gen_gaussian
-    Parameters:
-        img: orginal image in np.uint8
-        cv_boxes: ((box number),points number,2) in (x,y). Points number MUST be even
-        texts: list with len((box number)) or str (for single box), set None to disable text level split
-        img_size: tuple of (h,w)
-        ch_mask: if not None, generator will add the gaussian distribution on mask
-        af_mask: if not None, generator will add the gaussian distribution on mask
-        affin: True to generate af_mask
-    Return:
-        ch_mask, af_mask: (h,w) mask on np.float32
-        ch_boxes_list: list of character level box [(k,4,2) or None], same lenth with texts
-        aff_boxes_list: list of character level affin box [(k-1,4,2) or None], same lenth with texts
-    """
-    # Check parameters
-    if(isinstance(ch_mask,type(None))):
-        ch_mask = np.zeros(img_size,dtype=np.float32)
-    if(isinstance(af_mask,type(None))):
-        af_mask = np.zeros(img_size,dtype=np.float32)
-    if(not isinstance(texts,list)):
-        texts = [texts]
-    if(len(cv_boxes.shape)==2):
-        cv_boxes = np.expand_dims(cv_boxes,0)
-    if(img.dtype!=np.uint8):
-        img = img.astype(np.uint8)
-
-    for bxi in range(cv_boxes.shape[0]):
-        targ_len = len(texts[bxi])
-        sub_x = cv_crop_image_by_polygon(img,cv_boxes[bxi])
-        sub_gray = cv2.cvtColor(sub_x,cv2.COLOR_BGR2GRAY)
-        ret,sub_bin = cv2.threshold(sub_gray,0,255,cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
-        nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats(sub_bin,connectivity=8)
-        # if(nLabels<targ_len):
-        #     # faild to saperate text
-        #     cv_gen_gaussian()
-
 from scipy.signal import find_peaks   
-def scipy_histogram_peaks(datas,peaks:int=3,bins:int=256,distance:int=30,min_value=None,max_range=None):
+def scipy_histogram_cluster(datas,cluster_num:int,cluster_data_list:list=None,
+        bins:int=256,distance:int=30,min_value=None,max_value=None,
+        max_range=None):
     """
-    Find histogram peaks for a given image.
+    Clustering based on data histogram.
     Args:
         datas: nd.array datas
-        peaks: number of peaks
-        bins: lenth of histogram
-        distance: distance of peak
-        min_value: if determined, only consider value higher then min_value
+        cluster_num: number of cluster
+        cluster_data_list: datas of partial clusters, ID from 0 to cluster_num
+
+        bins: histogram bins
+        distance: distance of peaks
+        min_value,max_value: min/max value of histogram
         max_range: maximum value range of single peak
     Return:
-        peaks_value: (number of peaks)
-        peaks_range: (number of peaks,2) of low and high value
-        histogram: (value range), counter of each sample
-        values: (value range), value of each sample
+        cluster_range: (cluster_num,2) of low and high value
+        peaks_indices: (peak_num) indices of peak
+        histogram: (bins) counter of each histogram instances
+        bin_edges: (bins+1) bin_edges from np.histogram 
     """
-    histogram,pvalues = np.histogram(datas,bins)
-    counts = histogram-np.min(histogram)
-    sp = 0
-    if(min_value):
-        idx = np.where(pvalues>min_value)[0]
-        sp = idx[0] if(idx.shape[0]>0)else 0
-    
-    peaks, _ = find_peaks(counts[sp:],distance=30)
-    peaks += sp
-    slc_values = pvalues[peaks]
-    if(len(peaks)==1):
-        det = pvalues[1]-pvalues[0]
-        for i in range(peaks[0],-1,-1):
-            if(counts[i]==0):
-                break
-        l_range = (peaks[0]-i)*det
-        for i in range(peaks[0],counts.shape[0]):
-            if(counts[i]==0):
-                break
-        r_range = (i-peaks[0])*det
-        if(max_range and (l_range+r_range)>max_range):
-            l_range,r_range = max_range*(l_range/(l_range+r_range)),max_range*(r_range/(l_range+r_range))
-        return slc_values,nd.array((pvalues[peaks[0]]-l_range,pvalues[peaks[0]]+r_range)),histogram,pvalues
+    g_min,g_max = np.min(datas),np.max(datas)
+        
+    if(not min_value):
+        min_value = g_min
+    if(not max_value):
+        max_value = g_max
+    global_histogram,global_pvalues = np.histogram(datas,bins,[min_value,max_value])
+    cluster_num = max(cluster_num,1)
+    if(cluster_data_list):
+        cluster_num = max(cluster_num,len(cluster_data_list))
+        cluster_histo_mtx = np.stack([np.histogram(o,bins,[min_value,max_value])[0] for o in cluster_data_list],0)
+    cluster_range = []
+    # we can't use ‘width_heights’ because some cluster may hide in plain or even valley
+    peaks, _ = find_peaks(global_histogram,distance=distance)
+    peaks = peaks.tolist()
+    peaks.sort(key=lambda i: global_histogram[i],reverse=True)
+    # return if no peak exists and cluster_data_list is none
+    if(g_min==g_max or (len(peaks)==0 and not cluster_data_list)):
+        peaks_indices = []
+        div_det = global_pvalues.shape[0]//cluster_num
+        for i in range(cluster_num):
+            cluster_range.append(global_pvalues[i],global_pvalues[i+div_det])
+            peaks_indices.append(i)
+        return np.array(cluster_range),np.array(peaks_indices),global_histogram,global_pvalues
 
-    dist = slc_values[1:]-slc_values[:-1]
+    # assign indices, -1 for no-assign
+    histo_assign_mask = np.zeros(global_histogram.shape[0],dtype=np.int16)
+    histo_assign_mask -= 1
+    cur_assign_idx = 0
+    if(cluster_data_list):
+        for clu_idx,loc_datas in enumerate(cluster_data_list):
+            loc_hist = cluster_histo_mtx[clu_idx]
+            loc_center_inc = bisect_left(global_pvalues,np.mean(loc_datas))
+            loc_center_inc = min(max(0,loc_center_inc-1),global_histogram.shape[0]-1)
+            loc_total_size = loc_datas.size
+            loc_selected_size = loc_hist[loc_center_inc]
+
+            i = loc_center_inc-1
+            while(i>=0 and \
+                loc_selected_size<=int(loc_total_size*0.6) and \
+                loc_hist[i:i-3:-1].max()>0 and \
+                cluster_histo_mtx[:,i].mean()<=loc_hist[i] and \
+                histo_assign_mask[i]==-1 and \
+                ((not max_range) or max_range<=(global_pvalues[loc_center_inc]-global_pvalues[i]))
+                ):
+                loc_selected_size+=loc_hist[i]
+                i-=1
+            j = loc_center_inc+1
+            while(j<global_histogram.shape[0] and \
+                loc_selected_size<=loc_total_size and \
+                loc_hist[j:j+3].max()>0 and \
+                cluster_histo_mtx[:,j].mean()<=loc_hist[j] and \
+                histo_assign_mask[j]==-1 and \
+                ((not max_range) or max_range<=(global_pvalues[j]-global_pvalues[loc_center_inc]))
+                ):
+                loc_selected_size+=loc_hist[j]
+                j+=1
+            histo_assign_mask[i:j]=cur_assign_idx
+            cluster_range.append([global_pvalues[i],global_pvalues[j]])
+            cur_assign_idx+=1
+
+    for peak_inc in peaks:
+        if(cur_assign_idx>=cluster_num):
+            break
+        if(histo_assign_mask[peak_inc]!=-1):
+            continue
+        i = peak_inc-1
+        l_limit = peak_inc
+        for o in peaks:
+            if(o<peak_inc):
+                l_limit = min(l_limit,peak_inc-o)
+        while(i>=0 and \
+            (peak_inc-i)<=l_limit//2 and \
+            histo_assign_mask[i]==-1 and \
+            ((not max_range) or max_range<=(global_pvalues[peak_inc]-global_pvalues[i]))
+            ):
+                loc_selected_size+=loc_hist[i]
+                i-=1
+
+        j = peak_inc+1
+        l_limit = global_histogram.shape[0]-peak_inc-1
+        for o in peaks:
+            if(o>peak_inc):
+                l_limit = min(l_limit,o-peak_inc)
+                
+        while(j<global_histogram.shape[0] and \
+            (j-peak_inc)<=l_limit//2 and \
+            histo_assign_mask[j]==-1 and \
+            ((not max_range) or max_range<=(global_pvalues[j]-global_pvalues[peak_inc]))
+            ):
+                loc_selected_size+=loc_hist[j]
+                j+=1
+        cluster_range.append([global_pvalues[i],global_pvalues[j]])
+        cur_assign_idx+=1
+
+    return np.array(cluster_range),peaks,global_histogram,global_pvalues
 
 def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
     bin_nums:int = 256,peak_distance:int = 20,max_single_peak_range:int = 10,
@@ -1621,7 +1538,7 @@ def cv_gen_binary_map_by_pred(image,boxes,predmask,gtmask=None,
     Args:
         image: image (H,W,3)
         boxes: GT cv polygon box ((N),k,2) for (x,y)
-        predmask: binary mask in 0 or 255
+        predmask: binary mask of predicted text in 0 or 255
         gtmask: binary mask in 0 or 255
 
         peak_distance: min distance between peaks
