@@ -1731,7 +1731,7 @@ def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
 
     """
     org_image_size = image.shape[0:2]
-    if(len(poly_xy.shape)==2):
+    if(not isinstance(poly_xy,type(None)) and len(poly_xy.shape)==2):
         poly_xy = np.expand_dims(poly_xy,0)
     M = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
     if(crop_to_box and not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):

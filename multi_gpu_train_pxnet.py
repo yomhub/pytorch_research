@@ -75,7 +75,8 @@ def train(rank, world_size, args):
     DEF_BOOL_TRAIN_BOX = False
     DEF_BOOL_LOG_LEVEL_MASK = False
     net_args = "Save dir: {}, net: {}.\n".format(args.save,args.net)
-    
+
+    args.net = args.net.lower()
     if(args.net=='vgg_pur_cls'):
         model = VGG_PUR_CLS(include_b0=True,padding=False,pretrained=True).float()
         net_args+="include_b0={},padding={},pretrained={}\n".format(True,False,True)
@@ -94,12 +95,12 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     elif(args.net=='pix_unet_mask'):
-        model = PIX_Unet_MASK(include_final=args.have_fc,basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+        model = PIX_Unet_MASK(include_final=args.have_fc,basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
         net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
     elif(args.net=='pix_unet_mask_cls'):
         model = PIX_Unet_MASK_CLS(cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
         net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
         net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
         DEF_BOOL_TRAIN_MASK = True
@@ -107,7 +108,7 @@ def train(rank, world_size, args):
     elif(args.net=='pix_unet_mask_cls_box'):
         model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
             cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=False).float()
+            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
         net_args+="box_ch={},min_box_ch={}\n".format(DEF_BOX_CH,32)
         net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
         net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
@@ -120,7 +121,7 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     
-    if(not args.debug and rank==0):
+    if(not args.debug and rank==0 and args.save):
         fname = args.save.split('.')[0]+'_args.txt'
         arglog = open(fname,'w')
         arglog.write(net_args)
@@ -176,12 +177,16 @@ def train(rank, world_size, args):
             os.path.join(DEF_TTT_DIR,'gt_pixel','test'),
             os.path.join(DEF_TTT_DIR,'gt_txt','test'),
             image_size=image_size,)
-    # elif(args.dataset=="msra"):
-    # # ONLY PROVIDE SENTENCE LEVEL BOX
-    #     train_dataset = MSRA(
-    #         os.path.join(DEF_MSRA_DIR,'train'),
-    #         os.path.join(DEF_MSRA_DIR,'train'),
-    #         image_size=image_size)
+    elif(args.dataset=="msra"):
+    # ONLY PROVIDE SENTENCE LEVEL BOX
+        train_dataset = MSRA(
+            os.path.join(DEF_MSRA_DIR,'train'),
+            os.path.join(DEF_MSRA_DIR,'train'),
+            image_size=image_size)
+        eval_dataset = MSRA(
+            os.path.join(DEF_MSRA_DIR,'test'),
+            os.path.join(DEF_MSRA_DIR,'test'),
+            image_size=image_size)
     elif(args.dataset=="ic19"):
         # train_dataset = ICDAR19(
         #     os.path.join(DEF_IC19_DIR,'images','train'),
@@ -262,7 +267,11 @@ def train(rank, world_size, args):
                     mask_np = mask.numpy()
                 
                 for i in range(image.shape[0]):
-                    imgt,boxt,M = cv_random_image_process(image[i],boxes[i] if(boxes[i].shape[0]>0)else None,np.random.random()>0.5)
+                    if(not isinstance(boxes,type(None)) and boxes[i].shape[0]>0):
+                        imgt,boxt,M = cv_random_image_process(image[i],boxes[i],np.random.random()>0.5)
+                    else:
+                        imgt,boxt,M = cv_random_image_process(image[i],None,np.random.random()>0.5)
+
                     xt_list.append(imgt)
                     boxest_list.append(boxt if(not isinstance(boxt,type(None)))else boxes[i])
                     if(b_have_mask):
@@ -528,7 +537,8 @@ def train(rank, world_size, args):
                     eva_xnor = torch_img_normalize(eva_xnor).permute(0,3,1,2)
                     eva_pred,eva_feat = model(eva_xnor)
                     eva_pred_np = eva_pred.cpu().numpy()
-                    eva_small_boxes = np_box_resize(eva_boxes,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy')
+                    eva_small_boxes = [np_box_resize(o,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy') if(not isinstance(o,type(None)) and o.shape[0]>0)else None for o in eva_boxes]
+                    
                     if('mask' in sample):
                         # eval_mask = sample['mask'].cuda(non_blocking=True)
                         # eval_mask = (eval_mask>0).float()
@@ -555,6 +565,8 @@ def train(rank, world_size, args):
                         # box level mAP
                         for bthi in range(eva_bth_x.shape[0]):
                             bth_eva_small_boxes = eva_small_boxes[bthi]
+                            if(isinstance(bth_eva_small_boxes,type(None)) or bth_eva_small_boxes.shape[0]==0):
+                                continue
                             for smbx in bth_eva_small_boxes:
                                 sub_gt_mask_bin_np,M,blmask = cv_crop_image_by_polygon(eva_gt_mask_bin_np[bthi],smbx,return_mask=True)
                                 sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (blmask.shape[1], blmask.shape[0]))
@@ -657,7 +669,7 @@ def train(rank, world_size, args):
                 if(last_max_fscore>0.4 and (last_max_fscore-f_np)>0.5*last_max_fscore):
                     bool_low_fscore=True
 
-                if(bool_hit_max and rank==0):
+                if(args.save and bool_hit_max and rank==0):
                     fmdir,fmname = os.path.split(args.save)
                     fmname = 'max_eval_'+fmname
                     finalname = os.path.join(fmdir,fmname)
@@ -891,7 +903,6 @@ if __name__ == '__main__':
     parser.add_argument('--have_fc', help='Set --have_fc to include final level.', action="store_true")
 
     args = parser.parse_args()
-    args.net = args.net.lower()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
     args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
 
@@ -899,9 +910,10 @@ if __name__ == '__main__':
     # args.debug = True
     # args.random=True
     # args.batch=2
-    # args.load = "/BACKUP/yom_backup/saved_model/PIX_Unet_MASK_CLS_BOX.pth"
-    # args.net = 'pix_unet_mask_cls_box'
-    # args.dataset = 'ic19'
+    # args.load = "/BACKUP/yom_backup/saved_model/mask_only_pxnet.pth"
+    # args.net = 'PIX_Unet_MASK'
+    # args.dataset = 'msra'
+    # args.eval=True
 
     summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
         "Working DIR: {}\n".format(DEF_WORK_DIR)+\
