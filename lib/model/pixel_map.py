@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 from lib.model.mobilenet_v2 import *
 from collections import namedtuple
 from lib.model.vgg16 import VGG,VGGUnet
+from lib.model.resnet import Resnet,ResnetUnet
 from lib.utils.net_hlp import get_final_ch,init_weights
 
 class PIX_TXT(nn.Module):
@@ -147,105 +148,131 @@ class PIX_MASK(nn.Module):
         featout = self.out_tuple(b1_mask, b2_mask, b3_mask, b4_mask, feat.b1,feat.b2,feat.b3,feat.b4)
         return mask,featout
 
-class PIX_Unet_MASK(nn.Module):
-    def __init__(self, basenet_name:str = 'mobile', mask_ch:int = 3,min_map_ch:int=32, min_upc_ch:int =128,
-        padding:bool=True,init_method:str='xavier_uniform',**args):
-        super(PIX_Unet_MASK, self).__init__()
-        basenet_name = basenet_name.lower()
-        if('vgg' in basenet_name):
-            self.basenet = VGGUnet(min_upc_ch=min_upc_ch,padding=padding,init_method=init_method,**args)
+class PIX_Unet(nn.Module):
+    def __init__(self,basenet:str ='mobile', min_upc_ch:int =128,
+        padding:bool=True, init_method:str='xavier_uniform',
+        **args):
+        """
+        Basenet Args:
+            basenet: basenet name
+            min_upc_ch: minimum up-convolution channel num
+            init_method: weight initial method
+        Task Args:
+            mask_ch: int, enable mask prediction if given
+                min_mask_ch: optional, minimum ch in conv. group
+
+            cls_ch: int, enable classification prediction if given
+                min_cls_ch: optional, minimum ch in conv. group
+
+            box_ch: int, enable box prediction if given
+                hitmap_ch: default 2, hitmap ch for box
+                min_box_ch: optional, minimum ch in conv. group
+
+            the final prediction will be [mask_ch,cls_ch,hitmap_ch,box_ch]
+
+        """
+        super(PIX_Unet, self).__init__()
+        basenet = basenet.lower()
+        if('vgg' in basenet):
+            self.basenet = VGGUnet(basenet=basenet,min_upc_ch=min_upc_ch,padding=padding,init_method=init_method,**args)
         else:
-            self.basenet = MobUNet(min_upc_ch=min_upc_ch,init_method=init_method,**args)
+            self.basenet = MobUNet(basenet=basenet,min_upc_ch=min_upc_ch,init_method=init_method,**args)
         upch = self.basenet.out_channels
 
-        self.mask = nn.Sequential(
-            double_conv(upch,max(upch//2,min_map_ch),max(upch//4,min_map_ch)),
-            double_conv(max(upch//4,min_map_ch),max(upch//8,min_map_ch),mask_ch),
-            )
+        self.b_mask_task = 'mask_ch' in args
+        self.b_cls_task = 'cls_ch' in args
+        self.b_box_task = 'box_ch' in args
 
-        init_weights(self.mask.modules(),init_method)
+        if(self.b_mask_task):
+            min_map_ch = args['min_mask_ch'] if('min_mask_ch' in args)else upch//8
+            mask_ch = args['mask_ch']
+            self.mask = nn.Sequential(
+                double_conv(upch,max(upch//2,min_map_ch),max(upch//4,min_map_ch)),
+                double_conv(max(upch//4,min_map_ch),max(upch//8,min_map_ch),mask_ch),
+                )
+            init_weights(self.mask.modules(),init_method)
+            
+        if(self.b_cls_task):
+            self.multi_level = bool(args['multi_level']) if('multi_level' in args)else False
+            cls_ch = args['cls_ch']
+            min_cls_ch = args['min_cls_ch'] if('min_cls_ch' in args)else 0
+            if(self.multi_level):
+                b0ch = get_final_ch(self.basenet.basenet.b0)
+                b1ch = get_final_ch(self.basenet.basenet.b1)
+                b2ch = get_final_ch(self.basenet.basenet.b2)
+                b3ch = get_final_ch(self.basenet.basenet.b3)
+                b4ch = get_final_ch(self.basenet.basenet.b4)
+                b4ch = get_final_ch(self.basenet.basenet.b4)
+
+                self.b4_cls = nn.Sequential(
+                    double_conv(b4ch,max(b4ch//2,min_cls_ch),max(b4ch//4,min_cls_ch)),
+                    double_conv(max(b4ch//4,min_cls_ch),max(b4ch//8,min_cls_ch),cls_ch),
+                    )
+                self.b3_cls = nn.Sequential(
+                    double_conv(b3ch,max(b3ch//2,min_cls_ch),max(b3ch//4,min_cls_ch)),
+                    double_conv(max(b3ch//4,min_cls_ch),max(b3ch//8,min_cls_ch),cls_ch),
+                    )
+                self.b2_cls = nn.Sequential(
+                    double_conv(b2ch,max(b2ch//2,min_cls_ch),max(b2ch//4,min_cls_ch)),
+                    double_conv(max(b2ch//4,min_cls_ch),max(b2ch//8,min_cls_ch),cls_ch),
+                    )
+                self.b1_cls = nn.Sequential(
+                    double_conv(b1ch,max(b1ch//2,min_cls_ch),max(b1ch//4,min_cls_ch)),
+                    double_conv(max(b1ch//4,min_cls_ch),max(b1ch//8,min_cls_ch),cls_ch),
+                    )
+                init_weights(self.b4_cls.modules(),init_method)
+                init_weights(self.b3_cls.modules(),init_method)
+                init_weights(self.b2_cls.modules(),init_method)
+                init_weights(self.b1_cls.modules(),init_method)
+            else:
+                upch = self.basenet.out_channels
+                self.cls = nn.Sequential(
+                    double_conv(upch,max(upch//2,min_cls_ch),max(upch//4,min_cls_ch)),
+                    double_conv(max(upch//4,min_cls_ch),max(upch//8,min_cls_ch),cls_ch),
+                    )
+                init_weights(self.cls.modules(),init_method)
+
+        if(self.b_box_task):
+            min_box_ch = args['min_box_ch'] if('min_box_ch' in args)else 0
+            hitmap_ch = args['hitmap_ch'] if('hitmap_cn' in args)else 2
+            box_ch = args['box_ch']
+            self.box = nn.Sequential(
+                double_conv(upch,max(upch//2,min_box_ch),max(upch//4,min_box_ch)),
+                double_conv(max(upch//4,min_box_ch),max(upch//8,min_box_ch),box_ch),
+                )
+            self.hitmap = nn.Sequential(
+                double_conv(upch,max(upch//2,min_box_ch),max(upch//4,min_box_ch)),
+                double_conv(max(upch//4,min_box_ch),max(upch//8,min_box_ch),hitmap_ch),
+                )
+            init_weights(self.box.modules(),init_method)
+
+        assert (self.b_mask_task or self.b_cls_task or self.b_box_task), "At least need one task"
 
     def forward(self,x):
         feat=self.basenet(x)
-        mask = self.mask(feat.upb0)
+        preds = []
+        if(self.b_mask_task):
+            preds.append(self.mask(feat.upb0))
+        if(self.b_cls_task):
+            if(self.multi_level):
+                b4_cls = self.b4_cls(feat.b4)
+                b3_cls = self.b3_cls(feat.b3)
+                b2_cls = self.b2_cls(feat.b2)
+                b1_cls = self.b1_cls(feat.b1)
+                f_cls = b4_cls
+                f_cls = b3_cls+F.interpolate(f_cls, size=b3_cls.size()[2:], mode='bilinear', align_corners=False)
+                f_cls = b2_cls+F.interpolate(f_cls, size=b2_cls.size()[2:], mode='bilinear', align_corners=False)
+                f_cls = b1_cls+F.interpolate(f_cls, size=b1_cls.size()[2:], mode='bilinear', align_corners=False)
+                if(f_cls.shape[2:]!=pred.shape[2:]):
+                    f_cls = F.interpolate(f_cls, size=pred.size()[2:], mode='bilinear', align_corners=False)
+            else:
+                f_cls = self.cls(feat.upb0)
+            preds.append(f_cls)
+        if(self.b_box_task):
+            preds.append(self.hitmap(feat.upb0))
+            preds.append(self.box(feat.upb0))
 
-        return mask,feat
-
-
-class PIX_Unet_MASK_CLS(PIX_Unet_MASK):
-    def __init__(self, cls_ch:int=3, multi_level:bool=True, min_cls_ch:int=32, 
-        init_method:str='xavier_uniform',**args):
-        super(PIX_Unet_MASK_CLS, self).__init__(init_method=init_method,**args)
-        upch = self.basenet.out_channels
-        self.multi_level = bool(multi_level)
-        if(self.multi_level):
-            b0ch = get_final_ch(self.basenet.basenet.b0)
-            b1ch = get_final_ch(self.basenet.basenet.b1)
-            b2ch = get_final_ch(self.basenet.basenet.b2)
-            b3ch = get_final_ch(self.basenet.basenet.b3)
-            b4ch = get_final_ch(self.basenet.basenet.b4)
-            b4ch = get_final_ch(self.basenet.basenet.b4)
-
-            self.b4_cls = nn.Sequential(
-                double_conv(b4ch,max(b4ch//2,min_cls_ch),max(b4ch//4,min_cls_ch)),
-                double_conv(max(b4ch//4,min_cls_ch),max(b4ch//8,min_cls_ch),cls_ch),
-                )
-            self.b3_cls = nn.Sequential(
-                double_conv(b3ch,max(b3ch//2,min_cls_ch),max(b3ch//4,min_cls_ch)),
-                double_conv(max(b3ch//4,min_cls_ch),max(b3ch//8,min_cls_ch),cls_ch),
-                )
-            self.b2_cls = nn.Sequential(
-                double_conv(b2ch,max(b2ch//2,min_cls_ch),max(b2ch//4,min_cls_ch)),
-                double_conv(max(b2ch//4,min_cls_ch),max(b2ch//8,min_cls_ch),cls_ch),
-                )
-            self.b1_cls = nn.Sequential(
-                double_conv(b1ch,max(b1ch//2,min_cls_ch),max(b1ch//4,min_cls_ch)),
-                double_conv(max(b1ch//4,min_cls_ch),max(b1ch//8,min_cls_ch),cls_ch),
-                )
-            init_weights(self.b4_cls.modules(),init_method)
-            init_weights(self.b3_cls.modules(),init_method)
-            init_weights(self.b2_cls.modules(),init_method)
-            init_weights(self.b1_cls.modules(),init_method)
-        else:
-            upch = self.basenet.out_channels
-            self.cls = nn.Sequential(
-                double_conv(upch,max(upch//2,min_cls_ch),max(upch//4,min_cls_ch)),
-                double_conv(max(upch//4,min_cls_ch),max(upch//8,min_cls_ch),cls_ch),
-                )
-            init_weights(self.cls.modules(),init_method)
-            
-    def forward(self,x):
-        pred,feat = super().forward(x)
-        if(self.multi_level):
-            b4_cls = self.b4_cls(feat.b4)
-            b3_cls = self.b3_cls(feat.b3)
-            b2_cls = self.b2_cls(feat.b2)
-            b1_cls = self.b1_cls(feat.b1)
-            f_cls = b4_cls
-            f_cls = b3_cls+F.interpolate(f_cls, size=b3_cls.size()[2:], mode='bilinear', align_corners=False)
-            f_cls = b2_cls+F.interpolate(f_cls, size=b2_cls.size()[2:], mode='bilinear', align_corners=False)
-            f_cls = b1_cls+F.interpolate(f_cls, size=b1_cls.size()[2:], mode='bilinear', align_corners=False)
-            if(f_cls.shape[2:]!=pred.shape[2:]):
-                f_cls = F.interpolate(f_cls, size=pred.size()[2:], mode='bilinear', align_corners=False)
-        else:
-            f_cls = self.cls(feat.upb0)
-        return torch.cat((pred,f_cls),1),feat
-
-class PIX_Unet_MASK_CLS_BOX(PIX_Unet_MASK_CLS):
-    def __init__(self, box_ch:int, min_box_ch:int=32, 
-        init_method:str='xavier_uniform',**args):
-        super(PIX_Unet_MASK_CLS_BOX, self).__init__(init_method=init_method,**args)
-        upch = self.basenet.out_channels
-        self.box = nn.Sequential(
-            double_conv(upch,max(upch//2,min_box_ch),max(upch//4,min_box_ch)),
-            double_conv(max(upch//4,min_box_ch),max(upch//8,min_box_ch),box_ch),
-            )
-        init_weights(self.box.modules(),init_method)
-        
-    def forward(self,x):
-        pred,feat = super().forward(x)
-        box = self.box(feat.upb0)
-        return torch.cat((pred,box),1),feat
+        return torch.cat(preds,1),feat
 
 class VGG_PXMASK(nn.Module):
     def __init__(self,padding:bool=True,

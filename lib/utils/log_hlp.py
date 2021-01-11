@@ -82,6 +82,10 @@ def plt_show_images(plt_w:int,plt_h:int,image_list:list,title_list:list=None,hid
     """
     fig,ax_tup = plt.subplots(plt_w,plt_h,sharey=True)
     ax_tup = ax_tup.reshape(-1)
+    if(hide_axis):
+        for i in range(len(ax_tup)):
+            ax_tup[i].get_yaxis().set_visible(False)
+            ax_tup[i].get_xaxis().set_visible(False)
     for i,img in enumerate(image_list):
         if(img.dtype==np.float):
             ax_tup[i].imshow((img*255).astype(np.uint8),'gray')
@@ -89,9 +93,7 @@ def plt_show_images(plt_w:int,plt_h:int,image_list:list,title_list:list=None,hid
             ax_tup[i].imshow(img)
         if(title_list and i<len(title_list)):
             ax_tup[i].set_title(title_list[i])
-        if(hide_axis):
-            ax_tup[i].get_yaxis().set_visible(False)
-            ax_tup[i].get_xaxis().set_visible(False)
+
     return fig,ax_tup
 
 def save_image(f_name:str,img:np.ndarray,cmap='rbg'):

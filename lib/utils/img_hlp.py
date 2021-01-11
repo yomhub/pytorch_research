@@ -674,6 +674,45 @@ def cv_box_overlap(boxes1,boxes2):
         ans.append(tmp)
     return np.array(ans,dtype=np.float32)
 
+def cv_non_max_suppression(cv_polyboxes,area_th:float=15,overlap_th:float=0.6,merge:bool=False):
+    """
+    None max suppression for polygon
+    Args:
+        cv_polyboxes: np.object or no.array with shape (N,k,2)
+        area_th: area threshold
+        overlap_th: overlap threshold
+    Return:
+        cv_polyboxes: np.object or no.array with shape (N,k,2)
+    """
+    if(not isinstance(cv_polyboxes,np.ndarray)):
+        cv_polyboxes = np.array(cv_polyboxes)
+    if(len(cv_polyboxes.shape)<=2 or cv_polyboxes.shape[0]<=1):
+        return cv_polyboxes
+    polys = []
+    for i,o in enumerate(cv_polyboxes):
+        p = Polygon(o)
+        if(not p.is_valid or p.area<area_th):
+            continue
+        polys.append((p,p.area,i))
+
+    polys.sort(key=lambda x:x[1],reverse=True)
+    idx = 0
+    while(idx<len(polys)):
+        j=idx+1
+        while(j<len(polys)):
+            if(polys[idx][0].intersects(polys[j][0])):
+                ov = polys[idx][0].intersection(polys[j][0]).area
+                ov_f = ov/(polys[idx][1]+polys[j][1]-ov)
+                if(ov_f>=overlap_th or ov>=overlap_th*polys[j][1]):
+                    polys.pop(j)
+                else:
+                    j+=1
+            else:
+                j+=1
+        idx+=1
+    slc = [cv_polyboxes[o[2]] for o in polys]
+    return np.array(slc)
+
 def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
     """
     Box match algorithm
@@ -692,14 +731,17 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
         recall_rate
     """
     id_list = [None]*pred.shape[0]
-    if(gt.shape[0]==0):
+    if(pred.shape[0]==0 and gt.shape[0]==0):
+        return id_list,1,1
+    if(pred.shape[0]==0 or gt.shape[0]==0):
         return id_list,0,0
     if(len(pred.shape)==2):
         pred = np.expand_dims(pred,0)
     if(len(gt.shape)==2):
         gt = np.expand_dims(gt,0)
-    T = pred.shape[0]
-    Tdsh = pred.shape[0]
+
+    pred_cnt = pred.shape[0]
+    # remove don't care
     if(not isinstance(bg,type(None))):
         if(len(bg.shape)==2):
             bg = np.expand_dims(bg,0)
@@ -711,12 +753,11 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
                 if(ovs[i,imax]>=ovth):
                     if(-1-int(imax) not in id_list):
                         id_list[i] = -1-int(imax)
-                        Tdsh-=1
+                        pred_cnt-=1
                         break
                 else:
                     break
-    M=0
-    G = gt.shape[0]
+    match_cnt = 0
     ovs = cv_box_overlap(pred,gt)
     incs = np.argsort(ovs,axis=1)
     incs = incs[:,::-1]
@@ -727,12 +768,12 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
             if(ovs[i,imax]>=ovth):
                 if(imax not in id_list):
                     id_list[i] = imax
-                    M+=1
+                    match_cnt+=1
                     break
             else:
                 break
-    precision =M/Tdsh
-    recall = M/G
+    precision = match_cnt/pred_cnt
+    recall = match_cnt/gt.shape[0]
     return id_list,precision,recall
 
 def cv_box2cvbox(boxes,image_size,box_format:str):

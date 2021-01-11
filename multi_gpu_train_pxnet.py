@@ -37,11 +37,14 @@ DEF_MAX_TRACKING_BOX_NUMBER = 1
 # pixel mask, edge mask, region mask, threshold mask
 DEF_MASK_CH = 4
 # [bg, fg, boundary] | [text bg, text fg]
-DEF_CE_CH = 3+2
-DEF_BOOL_POLY_REGRESSION = False
-DEF_POLY_NUM = 10
-DEF_BOX_CH = (1+DEF_POLY_NUM*2) if(DEF_BOOL_POLY_REGRESSION)else (1+4) # 1 score map + 10 points polygon (x,y) or (dcx,dcy,w,h)
 DEF_BOOL_MULTILEVEL_CE = False
+DEF_CE_CH = 3+2
+
+DEF_BOOL_POLY_REGRESSION = False
+DEF_BOX_HITMAP_CH = 2
+DEF_POLY_NUM = 10
+#polygon (x,y) or (dcx,dcy,w,h)
+DEF_BOX_CH = DEF_POLY_NUM*2 if(DEF_BOOL_POLY_REGRESSION)else 4
 
 def train(rank, world_size, args):
     """
@@ -94,27 +97,30 @@ def train(rank, world_size, args):
         model = PIX_TXT().float()
         DEF_BOOL_TRAIN_MASK = True
         DEF_BOOL_LOG_LEVEL_MASK = True
-    elif(args.net=='pix_unet_mask'):
-        model = PIX_Unet_MASK(include_final=args.have_fc,basenet_name=args.basenet,mask_ch=DEF_MASK_CH,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
-        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
-        DEF_BOOL_TRAIN_MASK = True
-    elif(args.net=='pix_unet_mask_cls'):
-        model = PIX_Unet_MASK_CLS(cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
-        net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
-        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
-        DEF_BOOL_TRAIN_MASK = True
-        DEF_BOOL_TRAIN_CE = True
-    elif(args.net=='pix_unet_mask_cls_box'):
-        model = PIX_Unet_MASK_CLS_BOX(box_ch=DEF_BOX_CH,min_box_ch=32,
-            cls_ch=DEF_CE_CH,multi_level=DEF_BOOL_MULTILEVEL_CE,min_cls_ch=32,
-            mask_ch=DEF_MASK_CH,include_final=args.have_fc,basenet_name=args.basenet,min_map_ch=32,min_upc_ch=128,pretrained=True).float()
-        net_args+="box_ch={},min_box_ch={}\n".format(DEF_BOX_CH,32)
-        net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
-        net_args+="include_final={},basenet_name={},mask_ch={},min_map_ch={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,DEF_MASK_CH,32,128,False)
-        DEF_BOOL_TRAIN_MASK = True
-        DEF_BOOL_TRAIN_CE = True
-        DEF_BOOL_TRAIN_BOX = True
+    elif('pix_unet' in args.net):
+        net_args_dict = {}
+        if('mask' in args.net):
+            net_args_dict['mask_ch']=DEF_MASK_CH
+            net_args_dict['min_mask_ch']=32
+            net_args+="mask_ch={},min_mask_ch={},".format(DEF_MASK_CH,32)
+            DEF_BOOL_TRAIN_MASK = True
+
+        if('cls' in args.net):
+            net_args_dict['cls_ch']=DEF_CE_CH
+            net_args_dict['min_cls_ch']=32
+            net_args_dict['multi_level']=DEF_BOOL_MULTILEVEL_CE
+            net_args+="cls_ch={},multi_level={},min_cls_ch={}\n".format(DEF_CE_CH,DEF_BOOL_MULTILEVEL_CE,32)
+            DEF_BOOL_TRAIN_CE = True
+
+        if('box' in args.net):
+            net_args_dict['box_ch']=DEF_BOX_CH
+            net_args_dict['hitmap_ch']=DEF_BOX_HITMAP_CH
+            net_args_dict['min_box_ch']=32
+            net_args+="box_ch={},hitmap_ch={},min_box_ch={}\n".format(DEF_BOX_CH,DEF_BOX_HITMAP_CH,32)
+            DEF_BOOL_TRAIN_BOX = True
+
+        net_args+="include_final={},basenet_name={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,128,False)
+        model = PIX_Unet(include_final=args.have_fc,basenet_name=args.basenet,min_upc_ch=128,pretrained=True,**net_args_dict).float()
     else:
         model = PIX_MASK().float()
         DEF_BOOL_TRAIN_MASK = True
@@ -307,10 +313,12 @@ def train(rank, world_size, args):
                     edge_list = []
                     gen_mask_prob_list = []
                     if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
+                        # have text ce
                         labels= torch.argmax(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
                         np_pred_mask = (labels==1).cpu().detach().numpy()
                         np_pred_mask = np.logical_or(np_pred_mask,(pred[:,DEF_START_MASK_CH+0]>0.3).cpu().detach().numpy())
                     else:
+                        # region mask
                         np_pred_mask = (pred[:,DEF_START_MASK_CH+0]>0.3).cpu().detach().numpy()
 
                     x_np = x.numpy().astype(np.uint8)
@@ -400,7 +408,7 @@ def train(rank, world_size, args):
                     loss_dict['txt_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH], mask_ce)
 
             if(DEF_BOOL_TRAIN_BOX):
-                pred_bx = pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_CH]
+                pred_bx = pred[:,DEF_START_BOX_CH+DEF_BOX_HITMAP_CH:DEF_START_BOX_CH+DEF_BOX_CH+DEF_BOX_HITMAP_CH]
                 div_num = DEF_POLY_NUM//2
                 bx_loss_lst=[]
                 small_image_size_xy = np.array([pred_bx.shape[-1],pred_bx.shape[-2]])
@@ -435,14 +443,19 @@ def train(rank, world_size, args):
                             bx_gt_nor = np.array([det_cx,det_cy,w,h])
 
                         bx_gt_nor = torch.from_numpy(bx_gt_nor).float().cuda(non_blocking=True)
-                        bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,1:,cy-1,cx-1]-bx_gt_nor)))
+                        bx_loss_lst.append(torch.mean(torch.abs(pred_bx[batchi,:,cy-1,cx-1]-bx_gt_nor)))
                     box_oneheat_map.append(ct_box_oneheat_map)
 
                 if(bx_loss_lst):
                     loss_dict['bx_loss'] = sum(bx_loss_lst)/len(bx_loss_lst)
                     box_oneheat_map = np.expand_dims(np.stack(box_oneheat_map,0),-1)
                     box_oneheat_map = torch.from_numpy(box_oneheat_map).float().cuda(non_blocking=True).permute(0,3,1,2)
-                    loss_dict['bx_oneheat_loss'] = criterion(pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+1],box_oneheat_map)
+                    if(DEF_BOX_HITMAP_CH==1):
+                        loss_dict['bx_hit_loss'] = criterion(pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+1],box_oneheat_map)
+                    else:
+                        bx_hit_ce = F.interpolate(box_oneheat_map,size=pred.shape[2:], mode='bilinear', align_corners=False)
+                        loss_dict['bx_hit_ce_loss'] = criterion_ce(pred[:,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_HITMAP_CH],
+                            (box_oneheat_map[:,0]>0).type(torch.int64))
                     
             if(DEF_BOOL_TRACKING):
                 tracking_loss_lst = []
@@ -583,30 +596,67 @@ def train(rank, world_size, args):
 
                     for bthi in range(eva_bth_x.shape[0]):
                         eva_image = eva_bth_x[bthi].numpy().astype(np.uint8)
-                        eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
-                        eva_region_np = np.where(eva_region_np>0.4,255,0).astype(np.uint8)
-                        eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
-                        eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
-                        eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
-                        det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
-                        if(det_boxes.shape[0]>0):
-                            det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
-                            ids,precision,recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
-                        else:
-                            precision,recall=0.0,0.0
-                        fscore = precision*recall/(precision+recall) if(precision+recall>0)else 0.0
+                        precision,recall,fscore=0.0,0.0,0.0
+                        if(DEF_BOOL_TRAIN_MASK):
+                            eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
+                            eva_region_np = np.where(eva_region_np>0.4,255,0).astype(np.uint8)
+                            eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
+                            eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
+                            eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
+                            det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
+                            if(det_boxes.shape[0]>0):
+                                det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
+                                ids,mask_precision,mask_recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                                mask_fscore = mask_precision*mask_recall/(mask_precision+mask_recall) if(mask_precision+mask_recall>0)else 0.0
+                                if(mask_fscore>fscore):
+                                    precision=mask_precision
+                                    recall=mask_recall
+                            else:
+                                mask_precision,mask_recall,mask_fscore=0.0,0.0,0.0
+
                         if(DEF_BOOL_TRAIN_CE):
                             ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
                             ce_det_boxes, ce_label_mask, ce_label_list = cv_get_box_from_mask(ce_map)
                             if(ce_det_boxes.shape[0]>0):
                                 ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
                                 ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                                ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
+                                if(ce_fscore>fscore):
+                                    precision=ce_precision
+                                    recall=ce_recall
                             else:
-                                ce_precision,ce_recall=0.0,0.0
-                            ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
-                            if(ce_fscore>fscore):
-                                precision=ce_precision
-                                recall=ce_recall
+                                ce_precision,ce_recall,ce_fscore=0.0,0.0,0.0
+
+                        if(DEF_BOOL_TRAIN_BOX):
+                            image_size_xy = np.array((eva_xnor.shape[-1],eva_xnor.shape[-2]))
+                            eva_box_onehit = eva_pred_np[bthi,DEF_START_BOX_CH:DEF_START_BOX_CH+DEF_BOX_HITMAP_CH]
+                            if(DEF_BOX_HITMAP_CH==1):
+                                eva_box_onehit_yx = np.where(eva_box_onehit[0]>0)
+                            else:
+                                eva_box_onehit_yx = np.where(eva_box_onehit[1]>eva_box_onehit[0])
+                            eva_box_dets = eva_pred_np[bthi,DEF_START_BOX_CH+DEF_BOX_HITMAP_CH:DEF_START_BOX_CH+DEF_BOX_HITMAP_CH+DEF_BOX_CH]
+                            eva_box_dets = np.moveaxis(eva_box_dets,0,-1)
+                            
+                            pred_box_list = []
+                            for cy,cx in zip(*eva_box_onehit_yx):
+                                pred_cx,pred_cy = eva_box_dets[cy,cx,0:2]*image_size_xy
+                                pred_cx+=cx+1
+                                pred_cy+=cy+1
+                                pred_w,pred_h = eva_box_dets[cy,cx,2:4]*image_size_xy
+                                pred_box_list.append(np.array([
+                                    [pred_cx-pred_w/2,pred_cy-pred_h/2],
+                                    [pred_cx+pred_w/2,pred_cy-pred_h/2],
+                                    [pred_cx+pred_w/2,pred_cy+pred_h/2],
+                                    [pred_cx-pred_w/2,pred_cy+pred_h/2],
+                                    ]))
+                            pred_box_list = np.array(pred_box_list)
+
+                            box_ids,box_precision,box_recall = cv_box_match(pred_box_list,eva_boxes[bthi],ovth=ovlap_th)
+                            box_fscore = box_precision*box_recall/(box_precision+box_recall) if(box_precision+box_recall>0)else 0.0
+                            if(box_fscore>fscore):
+                                precision=box_precision
+                                recall=box_recall
+
                         recall_list.append(recall)
                         precision_list.append(precision)
                     if(logger and rank==0 and stepi in log_eval_id):
@@ -616,6 +666,8 @@ def train(rank, world_size, args):
                             bximg = cv_draw_poly(bximg,det_boxes,text='Pmk',color=(255,0,0))
                         if(DEF_BOOL_TRAIN_CE and ce_det_boxes.shape[0]>0):
                             bximg = cv_draw_poly(bximg,ce_det_boxes,text='Pce',color=(0,0,255))
+                        if(DEF_BOOL_TRAIN_BOX and pred_box_list.shape[0]>0):
+                            bximg = cv_draw_poly(bximg,pred_box_list,text='Pbox',color=(255,128,255))
                         imgs = [bximg]
                         if(DEF_BOOL_TRAIN_MASK):
                             imgs.append(cv_heatmap(eva_pred_np[-1,DEF_START_MASK_CH+2]))
@@ -709,6 +761,7 @@ def train(rank, world_size, args):
                 smx = cv_mask_image(smx,pred_regi)
                 logimg = [smx,pred_mask,pred_edge]
                 if(DEF_MASK_CH>3):
+                    # text threshold regression
                     pred_threshold = pred[log_i,DEF_START_MASK_CH+3].to('cpu').detach().numpy()
                     pred_threshold = (pred_threshold*255).astype(np.uint8)
                     pred_threshold = np.stack([pred_threshold,pred_threshold,pred_threshold],-1)
@@ -786,7 +839,7 @@ def train(rank, world_size, args):
                     logger.add_image(t, concatenate_images(img_lst), epoch,dataformats='HWC')
 
             if(DEF_BOOL_TRAIN_BOX):
-                pred_box = pred[log_i,DEF_START_BOX_CH+1:DEF_START_BOX_CH+DEF_BOX_CH].to('cpu').detach().numpy()
+                pred_box = pred[log_i,DEF_START_BOX_CH+DEF_BOX_HITMAP_CH:DEF_START_BOX_CH+DEF_BOX_CH+DEF_BOX_HITMAP_CH].to('cpu').detach().numpy()
                 div_num = DEF_POLY_NUM//2
                 smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_box.shape[-1],pred_box.shape[-2]))
                 small_image_size_xy = np.array([pred_box.shape[-1],pred_box.shape[-2]])
@@ -911,7 +964,7 @@ if __name__ == '__main__':
     # args.random=True
     # args.batch=2
     # args.load = "/BACKUP/yom_backup/saved_model/mask_only_pxnet.pth"
-    # args.net = 'PIX_Unet_MASK'
+    # args.net = 'PIX_Unet_box'
     # args.dataset = 'msra'
     # args.eval=True
 
