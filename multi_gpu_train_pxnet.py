@@ -552,7 +552,7 @@ def train(rank, world_size, args):
                     eva_pred_np = eva_pred.cpu().numpy()
                     eva_small_boxes = [np_box_resize(o,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy') if(not isinstance(o,type(None)) and o.shape[0]>0)else None for o in eva_boxes]
                     
-                    if('mask' in sample):
+                    if((DEF_BOOL_TRAIN_MASK or DEF_BOOL_TRAIN_CE) and 'mask' in sample):
                         # eval_mask = sample['mask'].cuda(non_blocking=True)
                         # eval_mask = (eval_mask>0).float()
                         # if(len(eval_mask.shape)==4):
@@ -561,13 +561,14 @@ def train(rank, world_size, args):
                         # mask_loss_list.append(eval_mask_loss)
 
                         # global mAP 
-                        eva_pred_mask_bin_np = (eva_pred_np[:,DEF_START_MASK_CH+0]*255).astype(np.uint8)
                         eva_gt_mask_bin_np = sample['mask'].numpy().astype(np.uint8)
                         if(len(eva_gt_mask_bin_np.shape)==4):
                             eva_gt_mask_bin_np=eva_gt_mask_bin_np[:,:,:,0]
                         eva_gt_mask_bin_np = [cv2.resize(o,(eva_pred.shape[3],eva_pred.shape[2])) for o in eva_gt_mask_bin_np]
                         eva_gt_mask_bin_np = np.stack(eva_gt_mask_bin_np)
-                        mask_loss_list.append(np.sum(eva_pred_mask_bin_np==eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
+                        if(DEF_BOOL_TRAIN_MASK):
+                            eva_pred_mask_bin_np = (eva_pred_np[:,DEF_START_MASK_CH+0]*255).astype(np.uint8)
+                            mask_loss_list.append(np.sum(eva_pred_mask_bin_np==eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
 
                         if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
                             labels = torch.argmax(eva_pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH],dim=1)
@@ -582,15 +583,17 @@ def train(rank, world_size, args):
                                 continue
                             for smbx in bth_eva_small_boxes:
                                 sub_gt_mask_bin_np,M,blmask = cv_crop_image_by_polygon(eva_gt_mask_bin_np[bthi],smbx,return_mask=True)
-                                sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (blmask.shape[1], blmask.shape[0]))
-                                sub_pred_mask_bin_np[~blmask] = 0
-                                mask_box_map_list.append(np.sum(sub_pred_mask_bin_np==sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
+                                if(DEF_BOOL_TRAIN_MASK):
+                                    sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (blmask.shape[1], blmask.shape[0]))
+                                    sub_pred_mask_bin_np[~blmask] = 0
+                                    mask_box_map_list.append(np.sum(sub_pred_mask_bin_np==sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
                                 if(DEF_BOOL_TRAIN_CE and DEF_CE_CH>3):
                                     sub_labels = cv2.warpPerspective(labels[bthi], M, (blmask.shape[1], blmask.shape[0]))
                                     sub_labels[~blmask] = 0
                                     mask_box_ce_map_list.append(np.sum(sub_labels==sub_gt_mask_bin_np)/sub_labels.size)
 
                     if(DEF_BOOL_TRAIN_CE):
+                        # process hold batch to speed up
                         argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
                         eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
 
