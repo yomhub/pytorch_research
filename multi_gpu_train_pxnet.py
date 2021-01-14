@@ -175,11 +175,17 @@ def train(rank, world_size, args):
         optimizer = optim.Adagrad(model.parameters(), lr=args.learnrate, weight_decay=tcfg['OPT_DEC'])
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.learnrate, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
-    # Wrap the model
+    if(args.lr_decay):
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+            mode='min',factor=0.9,
+            patience=100,cooldown=30,
+            min_lr=0.0001,
+            verbose=True
+            )
+
     if(world_size>1):
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-    # Data loading code
-
+    
     if(args.dataset=="ttt"):
         train_dataset = Total(
             os.path.join(DEF_TTT_DIR,'images','train'),
@@ -265,6 +271,7 @@ def train(rank, world_size, args):
     last_max_recall, last_max_precision, last_max_fscore = 0.0,0.0,0.0
 
     for epoch in range(args.epoch):
+        epoch_loss_list = []
         for stepi, sample in enumerate(train_loader):
             x = sample['image']
             b_have_mask = bool('mask' in sample)
@@ -389,7 +396,7 @@ def train(rank, world_size, args):
                 region_mask_np = np.expand_dims(np.stack(region_mask_np,0),-1).astype(np.float32)
                 region_mask = torch.from_numpy(region_mask_np).cuda(non_blocking=True).permute(0,3,1,2)
                 loss_dict['region_loss'] = criterion(pred[:,DEF_START_MASK_CH+2], region_mask)
-                if((b_have_mask or args.genmask) and DEF_MASK_CH>3):
+                if(DEF_BOOL_TRAIN_TXT_MASK and (b_have_mask or args.genmask) and DEF_MASK_CH>3):
                     img = x.numpy().astype(np.uint8)
                     threshold_np = np.stack([cv2.cvtColor(o,cv2.COLOR_RGB2GRAY) for o in img],0)
                     threshold_np[mask_np==0]=0
@@ -527,17 +534,26 @@ def train(rank, world_size, args):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            if(args.lr_decay):
+                scheduler.step(loss)
+            epoch_loss_list.append(loss.item())
 
             if(logger and rank==0):
                 logger.add_scalar('Loss/total loss', loss.item(), epoch*total_step+stepi)
                 for keyn,value in loss_dict.items():
                     logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+stepi)
-
+                if(args.lr_decay):
+                    logger.add_scalar('LR rate', optimizer.param_groups[0]['lr'], epoch*total_step+stepi)
                 logger.flush()
         
         # ==============
         # End of epoch
         # ==============
+        if(args.lr_decay):
+            epoch_loss = np.array(epoch_loss_list)
+            mean_epoch_loss = np.mean(epoch_loss)
+            var_epoch_loss = np.var(epoch_loss)
+
         if(args.eval):
             ovlap_th = 0.5
             recall_list,precision_list = [],[]
@@ -782,7 +798,7 @@ def train(rank, world_size, args):
                     logimg.append(pred_threshold)
 
                 logger.add_image('Prediction', concatenate_images(logimg), epoch,dataformats='HWC')
-                if(b_have_mask or args.genmask):
+                if(DEF_BOOL_TRAIN_TXT_MASK and (b_have_mask or args.genmask)):
                     gt_mask = np.stack([mask_np[log_i],mask_np[log_i],mask_np[log_i]],-1)
                     gt_edge = np.stack([edge_np[log_i],edge_np[log_i],edge_np[log_i]],-1)
                     gt_regi = cv_heatmap(region_mask_np[log_i,:,:,0])
@@ -968,6 +984,7 @@ if __name__ == '__main__':
     parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
     parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
     parser.add_argument('--have_fc', help='Set --have_fc to include final level.', action="store_true")
+    parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
@@ -990,6 +1007,7 @@ if __name__ == '__main__':
         "\t Base network: {}.\n".format(args.basenet)+\
         "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
         "\t Optimizer: {}.\n".format(args.opt)+\
+        "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
         "\t Dataset: {}.\n".format(args.dataset)+\
         "\t Init learning rate: {}.\n".format(args.learnrate)+\
         "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
