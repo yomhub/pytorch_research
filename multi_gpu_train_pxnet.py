@@ -46,6 +46,8 @@ DEF_POLY_NUM = 10
 #polygon (x,y) or (dcx,dcy,w,h)
 DEF_BOX_CH = DEF_POLY_NUM*2 if(DEF_BOOL_POLY_REGRESSION)else 4
 
+DEF_BOOL_TRAIN_TXT_MASK = True
+
 def train(rank, world_size, args):
     """
     Custom training function, return 0 for join operation
@@ -104,6 +106,8 @@ def train(rank, world_size, args):
             net_args_dict['min_mask_ch']=32
             net_args+="mask_ch={},min_mask_ch={},".format(DEF_MASK_CH,32)
             DEF_BOOL_TRAIN_MASK = True
+        if('txt' not in args.net):
+            DEF_BOOL_TRAIN_TXT_MASK = False
 
         if('cls' in args.net):
             net_args_dict['cls_ch']=DEF_CE_CH
@@ -127,6 +131,10 @@ def train(rank, world_size, args):
         DEF_BOOL_TRAIN_CE = True
         DEF_BOOL_LOG_LEVEL_MASK = True
     
+    net_args+="\n\tDEF_BOOL_TRAIN_MASK={},DEF_BOOL_TRAIN_TXT_MASK={},\n\tDEF_BOOL_TRAIN_CE={},\n\tDEF_BOOL_TRAIN_BOX={}".format(
+        DEF_BOOL_TRAIN_MASK,DEF_BOOL_TRAIN_TXT_MASK,
+        DEF_BOOL_TRAIN_CE,DEF_BOOL_TRAIN_BOX
+    )
     if(not args.debug and rank==0 and args.save):
         fname = args.save.split('.')[0]+'_args.txt'
         arglog = open(fname,'w')
@@ -335,7 +343,7 @@ def train(rank, world_size, args):
                     gen_mask_prob = torch.from_numpy(np.expand_dims(gen_mask_prob_np,-1)).cuda(non_blocking=True)
                     gen_mask_prob = gen_mask_prob.float().permute(0,3,1,2)
                 
-                if(b_have_mask or args.genmask):
+                if(DEF_BOOL_TRAIN_TXT_MASK and (b_have_mask or args.genmask)):
                     edge = torch.from_numpy(np.expand_dims(edge_np,-1)).cuda(non_blocking=True)
                     edge = (edge>0).float().permute(0,3,1,2)
                     if(len(mask_np.shape)==3):
@@ -566,7 +574,7 @@ def train(rank, world_size, args):
                             eva_gt_mask_bin_np=eva_gt_mask_bin_np[:,:,:,0]
                         eva_gt_mask_bin_np = [cv2.resize(o,(eva_pred.shape[3],eva_pred.shape[2])) for o in eva_gt_mask_bin_np]
                         eva_gt_mask_bin_np = np.stack(eva_gt_mask_bin_np)
-                        if(DEF_BOOL_TRAIN_MASK):
+                        if(DEF_BOOL_TRAIN_MASK and DEF_BOOL_TRAIN_TXT_MASK):
                             eva_pred_mask_bin_np = (eva_pred_np[:,DEF_START_MASK_CH+0]*255).astype(np.uint8)
                             mask_loss_list.append(np.sum(eva_pred_mask_bin_np==eva_gt_mask_bin_np)/np.sum(eva_gt_mask_bin_np>0))
 
@@ -583,7 +591,7 @@ def train(rank, world_size, args):
                                 continue
                             for smbx in bth_eva_small_boxes:
                                 sub_gt_mask_bin_np,M,blmask = cv_crop_image_by_polygon(eva_gt_mask_bin_np[bthi],smbx,return_mask=True)
-                                if(DEF_BOOL_TRAIN_MASK):
+                                if(DEF_BOOL_TRAIN_MASK and DEF_BOOL_TRAIN_TXT_MASK):
                                     sub_pred_mask_bin_np = cv2.warpPerspective(eva_pred_mask_bin_np[bthi], M, (blmask.shape[1], blmask.shape[0]))
                                     sub_pred_mask_bin_np[~blmask] = 0
                                     mask_box_map_list.append(np.sum(sub_pred_mask_bin_np==sub_gt_mask_bin_np)/sub_pred_mask_bin_np.size)
@@ -690,7 +698,7 @@ def train(rank, world_size, args):
                     
                 recall_np = recall_gpu.item()/world_size
                 precision_np = precision_gpu.item()/world_size
-                f_np = precision_np*recall_np/(precision_np+recall_np) if(precision_np+recall_np>0)else 0.0
+                f_np = 2*precision_np*recall_np/(precision_np+recall_np) if(precision_np+recall_np>0)else 0.0
                 all_recall.append(recall_np)
                 all_precision.append(precision_np)
 
@@ -752,17 +760,20 @@ def train(rank, world_size, args):
                     log_i=i
                     box_num = o.shape[0]
             if(DEF_BOOL_TRAIN_MASK):
-                pred_mask = pred[log_i,DEF_START_MASK_CH+0].to('cpu').detach().numpy()
-                pred_edge = pred[log_i,DEF_START_MASK_CH+1].to('cpu').detach().numpy()
                 pred_regi = pred[log_i,DEF_START_MASK_CH+2].to('cpu').detach().numpy()
-                pred_mask = (pred_mask*255.0).astype(np.uint8)
-                pred_edge = (pred_edge*255.0).astype(np.uint8)
-                pred_regi = cv_heatmap(pred_regi)
-                pred_mask = np.stack([pred_mask,pred_mask,pred_mask],-1)
-                pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
-                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred_edge.shape[1],pred_edge.shape[0]))
-                smx = cv_mask_image(smx,pred_regi)
-                logimg = [smx,pred_mask,pred_edge]
+                smx = cv2.resize(x[log_i].numpy().astype(np.uint8),(pred.shape[-1],pred.shape[-2]))
+                smx = cv_mask_image(smx,cv_heatmap(pred_regi))
+                logimg = [smx]
+                if(DEF_BOOL_TRAIN_TXT_MASK):
+                    pred_mask = pred[log_i,DEF_START_MASK_CH+0].to('cpu').detach().numpy()
+                    pred_mask = (pred_mask*255.0).astype(np.uint8)
+                    pred_mask = np.stack([pred_mask,pred_mask,pred_mask],-1)
+                    pred_edge = pred[log_i,DEF_START_MASK_CH+1].to('cpu').detach().numpy()
+                    pred_edge = (pred_edge*255.0).astype(np.uint8)
+                    pred_edge = np.stack([pred_edge,pred_edge,pred_edge],-1)
+                    logimg.append(pred_mask)
+                    logimg.append(pred_edge)
+
                 if(DEF_MASK_CH>3):
                     # text threshold regression
                     pred_threshold = pred[log_i,DEF_START_MASK_CH+3].to('cpu').detach().numpy()
