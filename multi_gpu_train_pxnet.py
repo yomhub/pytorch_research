@@ -417,7 +417,7 @@ def train(rank, world_size, args):
                 ce_y_torch = torch.from_numpy(ce_y).cuda(non_blocking=True)
                 loss_dict['region_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3], ce_y_torch)
                 # text binarization mask, based on text mask
-                if((b_have_mask or args.genmask) and DEF_CE_CH>3):
+                if(DEF_BOOL_TRAIN_TXT_MASK and (b_have_mask or args.genmask) and DEF_CE_CH>3):
                     mask_ce = F.interpolate(mask,size=pred.shape[2:], mode='bilinear', align_corners=False)
                     mask_ce = (mask_ce[:,0]>0).type(torch.int64)
                     loss_dict['txt_ce_loss'] = criterion_ce(pred[:,DEF_START_CE_CH+3:DEF_START_CE_CH+DEF_CE_CH], mask_ce)
@@ -855,7 +855,7 @@ def train(rank, world_size, args):
                 gtlabels = cv_labelmap(gtlabels)
                 img = cv2.resize(x[log_i].numpy().astype(np.uint8),(gtlabels.shape[1],gtlabels.shape[0]))
                 logger.add_image('Region labels Image|GT|Pred', concatenate_images([img,gtlabels,labels]), epoch,dataformats='HWC')
-                if(DEF_CE_CH>3):
+                if(DEF_BOOL_TRAIN_TXT_MASK and DEF_CE_CH>3):
                     t='Text labels Image'
                     img_lst = [img]
                     if(b_have_mask or args.genmask):
