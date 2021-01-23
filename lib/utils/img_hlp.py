@@ -49,6 +49,9 @@ The single sample of dataset should include:
 
 # default is __DEF_FORMATS[0]
 __DEF_FORMATS = ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
+__DEF_NP_INT_TYPE = [np.intc,np.uintc,np.uint8,np.uint16,np.uint32,np.uint64,np.int8,np.int16,np.int32,np.int64]
+__DEF_NP_FLOAT_TYPE = [np.float,np.float32,np.float64,np.single,np.double,np.float]
+
 def np_topk(src,k,axis=-1):
     """
     Return top k value along axis.
@@ -483,6 +486,7 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
     dst_mask -= min_dst
     max_dst = np.max(dst_mask)
     if(max_dst==0.0):
+        # for the all 1 case
         dst_mask = (dst_mask+1.0)*0.5
     else:
         # map to (0,1)
@@ -670,7 +674,7 @@ def cv_box_overlap(boxes1,boxes2):
                 tmp.append(0)
                 continue
             a = p1.intersection(p2).area
-            tmp.append(a/(p1.area+p2.area-a) if(p1.intersects(p2))else 0.0)
+            tmp.append(a/max(p1.area,p2.area) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
     return np.array(ans,dtype=np.float32)
 
@@ -907,7 +911,7 @@ def cv_uncrop_image(sub_image, M, width:int, height:int):
     return cv2.warpPerspective(sub_image, IM, (width, height))
 
 
-def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_split:bool=False,region_th:float=0.6):
+def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.3,region_mean_split:bool=False,region_th:float=0.6):
     """
     Box detector with confidence map (and optional segmentation map).
     Args:
@@ -936,12 +940,13 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
         # thresholding
         if(np.max(slc_pix) < score_th): continue
         if(region_mean_split):
+            loc_det = []
             mean_v = max(region_th,np.mean(slc_pix))
             # same with orginal scoremap size
             f_erode_map = np.where(label_map == k, scoremap, 0.0).astype(scoremap.dtype)
-            b_erode_map = (f_erode_map>mean_v*0.5).astype(np.uint8)
+            b_erode_map = (f_erode_map>mean_v*0.8).astype(np.uint8)
             b_erode_map = cv2.erode(b_erode_map,kernel,iterations=2)
-            b_erode_map = cv2.dilate(b_erode_map,kernel,iterations=2)
+            b_erode_map = cv2.dilate(b_erode_map,kernel,iterations=1)
             loc_nLabels, loc_label_map, loc_states, loc_centroids = cv2.connectedComponentsWithStats(
                 b_erode_map,connectivity=8)
             if(loc_nLabels>2):
@@ -961,20 +966,34 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
                     contours, hierarchy = cv2.findContours(tmp,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
                     slc = [o for o in contours if(o.shape[0]>1)]
                     if(len(slc)==0):
-                        det.append(box)
-                        mapper.append(k)
+                        loc_det.append(box)
+                        
                         continue
                     cnt = np.concatenate(slc,0)
-                    hull = cv2.convexHull(cnt)
+                    hull = cv2.approxPolyDP(contours[0],3,True)
+                    
                     if(hull.shape[0]<4):
-                        det.append(box)
-                        mapper.append(k)
-                        continue
-                    box = hull[:,0,:]
-                    det.append(box)
-                    mapper.append(k)
+                        hull = cv2.convexHull(np.concatenate(slc,0))
+                        if(hull.shape[0]<4):
+                            loc_det.append(box)
+                        else:
+                            loc_det.append(hull[:,0,:])
+                    else:
+                        loc_det.append(hull[:,0,:])
                 # end of this k iteration
-                continue 
+                total_area = 0
+                loc_det_ply = []
+                for o in loc_det:
+                    pl = Polygon(o)
+                    loc_det_ply.append(pl)
+                    if(pl.is_valid):
+                        total_area+=pl.area
+                
+                if(total_area>=states[k, cv2.CC_STAT_AREA]*0.8):
+                    for bx,pl in zip(loc_det,loc_det_ply):
+                        if(pl.is_valid):
+                            det.append(bx)
+                            mapper.append(k)
             # else continue global detection
 
         # make segmentation map
@@ -998,18 +1017,93 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.4,region_mean_spl
             det.append(box)
             mapper.append(k)
             continue
-        cnt = np.concatenate(slc,0)
-        hull = cv2.convexHull(cnt)
-        if(hull.shape[0]<4):
-            det.append(box)
-            mapper.append(k)
-            continue
-        box = np_apply_matrix_to_pts(Minv,hull[:,0,:])
 
-        det.append(box)
+        hull = cv2.approxPolyDP(contours[0],3,True)
+        if(hull.shape[0]<4):
+            hull = cv2.convexHull(np.concatenate(slc,0))
+            if(hull.shape[0]<4):
+                det.append(box)
+            else:
+                det.append(np_apply_matrix_to_pts(Minv,hull[:,0,:]))
+        else:
+            det.append(np_apply_matrix_to_pts(Minv,hull[:,0,:]))
         mapper.append(k)
+        # end of this region
 
     return np.array(det), label_map, mapper
+
+def cv_get_box_from_mask_watershed(scoremap:np.ndarray,score_th:float=0.3,region_mean_split:bool=False):
+    if(scoremap.dtype in __DEF_NP_INT_TYPE):
+        if(len(scoremap.shape)==3):
+            gmap=scoremap[:,:,0]
+        else:
+            gmap=scoremap
+    if(scoremap.dtype in __DEF_NP_FLOAT_TYPE):
+        gmap = (scoremap*255).astype(np.uint8)
+        score_th*=255
+    clmap = np.stack([gmap,gmap,gmap],-1)
+    det,mapper = [],[]
+
+    kernel = np.ones((3,3),np.uint8)
+    opening = cv2.morphologyEx(gmap,cv2.MORPH_OPEN,kernel, iterations = 2)
+    opening[opening>0] = 255
+    sure_bg = cv2.dilate(opening,kernel,iterations=3)
+    sure_fg = (gmap>min(2*score_th,255*0.6)).astype(np.uint8)*255
+    unknow = sure_bg-sure_fg
+    # gen global CC with low threshold
+    nLabels, label_map, states, centroids = cv2.connectedComponentsWithStats(
+        (opening>=score_th).astype(np.uint8),
+        connectivity=4)
+    # coarse assign label number
+    cur_max_label=nLabels
+
+    for k in range(1, nLabels):
+        # size filtering
+        if(states[k, cv2.CC_STAT_AREA] < 10): 
+            label_map[label_map==k]=0
+            continue
+        if(region_mean_split):
+            # compute sure region with local threshold
+            mean_v = np.mean(opening[label_map==k])
+            # mask select cur region
+            tmp = np.where(label_map==k,opening,0)
+            # local CC
+            loc_nLabels, loc_label_map, loc_states, loc_centroids = cv2.connectedComponentsWithStats(
+                (tmp>=mean_v*0.5).astype(np.uint8),
+                connectivity=4)
+            # resign global CC
+            if(loc_nLabels>1):
+                # clear cur region
+                label_map[label_map==k]=0
+                # resign value
+                for j in range(1,loc_nLabels):
+                    if(loc_states[j, cv2.CC_STAT_AREA] < 10): 
+                        continue
+                    if(j==1):
+                        label_map[np.logical_and(label_map==k,loc_label_map==j)]=k
+                    else:
+                        cur_max_label+=1
+                        label_map[np.logical_and(label_map==k,loc_label_map==j)]=cur_max_label
+    # label_map
+    label_map+=1
+    label_map[unknow]=0
+    label_map = cv2.watershed(clmap,label_map)
+    for k in range(1, np.max(label_map)):
+        contours, hierarchy = cv2.findContours((label_map==k).astype(np.uint8),cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+        if(contours):
+            hull = cv2.approxPolyDP(contours[0],3,True)
+            if(hull.shape[0]<4):
+                slc = [o for o in contours if(o.shape[0]>1)]
+                hull = cv2.convexHull(np.concatenate(slc,0))
+                if(hull.shape[0]<4):
+                    continue
+                else:
+                    det.append(hull[:,0,:])
+            else:
+                det.append(hull[:,0,:])
+            mapper.append(k)
+
+    return np.array(det), label_map, mapper 
 
 def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_emphasis:bool=False):
     """
