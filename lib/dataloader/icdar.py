@@ -40,7 +40,7 @@ def read_boxs_2p(fname:str):
         if(tmp=='###'):
             continue
         text.append(tmp)
-        x0,y0,x1,y1 = int(o[0]),int(o[1]),int(o[2]),int(o[3])
+        x0,y0,x1,y1 = int(o[0].strip(',')),int(o[1].strip(',')),int(o[2].strip(',')),int(o[3].strip(','))
         boxes.append([x0,y0,x1,y0,x1,y1,x0,y1])
 
     return np.array(boxes).reshape(-1,4,2),text

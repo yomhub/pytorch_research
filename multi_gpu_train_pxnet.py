@@ -6,6 +6,7 @@ from tqdm import tqdm
 from datetime import datetime
 import matplotlib.pyplot as plt
 import cv2
+from collections import defaultdict
 # =================Torch=======================
 import torch
 import torch.optim as optim
@@ -137,6 +138,7 @@ def train(rank, world_size, args):
     )
     if(not args.debug and rank==0 and args.save):
         fname = args.save.split('.')[0]+'_args.txt'
+        os.makedirs(os.path.dirname(fname),exist_ok=True)
         arglog = open(fname,'w')
         arglog.write(net_args)
         arglog.close()
@@ -176,12 +178,13 @@ def train(rank, world_size, args):
     else:
         optimizer = optim.SGD(model.parameters(), lr=args.learnrate, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
     if(args.lr_decay):
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-            mode='min',factor=0.9,
-            patience=100,cooldown=30,
-            min_lr=0.0001,
-            verbose=True
-            )
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+        #     mode='min',factor=0.9,
+        #     patience=100,cooldown=30,
+        #     min_lr=0.0001,
+        #     verbose=True
+        #     )
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.8)
 
     if(world_size>1):
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
@@ -233,12 +236,12 @@ def train(rank, world_size, args):
         train_dataset = ICDAR13(
             os.path.join(DEF_IC13_DIR,'images','train'),
             os.path.join(DEF_IC13_DIR,'gt_txt','train'),
-            os.path.join(DEF_IC13_DIR,'gt_pixel','train'),
+            # os.path.join(DEF_IC13_DIR,'gt_pixel','train'),
             image_size=image_size,)
         eval_dataset = ICDAR13(
             os.path.join(DEF_IC13_DIR,'images','test'),
             os.path.join(DEF_IC13_DIR,'gt_txt','test'),
-            os.path.join(DEF_IC13_DIR,'gt_pixel','test'),
+            # os.path.join(DEF_IC13_DIR,'gt_pixel','test'),
             image_size=image_size)
 
 
@@ -534,8 +537,6 @@ def train(rank, world_size, args):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            if(args.lr_decay):
-                scheduler.step(loss)
             epoch_loss_list.append(loss.item())
 
             if(logger and rank==0):
@@ -553,6 +554,8 @@ def train(rank, world_size, args):
             epoch_loss = np.array(epoch_loss_list)
             mean_epoch_loss = np.mean(epoch_loss)
             var_epoch_loss = np.var(epoch_loss)
+            scheduler.step(loss)
+            scheduler.step()
 
         if(args.eval):
             ovlap_th = 0.5
@@ -566,8 +569,10 @@ def train(rank, world_size, args):
             rng = np.random.default_rng()
             log_eval_id = rng.choice(len(eval_loader)-1, size=log_eval_num, replace=False)
             eval_img_log_cnt = 0
+            log_images_max_cnt = 10
             with torch.no_grad():
                 for stepi, sample in enumerate(eval_loader):
+                    log_images = {}
                     eva_bth_x = sample['image']
                     eva_boxes = sample['box']
                     eva_xnor = eva_bth_x.float().cuda(non_blocking=True)
@@ -575,7 +580,32 @@ def train(rank, world_size, args):
                     eva_pred,eva_feat = model(eva_xnor)
                     eva_pred_np = eva_pred.cpu().numpy()
                     eva_small_boxes = [np_box_resize(o,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy') if(not isinstance(o,type(None)) and o.shape[0]>0)else None for o in eva_boxes]
-                    
+
+                    if(DEF_BOOL_TRAIN_CE):
+                        # process hold batch to speed up
+                        argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
+                        eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
+
+                    if(log_images_max_cnt>0 and rank==0):
+                        if(DEF_BOOL_TRAIN_MASK):
+                            log_images['image']=cv2.resize(eva_bth_x[0].numpy(),(eva_pred.shape[3],eva_pred.shape[2]))
+                            log_images['region_mask']=cv_heatmap(eva_pred_np[0,DEF_START_MASK_CH+2])
+                            if(DEF_BOOL_TRAIN_TXT_MASK):
+                                tmp = (eva_pred_np[0,DEF_START_MASK_CH+0]*255).astype(np.uint8)
+                                log_images['text_mask']=np.stack([tmp,tmp,tmp],-1)
+                                tmp = (eva_pred_np[0,DEF_START_MASK_CH+1]*255).astype(np.uint8)
+                                log_images['edge_mask']=np.stack([tmp,tmp,tmp],-1)
+                                if(DEF_MASK_CH>3):
+                                    tmp = (eva_pred_np[0,DEF_START_MASK_CH+3]*255).astype(np.uint8)
+                                    log_images['threshold_mask']=np.stack([tmp,tmp,tmp],-1)
+
+                        if(DEF_BOOL_TRAIN_CE):
+                            log['argmap'].append(argmap[0].cpu().numpy().astype(np.uint8))
+                            if(DEF_BOOL_TRAIN_TXT_MASK and (DEF_CE_CH-3)>=2):
+                                log['text_argmap'].append(
+                                    torch.argmax(eva_pred[0,DEF_START_CE_CH+3:DEF_START_CE_CH+5],axis=0).cpu().numpy().astype(np.uint8)
+                                )
+
                     if((DEF_BOOL_TRAIN_MASK or DEF_BOOL_TRAIN_CE) and 'mask' in sample):
                         # eval_mask = sample['mask'].cuda(non_blocking=True)
                         # eval_mask = (eval_mask>0).float()
@@ -616,11 +646,6 @@ def train(rank, world_size, args):
                                     sub_labels[~blmask] = 0
                                     mask_box_ce_map_list.append(np.sum(sub_labels==sub_gt_mask_bin_np)/sub_labels.size)
 
-                    if(DEF_BOOL_TRAIN_CE):
-                        # process hold batch to speed up
-                        argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
-                        eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
-
                     for bthi in range(eva_bth_x.shape[0]):
                         eva_image = eva_bth_x[bthi].numpy().astype(np.uint8)
                         precision,recall,fscore=0.0,0.0,0.0
@@ -632,9 +657,12 @@ def train(rank, world_size, args):
                             eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
                             det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
                             if(det_boxes.shape[0]>0):
+                                if(log_images_max_cnt>0 and rank==0):
+                                    log_images['region_mask_boxed_image']=cv_draw_poly(log_images['image'],det_boxes)
                                 det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
                                 ids,mask_precision,mask_recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
                                 mask_fscore = mask_precision*mask_recall/(mask_precision+mask_recall) if(mask_precision+mask_recall>0)else 0.0
+                                
                                 if(mask_fscore>fscore):
                                     precision=mask_precision
                                     recall=mask_recall
@@ -645,6 +673,8 @@ def train(rank, world_size, args):
                             ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
                             ce_det_boxes, ce_label_mask, ce_label_list = cv_get_box_from_mask(ce_map)
                             if(ce_det_boxes.shape[0]>0):
+                                if(log_images_max_cnt>0 and rank==0):
+                                    log_images['ce_mask_boxed_image']=cv_draw_poly(log_images['image'],ce_det_boxes)
                                 ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
                                 ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
                                 ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
@@ -704,6 +734,12 @@ def train(rank, world_size, args):
                         logger.add_image('Eval/epoch {}'.format(epoch), concatenate_images(imgs), eval_img_log_cnt,dataformats='HWC')
                         logger.flush()
                         eval_img_log_cnt+=1
+                    if(log_images_max_cnt>0 and rank==0):
+                        tmp = sample['name'][0]
+                        for o in log_images:
+                            save_image(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S"),'eval_imgs',"epoch{:03d}".format(epoch),"{}_{}".format(o,tmp)),log_images[o])
+                        log_images_max_cnt-=1
+                # end of eval step
                 recall_np = np.mean(np.array(recall_list,dtype=np.float32))
                 recall_gpu = torch.tensor(recall_np).cuda(non_blocking=True)
                 precision_np = np.mean(np.array(precision_list,dtype=np.float32))
@@ -1019,8 +1055,8 @@ if __name__ == '__main__':
         # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
         # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\
     print(summarize)
-    if(args.multi_gpu):
-        gpus = torch.cuda.device_count()
+    gpus = torch.cuda.device_count()
+    if(args.multi_gpu and gpus>1):
         os.environ['MASTER_ADDR'] = '127.0.0.1'
         os.environ['MASTER_PORT'] = '8888'
         mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
