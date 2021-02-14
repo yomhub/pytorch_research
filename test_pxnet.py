@@ -32,8 +32,8 @@ from lib.config.train_default import cfg as tcfg
 from dirs import *
 
 DEF_BOOL_TRAIN_MASK = True
-DEF_BOOL_TRAIN_CE = True
-DEF_BOOL_TRAIN_BOX = True
+DEF_BOOL_TRAIN_CE = False
+DEF_BOOL_TRAIN_BOX = False
 DEF_BOOL_SENTENCES_BOX = False
 
 @torch.no_grad()
@@ -87,68 +87,26 @@ def test(net,dataloader,save_dir):
             bth_box_np = np.moveaxis(bth_box_np,1,-1)
         for bthi in range(batch_size):
             image = bth_x[bthi].numpy().astype(np.uint8)
-            pred_box = bth_box_np[bthi]
             region_np = bth_region_np[bthi]
             mask_np = bth_mask_np[bthi]
-            edge_np = bth_edge_np[bthi]
+
             if(DEF_BOOL_TRAIN_CE):
                 f_ce_map = bth_float_ce_map[bthi]
                 region_np = np.where(region_np>0.4,region_np,0.0)
                 region_np = np.where(region_np>f_ce_map,region_np,f_ce_map)
-
             boxes = bth_boxes[bthi]
+            if('text' in sample and '#' in sample['text'][bthi]):
+                rmids = [i for i,o in enumerate(sample['text'][bthi]) if(o=='#')]
+                gt_bxs = np.array([o for i,o in enumerate(boxes) if(i not in rmids)])
+                bg_bxs = np.array([o for i,o in enumerate(boxes) if(i in rmids)])
+                gas_map,blmap = cv_gen_gaussian_by_poly(bg_bxs,image.shape[-3:-1],return_mask=True)
+                region_np[blmap]=0.0
+                boxes = gt_bxs
+
             fname = img_names[bthi].split('.')[0]
             # det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np)
             det_boxes = []
-            nLabels, labels, stats, centroids = cv2.connectedComponentsWithStats((region_np>=0.2).astype(np.uint8),connectivity=8)
-            label_isused = [False]*nLabels
-            for k in range(1, nLabels):
-                if(label_isused[k] or stats[k, cv2.CC_STAT_AREA]<10 or np.max(region_np[labels == k]) < 0.2):continue
-                tmp = np.zeros(region_np.shape, dtype=np.uint8)
-                tmp[labels == k] = 255
-                x, y = stats[k, cv2.CC_STAT_LEFT], stats[k, cv2.CC_STAT_TOP]
-                w, h = stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT]
-                cx,cy = int(x+w/2),int(y+h/2)
-                cxy = np.array([cx,cy])
-                cx = min(max(0,cx-1),image.shape[1])
-                cy = min(max(0,cy-1),image.shape[0])
-                slc_box = pred_box[cy,cx]
-                if(DEF_BOOL_POLY_REGRESSION):
-                    pred_poly_xy = slc_box.reshape(-1,2)*small_image_size_xy+cxy
-                else:
-                    pred_cx,pred_cy = slc_box[0:2]*small_image_size_xy+cxy
-                    pred_w,pred_h = slc_box[2:4]*small_image_size_xy
-                    pred_poly_xy = np.array([[pred_cx-pred_w/2,pred_cy-pred_h/2],[pred_cx+pred_w/2,pred_cy-pred_h/2],
-                        [pred_cx+pred_w/2,pred_cy+pred_h/2],[pred_cx-pred_w/2,pred_cy+pred_h/2]])
-                min_rect = np_polybox_minrect(pred_poly_xy)
-                x0,y0 = min_rect[0].astype(np.uint16)
-                x1,y1 = min_rect[1].astype(np.uint16)
-                y0 = min(max(0,y0-1),image.shape[0])
-                x0 = min(max(0,x0-1),image.shape[1])
-                y1 = min(max(y1,y0+1),image.shape[0])
-                x1 = min(max(x1,x0+1),image.shape[1])
-                sub_labels = labels[y0:y1,x0:x1]
-                unique, counts = np.unique(sub_labels[sub_labels!=0], return_counts=True)
-                for uid in range(unique.shape[0]):
-                    if(label_isused[unique[uid]]):
-                        continue
-                    if(counts[uid]>0.4*stats[unique[uid], cv2.CC_STAT_AREA]):
-                        tmp[labels == unique[uid]]=255
-                        label_isused[unique[uid]]=True
-                contours, hierarchy = cv2.findContours(tmp,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
-                slc = [o for o in contours if(o.shape[0]>1)]
-                if(len(slc)==0):
-                    det_boxes.append(pred_poly_xy)
-                    continue
-                cnt = np.concatenate(slc,0)
-                hull = cv2.convexHull(cnt)
-                if(hull.shape[0]<4):
-                    det_boxes.append(pred_poly_xy)
-                    continue
-                det_boxes.append(hull[:,0,:])
-                label_isused[k] = True
-
-            det_boxes = np.array(det_boxes)
+            det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np,region_mean_split=True)
             boximage = image
             if(det_boxes.shape[0]>0):
                 det_boxes = np_box_resize(det_boxes,mask_np.shape,image.shape[:-1],'polyxy')
@@ -160,31 +118,31 @@ def test(net,dataloader,save_dir):
 
             precision_lst.append(precision)
             recall_lst.append(recall)
-            if(recall<0.3 or precision<0.3):
-                boximage = cv_draw_poly(boximage,boxes,color=(0,0,255))
-                maskimage = cv_mask_image(image,cv_heatmap(region_np))
-                cimg = concatenate_images([maskimage,mask_np,edge_np])
-                save_image(os.path.join(save_dir,'{}_region_mask_edge.jpg'.format(fname)),cimg)
-                save_image(os.path.join(save_dir,'{}_box.jpg'.format(fname)),boximage)
-                if(DEF_BOOL_TRAIN_CE):
-                    save_image(os.path.join(save_dir,'{}_label.jpg'.format(fname)),cv_labelmap(bth_bin_ce_map[bthi],2))
+            # if(recall<0.3 or precision<0.3):
+            #     boximage = cv_draw_poly(boximage,boxes,color=(0,0,255))
+            #     maskimage = cv_mask_image(image,cv_heatmap(region_np))
+            #     cimg = concatenate_images([maskimage,mask_np,edge_np])
+            #     save_image(os.path.join(save_dir,'{}_region_mask_edge.jpg'.format(fname)),cimg)
+            #     save_image(os.path.join(save_dir,'{}_box.jpg'.format(fname)),boximage)
+            #     if(DEF_BOOL_TRAIN_CE):
+            #         save_image(os.path.join(save_dir,'{}_label.jpg'.format(fname)),cv_labelmap(bth_bin_ce_map[bthi],2))
 
     precision_lst = np.array(precision_lst)
     recall_lst = np.array(recall_lst)
     recall_s = np.mean(recall_lst)
     precision_s = np.mean(precision_lst)
-    f_s = recall_s*precision_s/(precision_s+recall_s)
+    f_s = 2*recall_s*precision_s/(precision_s+recall_s)
     print("Recall {}".format(recall_s))
     print("Precision {}".format(precision_s))
     print("F-score {}".format(f_s))
-    f = open(os.path.join(save_dir,'log.txt'),'w')
-    f.write("Recall {}\n".format(recall_s))
-    f.write("Precision {}\n".format(precision_s))
-    f.write("F-score {}\n".format(f_s))
-    f.close()
+    # f = open(os.path.join(save_dir,'log.txt'),'w')
+    # f.write("Recall {}\n".format(recall_s))
+    # f.write("Precision {}\n".format(precision_s))
+    # f.write("F-score {}\n".format(f_s))
+    # f.close()
         
 if __name__ == "__main__":
-    fdir = """D:\\PIX_Unet_MASK_CLS_BOX.pth"""
+    fdir = """D:\\benchmark_ttt_region_only_pxnet.pth"""
     dataset = 'ttt'
     work_dir = "D:\\eval\\pixtxt"
     work_dir = os.path.join(work_dir,dataset)
@@ -195,7 +153,8 @@ if __name__ == "__main__":
             os.path.join(DEF_TTT_DIR,'images','test'),
             os.path.join(DEF_TTT_DIR,'gt_pixel','test'),
             os.path.join(DEF_TTT_DIR,'gt_txt','test'),
-            image_size=image_size,)
+            image_size=image_size,
+            include_bg=True,)
     elif(dataset=="msra"):
         train_dataset = MSRA(
             os.path.join(DEF_MSRA_DIR,'test'),
@@ -227,12 +186,10 @@ if __name__ == "__main__":
                                                num_workers=0,
                                                pin_memory=True,
                                                collate_fn=train_dataset.default_collate_fn,)
-    model = PIX_Unet_MASK_CLS_BOX(box_ch=5,min_box_ch=32,
-        cls_ch=5,multi_level=False,min_cls_ch=32,
-        mask_ch=4,basenet_name='mobile',min_map_ch=32,min_upc_ch=128,pretrained=False).float()
-    DEF_BOOL_TRAIN_MASK = True
-    DEF_BOOL_TRAIN_CE = True
-    DEF_BOOL_TRAIN_BOX = True
+    model = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet_name="mobile",min_upc_ch=128,pretrained=False).float()
+    # DEF_BOOL_TRAIN_MASK = True
+    # DEF_BOOL_TRAIN_CE = True
+    # DEF_BOOL_TRAIN_BOX = True
     model.load_state_dict(copyStateDict(torch.load(fdir)))
     model = model.cuda()
     test(model,train_loader,work_dir)

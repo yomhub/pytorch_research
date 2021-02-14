@@ -1219,6 +1219,29 @@ def cv_heatmap(img,clr = cv2.COLORMAP_JET):
         img = cv2.applyColorMap(img, clr)
     return img.astype(np.uint8)
 
+def cv_undo_heatmap(img,clr):
+    """
+    Reverse of cv_heatmap
+    Args:
+        img: ((batch),h,w,3) np.uint8 image
+        clr: color
+    Return:
+        gray image: ((batch),h,w) np.uint8 in [0,255]
+    """
+    gray_values = np.arange(256, dtype=np.uint8)
+    np_color_values = cv2.applyColorMap(gray_values, clr).reshape(256, 3)
+    color_values = map(tuple, np_color_values)
+    color_to_gray_map = dict(zip(color_values, gray_values))
+    def search_helper(clrdata):
+        if(tuple(clrdata) in color_to_gray_map):
+            return color_to_gray_map[tuple(clrdata)]
+        else:
+            dets = np.sum(np.absolute(np_color_values-clrdata),-1)
+            return gray_values[np.argmin(dets)]
+
+    gray_image = np.apply_along_axis(lambda clrdata: color_to_gray_map[tuple(clrdata)], -1, img)
+    return gray_image
+
 def cv_labelmap(label_map,label_num:int=None,clr = cv2.COLORMAP_JET):
     """
     Convert label map to RBG color map

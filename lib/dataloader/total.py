@@ -35,12 +35,12 @@ class Total(base.BaseDataset):
             'polyxy': box_cord = [x,y,x,y,x,y,x,y]
         normalized: True to normalize coordinate
     """
-    def __init__(self, img_dir, gt_mask_dir, gt_txt_dir, out_box_format='polyxy',
+    def __init__(self, img_dir, gt_mask_dir, gt_txt_dir, out_box_format='polyxy',include_bg:bool=False,
         **params):
         in_box_format = 'polyxy'
         gt_txt_name_lambda = lambda x: "poly_gt_%s.txt"%x
         gt_mask_name_lambda = None
-
+        self.include_bg = include_bg
         super(Total,self).__init__(img_dir=img_dir, gt_mask_dir=gt_mask_dir, gt_txt_dir=gt_txt_dir, in_box_format=in_box_format,
         gt_mask_name_lambda=gt_mask_name_lambda, gt_txt_name_lambda=gt_txt_name_lambda, out_box_format=out_box_format,
         **params)
@@ -64,12 +64,17 @@ class Total(base.BaseDataset):
             i += 1
             parts = line.split(',')
             ort = parts[2].split()[-1]
-            if(len(ort)>4 and ort[3]=='#'):
-                # skip Orientation = #
-                continue
+
             xs = [int(o) for o in parts[0].split('[[')[-1].split(']]')[0].split()]
             ys = [int(o) for o in parts[1].split('[[')[-1].split(']]')[0].split()]
-            txt = parts[3].split()[-1][3:-2]
+            if(not(len(xs)==len(ys) and len(xs)>=3)):
+                continue
+            # if(len(ort)>4 and ort[3]=='#'):
+            #     # skip Orientation = #
+            #     continue
+            txt = '#' if('#' in ort)else parts[3].split()[-1][3:-2]
+            if(not self.include_bg and txt=='#'):
+                continue
             if('poly' in self.out_box_format):
                 boxs.append(np.asarray([(xi,yi) for xi,yi in zip(xs,ys)]))
             else:
