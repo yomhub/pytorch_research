@@ -650,17 +650,25 @@ def cv_rotate(image,angle,change_shape:bool=False):
     image = cv2.warpAffine(image, M, (w, h))
     return image, M
 
-def cv_box_overlap(boxes1,boxes2):
+def cv_box_overlap(boxes1,boxes2,denominator:str='max'):
     """
     Calculate box overlap in CV coordinate
     Args:
         boxes1: ((N1),k,2) CV coordinate
         boxes1: ((N2),k,2) CV coordinate
+        denominator: function name of denominator, default is max
     Return:
         overlap: (N1,N2) array, 0.0 for non-overlap
     """
     if(len(boxes1.shape)==2):boxes1 = np.expand_dims(boxes1,0)
     if(len(boxes2.shape)==2):boxes2 = np.expand_dims(boxes2,0)
+    denominator = denominator.lower()
+    if(denominator=='sum'):
+        f_denominator=sum
+    elif(denominator=='min'):
+        f_denominator=min
+    else:
+        f_denominator=max
     poly1 = [Polygon(o) for o in boxes1]
     poly2 = [Polygon(o) for o in boxes2]
     ans = []
@@ -674,7 +682,7 @@ def cv_box_overlap(boxes1,boxes2):
                 tmp.append(0)
                 continue
             a = p1.intersection(p2).area
-            tmp.append(a/max(p1.area,p2.area) if(p1.intersects(p2))else 0.0)
+            tmp.append(a/f_denominator(p1.area,p2.area) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
     return np.array(ans,dtype=np.float32)
 
@@ -746,10 +754,10 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
 
     pred_cnt = pred.shape[0]
     # remove don't care
-    if(not isinstance(bg,type(None))):
+    if(not isinstance(bg,type(None)) and bg.shape[0]>0):
         if(len(bg.shape)==2):
             bg = np.expand_dims(bg,0)
-        ovs = cv_box_overlap(pred,bg)
+        ovs = cv_box_overlap(pred,bg,'min')
         incs = np.argsort(ovs,axis=1)
         incs = incs[:,::-1]
         for i in range(pred.shape[0]):
@@ -761,22 +769,25 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
                         break
                 else:
                     break
+    if(pred_cnt==0):
+        return id_list,1,0 if(gt.shape[0]>0)else 1
     match_cnt = 0
-    ovs = cv_box_overlap(pred,gt)
+    ovs = cv_box_overlap(pred,gt,'max')
     incs = np.argsort(ovs,axis=1)
     incs = incs[:,::-1]
-    for i in range(pred.shape[0]):
-        if(id_list[i]!=None):
-            continue
-        for imax in incs[i]:
-            if(ovs[i,imax]>=ovth):
-                if(imax not in id_list):
-                    id_list[i] = imax
-                    match_cnt+=1
+    if(gt.shape[0]>0):
+        for i in range(pred.shape[0]):
+            if(id_list[i]!=None):
+                continue
+            for imax in incs[i]:
+                if(ovs[i,imax]>=ovth):
+                    if(imax not in id_list):
+                        id_list[i] = imax
+                        match_cnt+=1
+                        break
+                else:
                     break
-            else:
-                break
-    precision = match_cnt/pred_cnt
+    precision = match_cnt/max(match_cnt,pred_cnt,1)
     recall = match_cnt/gt.shape[0]
     return id_list,precision,recall
 

@@ -175,6 +175,8 @@ class PIX_Unet(nn.Module):
         basenet = basenet.lower()
         if('vgg' in basenet):
             self.basenet = VGGUnet(basenet=basenet,min_upc_ch=min_upc_ch,padding=padding,init_method=init_method,**args)
+        elif('resnet' in basenet):
+            self.basenet = ResnetUnet(basenet=basenet,min_upc_ch=min_upc_ch,init_method=init_method,**args)
         else:
             self.basenet = MobUNet(basenet=basenet,min_upc_ch=min_upc_ch,init_method=init_method,**args)
         upch = self.basenet.out_channels

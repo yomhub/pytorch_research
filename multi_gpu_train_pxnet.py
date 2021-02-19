@@ -124,8 +124,8 @@ def train(rank, world_size, args):
             net_args+="box_ch={},hitmap_ch={},min_box_ch={}\n".format(DEF_BOX_CH,DEF_BOX_HITMAP_CH,32)
             DEF_BOOL_TRAIN_BOX = True
 
-        net_args+="include_final={},basenet_name={},min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,128,False)
-        model = PIX_Unet(include_final=args.have_fc,basenet_name=args.basenet,min_upc_ch=128,pretrained=True,**net_args_dict).float()
+        net_args+="include_final={},basenet=\'{}\',min_upc_ch={},pretrained={}\n".format(args.have_fc,args.basenet,128,False)
+        model = PIX_Unet(include_final=args.have_fc,basenet=args.basenet,min_upc_ch=128,pretrained=True,**net_args_dict).float()
     else:
         model = PIX_MASK().float()
         DEF_BOOL_TRAIN_MASK = True
@@ -194,12 +194,16 @@ def train(rank, world_size, args):
             os.path.join(DEF_TTT_DIR,'images','train'),
             os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
             os.path.join(DEF_TTT_DIR,'gt_txt','train'),
-            image_size=image_size,)
+            image_size=image_size,
+            # include_bg=True,
+            )
         eval_dataset = Total(
             os.path.join(DEF_TTT_DIR,'images','test'),
             os.path.join(DEF_TTT_DIR,'gt_pixel','test'),
             os.path.join(DEF_TTT_DIR,'gt_txt','test'),
-            image_size=image_size,)
+            image_size=image_size,
+            include_bg=True,
+            )
     elif(args.dataset=="msra"):
     # ONLY PROVIDE SENTENCE LEVEL BOX
         train_dataset = MSRA(
@@ -569,7 +573,7 @@ def train(rank, world_size, args):
             rng = np.random.default_rng()
             log_eval_id = rng.choice(len(eval_loader)-1, size=log_eval_num, replace=False)
             eval_img_log_cnt = 0
-            log_images_max_cnt = 10
+            log_images_max_cnt = 10 if((epoch+1)%10==0)else -1
             with torch.no_grad():
                 for stepi, sample in enumerate(eval_loader):
                     log_images = {}
@@ -580,12 +584,13 @@ def train(rank, world_size, args):
                     eva_pred,eva_feat = model(eva_xnor)
                     eva_pred_np = eva_pred.cpu().numpy()
                     eva_small_boxes = [np_box_resize(o,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy') if(not isinstance(o,type(None)) and o.shape[0]>0)else None for o in eva_boxes]
-
+                    # prepare data
                     if(DEF_BOOL_TRAIN_CE):
                         # process hold batch to speed up
                         argmap = torch.argmax(eva_pred[:,DEF_START_CE_CH:DEF_START_CE_CH+3],axis=1)
                         eva_bth_bin_ce_map = (argmap==1).cpu().numpy().astype(np.uint8)
 
+                    # log image
                     if(log_images_max_cnt>0 and rank==0):
                         if(DEF_BOOL_TRAIN_MASK):
                             log_images['image']=cv2.resize(eva_bth_x[0].numpy(),(eva_pred.shape[3],eva_pred.shape[2]))
@@ -606,6 +611,7 @@ def train(rank, world_size, args):
                                     torch.argmax(eva_pred[0,DEF_START_CE_CH+3:DEF_START_CE_CH+5],axis=0).cpu().numpy().astype(np.uint8)
                                 )
 
+                    # calculate mask difference
                     if((DEF_BOOL_TRAIN_MASK or DEF_BOOL_TRAIN_CE) and 'mask' in sample):
                         # eval_mask = sample['mask'].cuda(non_blocking=True)
                         # eval_mask = (eval_mask>0).float()
@@ -646,21 +652,33 @@ def train(rank, world_size, args):
                                     sub_labels[~blmask] = 0
                                     mask_box_ce_map_list.append(np.sum(sub_labels==sub_gt_mask_bin_np)/sub_labels.size)
 
+                    # main detection evaluation
                     for bthi in range(eva_bth_x.shape[0]):
                         eva_image = eva_bth_x[bthi].numpy().astype(np.uint8)
                         precision,recall,fscore=0.0,0.0,0.0
+                        bth_eva_boxes = eva_boxes[bthi]
+                        if('text' in sample and '#' in sample['text'][bthi]):
+                            rmid = [i for i,o in enumerate(sample['text'][bthi]) if(o=='#')]
+                            bgbxs = np.array([o for i,o in enumerate(bth_eva_boxes) if(i in rmid)])
+                            fgbxs = np.array([o for i,o in enumerate(bth_eva_boxes) if(i not in rmid)])
+                            sml_bgbxs = np_box_resize(bgbxs,eva_image.shape[:-1],eva_pred_np.shape[-2:],'polyxy')
+                        else:
+                            bgbxs = np.array([])
+                            fgbxs = bth_eva_boxes
                         if(DEF_BOOL_TRAIN_MASK):
                             eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
-                            eva_region_np = np.where(eva_region_np>0.4,255,0).astype(np.uint8)
+                            eva_region_np[eva_region_np<0.2]=0
+                            eva_region_np = (eva_region_np*255).astype(np.uint8)
                             eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
                             eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
-                            eva_region_np = np.where(eva_region_np>0,1.0,0.0).astype(np.float32)
-                            det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np)
+                            eva_region_np = eva_region_np.astype(np.float32)/255
+
+                            det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np,region_mean_split=True)
                             if(det_boxes.shape[0]>0):
                                 if(log_images_max_cnt>0 and rank==0):
                                     log_images['region_mask_boxed_image']=cv_draw_poly(log_images['image'],det_boxes)
                                 det_boxes = np_box_resize(det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
-                                ids,mask_precision,mask_recall = cv_box_match(det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                                ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=ovlap_th)
                                 mask_fscore = mask_precision*mask_recall/(mask_precision+mask_recall) if(mask_precision+mask_recall>0)else 0.0
                                 
                                 if(mask_fscore>fscore):
@@ -676,7 +694,7 @@ def train(rank, world_size, args):
                                 if(log_images_max_cnt>0 and rank==0):
                                     log_images['ce_mask_boxed_image']=cv_draw_poly(log_images['image'],ce_det_boxes)
                                 ce_det_boxes = np_box_resize(ce_det_boxes,eva_pred_np.shape[-2:],eva_image.shape[:-1],'polyxy')
-                                ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,eva_boxes[bthi],ovth=ovlap_th)
+                                ce_ids,ce_precision,ce_recall = cv_box_match(ce_det_boxes,fgbxs,bgbxs,ovth=ovlap_th)
                                 ce_fscore = ce_precision*ce_recall/(ce_precision+ce_recall) if(ce_precision+ce_recall>0)else 0.0
                                 if(ce_fscore>fscore):
                                     precision=ce_precision
@@ -708,7 +726,7 @@ def train(rank, world_size, args):
                                     ]))
                             pred_box_list = np.array(pred_box_list)
 
-                            box_ids,box_precision,box_recall = cv_box_match(pred_box_list,eva_boxes[bthi],ovth=ovlap_th)
+                            box_ids,box_precision,box_recall = cv_box_match(pred_box_list,fgbxs,bgbxs,ovth=ovlap_th)
                             box_fscore = box_precision*box_recall/(box_precision+box_recall) if(box_precision+box_recall>0)else 0.0
                             if(box_fscore>fscore):
                                 precision=box_precision
@@ -716,6 +734,7 @@ def train(rank, world_size, args):
 
                         recall_list.append(recall)
                         precision_list.append(precision)
+                    
                     if(logger and rank==0 and stepi in log_eval_id):
                         bximg = eva_image
                         bximg = cv_draw_poly(bximg,eva_boxes[-1],text='GT',color=(0,255,0))
@@ -737,7 +756,10 @@ def train(rank, world_size, args):
                     if(log_images_max_cnt>0 and rank==0):
                         tmp = sample['name'][0]
                         for o in log_images:
-                            save_image(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S"),'eval_imgs',"epoch{:03d}".format(epoch),"{}_{}".format(o,tmp)),log_images[o])
+                            save_image(os.path.join(work_dir,
+                                time_start.strftime("%Y%m%d-%H%M%S"),'eval_imgs',
+                                "epoch{:03d}".format(epoch+1),
+                                "{}_{}_ep{}".format(o,tmp,epoch+1)),log_images[o])
                         log_images_max_cnt-=1
                 # end of eval step
                 recall_np = np.mean(np.array(recall_list,dtype=np.float32))
@@ -1014,8 +1036,8 @@ if __name__ == '__main__':
     parser.add_argument('--name', help='Name of task.')
     parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default='ttt')
     parser.add_argument('--batch', type=int, help='Batch size.',default=4)
-    parser.add_argument('--learnrate', type=float, help='Learning rate.',default=0.001)
-    parser.add_argument('--epoch', type=int, help='Epoch size.',default=10)
+    parser.add_argument('--learnrate', type=str, help='Learning rate.',default="0.001")
+    parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
     parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
     parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
@@ -1035,31 +1057,55 @@ if __name__ == '__main__':
     # args.dataset = 'msra'
     # args.eval=True
 
-    summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
-        "Working DIR: {}\n".format(DEF_WORK_DIR)+\
-        "Running with: \n"+\
-        "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
-        "\t Network: {}.\n".format(args.net)+\
-        "\t Base network: {}.\n".format(args.basenet)+\
-        "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
-        "\t Optimizer: {}.\n".format(args.opt)+\
-        "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
-        "\t Dataset: {}.\n".format(args.dataset)+\
-        "\t Init learning rate: {}.\n".format(args.learnrate)+\
-        "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
-        "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
-        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-        "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
-        "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
-        "========\n"
-        # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
-        # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\
-    print(summarize)
     gpus = torch.cuda.device_count()
-    if(args.multi_gpu and gpus>1):
-        os.environ['MASTER_ADDR'] = '127.0.0.1'
-        os.environ['MASTER_PORT'] = '8888'
-        mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
-    else:
-        train(0, 1, args)
-    # main()
+    list_opt = args.opt.split(',')
+    list_dataset = args.dataset.split(',')
+    list_epoch = list(map(int,args.epoch.split(',')))
+    list_learnrate = list(map(float,args.learnrate.split(',')))
+    total_tasks = max(len(list_opt),len(list_dataset),len(list_epoch),len(list_learnrate))
+    args_load = args.load
+    last_save = None
+    for taskid in range(total_tasks):
+        if(taskid<len(list_opt)):
+            cur_opt = list_opt[taskid]
+        if(taskid<len(list_dataset)):
+            cur_dataset = list_dataset[taskid]
+        if(taskid<len(list_epoch)):
+            cur_epoch = list_epoch[taskid]
+        if(taskid<len(list_learnrate)):
+            cur_learnrate = list_learnrate[taskid]
+        if(not args_load and last_save):
+            args.load = last_save
+        summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
+            "Task: {}/{}\n".format(taskid+1,total_tasks)+\
+            "Working DIR: {}\n".format(DEF_WORK_DIR)+\
+            "Running with: \n"+\
+            "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
+            "\t Network: {}.\n".format(args.net)+\
+            "\t Base network: {}.\n".format(args.basenet)+\
+            "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
+            "\t Optimizer: {}.\n".format(cur_opt)+\
+            "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
+            "\t Dataset: {}.\n".format(cur_dataset)+\
+            "\t Init learning rate: {}.\n".format(cur_learnrate)+\
+            "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
+            "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
+            "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
+            "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
+            "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
+            "========\n"
+            # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
+            # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\
+        print(summarize)
+        args.opt = cur_opt
+        args.dataset = cur_dataset
+        args.epoch = cur_epoch
+        args.learnrate = cur_learnrate
+
+        if(args.multi_gpu and gpus>1):
+            os.environ['MASTER_ADDR'] = '127.0.0.1'
+            os.environ['MASTER_PORT'] = '8888'
+            mp.spawn(init_process, nprocs=gpus, args=(gpus,train,args,))
+        else:
+            train(0, 1, args)
+        last_save = args.save
