@@ -13,302 +13,443 @@ from skimage import transform
 import cv2
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
-from lib.model.craft import CRAFT,CRAFT_MOB,CRAFT_LSTM,CRAFT_MOTION,CRAFT_VGG_LSTM
-from lib.model.siamfc import *
+from lib.model.pixel_map import PIX_Unet
+from lib.model.siamfc import SiameseNet
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
-from lib.dataloader.icdar import ICDAR
+from lib.dataloader.icdar import *
+from lib.dataloader.msra import MSRA
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
-from lib.dataloader.base import BaseDataset
+from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *
-from lib.utils.log_hlp import save_image
-from lib.fr_craft import CRAFTTrainer
+from lib.utils.log_hlp import *
+from lib.utils.net_hlp import adjust_learning_rate
 from lib.config.train_default import cfg as tcfg
+from dirs import *
 
+DEF_MAX_TRACKING_BOX_NUMBER = 2
+# pixel mask, edge mask, region mask, threshold mask
+DEF_MASK_CH = 4
+# [bg, fg, boundary] | [text bg, text fg]
+DEF_BOOL_MULTILEVEL_CE = False
+DEF_CE_CH = 3+2
 
-__DEF_LOCAL_DIR = os.path.dirname(os.path.realpath(__file__))
-__DEF_DATA_DIR = os.path.join(__DEF_LOCAL_DIR, 'dataset')
-__DEF_CTW_DIR = os.path.join(__DEF_DATA_DIR, 'ctw')
-__DEF_SVT_DIR = os.path.join(__DEF_DATA_DIR, 'svt', 'img')
-__DEF_TTT_DIR = os.path.join(__DEF_DATA_DIR, 'totaltext')
-__DEF_IC15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015')
-__DEF_IC19_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2019')
-__DEF_MSRA_DIR = os.path.join(__DEF_DATA_DIR, 'MSRA-TD500')
-__DEF_ICV15_DIR = os.path.join(__DEF_DATA_DIR, 'ICDAR2015_video')
-__DEF_MINE_DIR = os.path.join(__DEF_DATA_DIR, 'minetto')
+DEF_BOOL_POLY_REGRESSION = False
+DEF_BOX_HITMAP_CH = 2
+DEF_POLY_NUM = 10
+#polygon (x,y) or (dcx,dcy,w,h)
+DEF_BOX_CH = DEF_POLY_NUM*2 if(DEF_BOOL_POLY_REGRESSION)else 4
 
-if(platform.system().lower()[:7]=='windows'):__DEF_SYN_DIR = "D:\\development\\SynthText"
-elif(os.path.exists("/BACKUP/yom_backup/SynthText")):__DEF_SYN_DIR = "/BACKUP/yom_backup/SynthText"
-else:__DEF_SYN_DIR = os.path.join(__DEF_DATA_DIR, 'SynthText')
+DEF_BOOL_TRAIN_TXT_MASK = True
 
-def train_siam(loader,net,opt,criteria,device,train_size,logger):
+def train_siam(args):
+
+    image_size=(640, 640)
+    random_b = bool(args.random)
+    time_start = datetime.now()
+    work_dir = DEF_WORK_DIR
+    work_dir = os.path.join(work_dir,'log')
+    if(args.name):
+        work_dir = os.path.join(work_dir,args.name)
+    if(not(args.debug)):
+        logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S")))
+    else:
+        logger = None
+    log = sys.stdout
+
+    batch_size = args.batch
+    torch.manual_seed(0)
+    torch.cuda.set_device(0)
+
+    basenet = PIX_Unet(mask_ch=2,include_final=args.have_fc,basenet=args.basenet,min_upc_ch=128,pretrained=True).float()
+    if(args.load and os.path.exists(args.load)):
+        basenet.load_state_dict(copyStateDict(torch.load(args.load)))
+    model = SiameseNet(basenet)
+    model = model.cuda()
+
+    criterion_mask = MASK_MSE_LOSS().cuda()
+    criterion = MSE_2d_Loss(pixel_sum=False).cuda()
+
+    if(os.path.exists(args.opt)):
+        optimizer = torch.load(args.opt)
+    elif(args.opt.lower()=='adam'):
+        optimizer = optim.Adam(model.parameters(), lr=args.learnrate, weight_decay=tcfg['OPT_DEC'])
+    elif(args.opt.lower() in ['adag','adagrad']):
+        optimizer = optim.Adagrad(model.parameters(), lr=args.learnrate, weight_decay=tcfg['OPT_DEC'])
+    else:
+        optimizer = optim.SGD(model.parameters(), lr=args.learnrate, momentum=tcfg['MMT'], weight_decay=tcfg['OPT_DEC'])
+    if(args.lr_decay):
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+        #     mode='min',factor=0.9,
+        #     patience=100,cooldown=30,
+        #     min_lr=0.0001,
+        #     verbose=True
+        #     )
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.8)
     
-    for batch,sample in enumerate(loader):
-        im_size = (sample['height'],sample['width'])
-        pxy_dict = sample['gt']
-        txt_dict = sample['txt']
-        p_keys = list(pxy_dict.keys())
-        p_keys.sort()
-        vdo = sample['video']
-        fm_cnt = 0
+    args.dataset = args.dataset.lower()
+    if(args.dataset=="ttt"):
+        train_dataset = Total(
+            os.path.join(DEF_TTT_DIR,'images','train'),
+            os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
+            os.path.join(DEF_TTT_DIR,'gt_txt','train'),
+            image_size=image_size,
+            include_bg=True,
+            )
+        eval_dataset = Total(
+            os.path.join(DEF_TTT_DIR,'images','test'),
+            os.path.join(DEF_TTT_DIR,'gt_pixel','test'),
+            os.path.join(DEF_TTT_DIR,'gt_txt','test'),
+            image_size=image_size,
+            include_bg=True,
+            )
+    elif(args.dataset=="msra"):
+    # ONLY PROVIDE SENTENCE LEVEL BOX
+        train_dataset = MSRA(
+            os.path.join(DEF_MSRA_DIR,'train'),
+            os.path.join(DEF_MSRA_DIR,'train'),
+            image_size=image_size)
+        eval_dataset = MSRA(
+            os.path.join(DEF_MSRA_DIR,'test'),
+            os.path.join(DEF_MSRA_DIR,'test'),
+            image_size=image_size)
+    elif(args.dataset=="ic19"):
+        train_dataset,eval_dataset = split_dataset_cls_to_train_eval(ICDAR19,0.2,
+            os.path.join(DEF_IC19_DIR,'images','train'),
+            os.path.join(DEF_IC19_DIR,'gt_txt','train'),
+            image_size=image_size)
+    elif(args.dataset=="ic15"):
+        train_dataset = ICDAR15(
+            os.path.join(DEF_IC15_DIR,'images','train'),
+            os.path.join(DEF_IC15_DIR,'gt_txt','train'),
+            image_size=image_size)
+        eval_dataset = ICDAR15(
+            os.path.join(DEF_IC15_DIR,'images','test'),
+            os.path.join(DEF_IC15_DIR,'gt_txt','test'),
+            image_size=image_size)
+    else:
+        train_dataset = ICDAR13(
+            os.path.join(DEF_IC13_DIR,'images','train'),
+            os.path.join(DEF_IC13_DIR,'gt_txt','train'),
+            # os.path.join(DEF_IC13_DIR,'gt_pixel','train'),
+            image_size=image_size,)
+        eval_dataset = ICDAR13(
+            os.path.join(DEF_IC13_DIR,'images','test'),
+            os.path.join(DEF_IC13_DIR,'gt_txt','test'),
+            # os.path.join(DEF_IC13_DIR,'gt_pixel','test'),
+            image_size=image_size)
 
-        # for character level tracking candidate
-        wd_img_txt_box_dict = {} # dict[obj_id] = [img_tensor, word, box]
-        obj_dict = {} # obj_dict[obj_id] = [start frame, end frame]
-        for frame_id in p_keys:
-            if(pxy_dict[frame_id].shape[0]==0):
-                continue
-            obj_ids = pxy_dict[frame_id][:,0].astype(np.int16)
-            for oid in obj_ids:
-                if(oid in obj_dict):
-                    obj_dict[oid][-1] = frame_id
-                else:
-                    obj_dict[oid] = [frame_id,frame_id]
-        
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
+                                               batch_size=batch_size,
+                                               shuffle=True,
+                                               num_workers=0,
+                                               pin_memory=True,
+                                               collate_fn=train_dataset.default_collate_fn,)
+    if(args.eval):
+        eval_loader = torch.utils.data.DataLoader(dataset=eval_dataset,
+                                                batch_size=batch_size,
+                                                shuffle=True,
+                                                num_workers=0,
+                                                pin_memory=True,
+                                                collate_fn=eval_dataset.default_collate_fn,)
+    time_c = datetime.now()
+    total_step = len(train_loader)
+    kernel = np.ones((3,3),dtype=np.uint8)
+    all_recall, all_precision = [],[]
+    last_max_recall, last_max_precision, last_max_fscore = 0.0,0.0,0.0
+    
+    for epoch in range(args.epoch):
+        epoch_loss_list = []
+        for stepi, sample in enumerate(train_loader):
+            x = sample['image']
+            bth_image_np = x.numpy()
+            b_have_mask = bool('mask' in sample)
+            if(b_have_mask):
+                bth_text_mask = sample['mask']
+                bth_text_mask_np = bth_text_mask.numpy()
 
-        while(vdo.isOpened()):
-            ret, x = vdo.read()
-            if(ret==False):
-                break
-            if(fm_cnt<p_keys[0] or fm_cnt not in pxy_dict or pxy_dict[fm_cnt].shape[0]==0):
-                # skip the initial or non text frams
-                fm_cnt+=1
-                continue
-
-            boxes = pxy_dict[fm_cnt][:,1:].reshape(-1,4,2)
-            obj_ids = pxy_dict[fm_cnt][:,0].astype(np.int16)
-            wrd_list = txt_dict[fm_cnt]
-            rect_boxes = np_polybox_minrect(boxes,'polyxy')
-
-            # x = cv2.resize(x,img_size,preserve_range=True)
-            xnor = np_img_normalize(x)
-            if(len(xnor.shape)==3): 
-                xnor = np.expand_dims(xnor,0)
-            xnor = torch.from_numpy(xnor).float().permute(0,3,1,2)
-            opt.zero_grad()
-            pred,feat = net(xnor.to(device))
-
-            ch_mask, af_mask, ch_boxes_list, aff_boxes_list = cv_gen_gaussian(
-                np_box_resize(boxes,x.shape[:-1],pred.shape[2:],'polyxy'),
-                wrd_list,pred.shape[2:])
-
-            ch_loss = criteria(pred[:,0],torch.from_numpy(np.expand_dims(ch_mask,0)).to(pred.device))
-            af_loss = criteria(pred[:,1],torch.from_numpy(np.expand_dims(af_mask,0)).to(pred.device))
-            
-            # img = cv_mask_image(x,pred[0,0].to('cpu').detach().numpy())
-            # if(logger):
-            #     logger.add_image('Batch {} image'.format(batch), img, fm_cnt,dataformats='HWC')
-            # tracking
-            sub_ch_loss = torch.zeros_like(ch_loss)
-            cnt = 0
-            pops = []
-            for o in wd_img_txt_box_dict:
-                if(obj_dict[o][-1]<fm_cnt):
-                    # if the object will not appear later
-                    pops.append(o)
-                    continue
-                if(o not in obj_ids):
-                    continue
-
-                # numpy (h,w3)
-                subx = wd_img_txt_box_dict[o][0]
-
-                nid = np.where(obj_ids==o)[0][0]
-                wd_old = wd_img_txt_box_dict[o][1]
-                wd_now = wrd_list[nid]
-                if(len(wd_old)<len(wd_now)):
-                    # Need update 
-                    # Simply delete old word and it will update later
-                    pops.append(o)
-                    continue
-                elif(len(wd_old)>len(wd_now)+1):
-                    # occlusion happen, cutting old image
-                    try:
-                        sp = wd_old.index(wd_now)
-                        ep = sp+len(wd_now)
-                        h,w = subx.shape[:-1]
-                        sp/=len(wd_old)
-                        ep/=len(wd_old)
-                        if(w>=h):
-                            sp = int(w*sp)
-                            ep = int(w*ep)
-                            subx = subx[:,sp:ep]
-                        else:
-                            sp = int(h*sp)
-                            ep = int(h*ep)
-                            subx = subx[sp:ep]
-                    except:
-                        continue
-                if(subx.shape[-2]<8 or subx.shape[-3]<8):
-                    continue
+            bth_boxes = sample['box']
+            # data argumentation
+            if(random_b):
+                boxest_list = []
+                xt_list = []
+                if(b_have_mask):
+                    txt_maskt_list = []
                 
-                nor_subx = np.expand_dims(np_img_normalize(subx),0)
-                nor_subx = torch.from_numpy(nor_subx).float().permute(0,3,1,2).to(device)
-                obj_map,obj_feat = net(nor_subx)
-                match_map,_ = net.match(obj_feat,feat)
-                trk_box = np_box_resize(boxes[nid],x.shape[:-1],match_map.shape[2:],'polyxy')
-                sub_ch_mask, _,_,_ = cv_gen_gaussian(trk_box,None,match_map.shape[2:],affin=False)
-                tracking_loss = criteria(match_map[:,0],torch.from_numpy(np.expand_dims(sub_ch_mask,0)).to(match_map.device))
-                sub_ch_loss += tracking_loss
+                for i in range(bth_image_np.shape[0]):
+                    if(not isinstance(bth_boxes[i],type(None)) and bth_boxes[i].shape[0]>0):
+                        imgt,boxt,M = cv_random_image_process(bth_image_np[i],bth_boxes[i],crop_to_box=not('text' in sample and '#' in sample['text'][i]))
+                    else:
+                        imgt,boxt,M = cv_random_image_process(bth_image_np[i],None,crop_to_box=False)
 
-                np_subx = subx.astype(x.dtype)
-                x[0:np_subx.shape[0],0:np_subx.shape[1],:]=np_subx
-                img = cv_draw_poly(x,boxes[nid])
-                img_msk = cv_mask_image(img,match_map[0,0].to('cpu').detach().numpy())
-                if(logger):
-                    logger.add_image('Batch {}, id {}, prediction'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
-                img_msk = cv_mask_image(img,sub_ch_mask)
-                if(logger):
-                    logger.add_image('Batch {}, id {}, GT'.format(batch,o), img_msk, fm_cnt,dataformats='HWC')
-                cnt+=1
+                    xt_list.append(imgt)
+                    boxest_list.append(boxt if(not isinstance(boxt,type(None)))else bth_boxes[i])
+                    if(b_have_mask):
+                        txt_maskt_list.append(cv2.warpAffine(bth_text_mask_np[i], M[:-1], (bth_image_np.shape[2],bth_image_np.shape[1])))
 
-            for o in pops:
-                # delete old tracking target
-                wd_img_txt_box_dict.pop(o)
-            if(cnt>0):
-                sub_ch_loss /= cnt
-            loss = ch_loss + af_loss + sub_ch_loss
+                bth_boxes = boxest_list
+                bth_image_np = np.stack(xt_list)
+                x = torch.from_numpy(bth_image_np)
+                if(b_have_mask):
+                    bth_txt_mask_np = np.stack(txt_maskt_list).astype(np.uint8)
+                    if(len(bth_txt_mask_np.shape)==3):
+                        bth_txt_mask_np = np.expand_dims(bth_txt_mask_np,-1)
+                    bth_txt_mask = torch.from_numpy(bth_txt_mask_np)
             
-            if(logger):
-                # logger.add_scalar('Batch {} ch_loss'.format(batch), ch_loss.item(), fm_cnt)
-                # logger.add_scalar('Batch {} af_loss'.format(batch), af_loss.item(), fm_cnt)
-                logger.add_scalar('Batch {} sub_ch_loss'.format(batch), sub_ch_loss.item(), fm_cnt)
-                logger.add_scalar('Batch {} total loss'.format(batch), loss.item(), fm_cnt)
-                logger.flush()
-            print("Loss at batch {} step {}\t ch_loss={}\t af_loss={}\t sub_ch_loss={}\t\n".format(batch,fm_cnt,ch_loss.item(),af_loss.item(),sub_ch_loss.item()))
+            # generate region mask
+            bth_region_mask_list = []
+            bth_binary_region_mask_list = []
+            for o in bth_boxes:
+                if(o.shape[0]==0):
+                    bth_region_mask_list.append(np.zeros(x.shape[-3:-1],dtype=np.float32))
+                    bth_binary_region_mask_list.append(np.zeros(x.shape[-3:-1],dtype=np.uint8))
+                else:
+                    fmask,bmask = cv_gen_gaussian_by_poly(o,x.shape[-3:-1],return_mask=True)
+                    bth_region_mask_list.append(fmask)
+                    bth_binary_region_mask_list.append(bmask)
             
-            loss.backward()
-            opt.step()
+            bth_region_mask_np = np.array(bth_region_mask_list,dtype=np.float32)
+            bth_region_mask = torch.from_numpy(bth_region_mask_np)
+            # bth_region_mask_np = np.expand_dims(bth_region_mask_np,-1)
+            bth_binary_region_mask_np = np.array(bth_binary_region_mask_list,dtype=np.uint8)
+            # bth_binary_region_mask_np = np.expand_dims(bth_binary_region_mask_np,-1)
 
-            # AFTER tracking, update new objects
-            for box,obj_id,wrd in zip(boxes,obj_ids,wrd_list):
-                if(obj_id in wd_img_txt_box_dict):
+            # generate selection mask, 0 for ignored, 1 for background, 2 for positive
+            bth_region_selection_list = []
+            if(not isinstance(bth_boxes,type(None))):
+                for i in range(bth_image_np.shape[0]):
+                    if('text' in sample and '#' in sample['text'][i]):
+                        selection = cv_gen_binary_mask_by_poly(bth_boxes[i],bth_image_np.shape[-3:-1],
+                            default_value=1,default_fill=2,
+                            box_fill_value_list=[2 if(o!='#')else 0 for o in sample['text'][i]]
+                            )
+                    elif(not isinstance(bth_boxes[i],type(None))):
+                        selection = cv_gen_binary_mask_by_poly(bth_boxes[i],bth_image_np.shape[-3:-1],
+                            default_value=1,default_fill=2)
+                    else:
+                        selection = np.ones(bth_image_np.shape[-3:-1],dtype=np.uint8)
+                    bth_region_selection_list.append(selection)
+                bth_region_selection_np = np.array(bth_region_selection_list,dtype=np.uint8)
+            else:
+                bth_region_selection_np = np.ones(bth_image_np.shape[:-1],dtype=np.uint8)
+            bth_region_selection = torch.from_numpy(bth_region_selection_np)
+            
+            # data normolization
+            xnor = x.float().cuda(non_blocking=True)
+            xnor = torch_img_normalize(xnor).permute(0,3,1,2)
+            
+            # Forward pass
+            pred,feat = model(xnor)
+            # Loss
+            loss_dict = {}
+
+            loss_dict['region_mask_regression']=criterion_mask(pred[:,0],bth_region_mask.cuda(),bth_region_selection.cuda())
+
+            if(b_have_mask):
+                # text mask regression
+                # find non-text positive region and ignore it
+                # generate selection mask, 0 for ignored, 1 for background, 2 for positive
+                bth_text_selection_list = []
+                if(not isinstance(bth_boxes,type(None))):
+                    for i in range(bth_image_np.shape[0]):
+                        if(not isinstance(bth_boxes[i],type(None))):
+                            box_id = []
+                            for j,o in enumerate(bth_boxes[i]):
+                                sub_text_mask, M, sub_region_mask = cv_crop_image_by_polygon(bth_text_mask_np[i],o,return_mask=True)
+                                text_post_num = np.sum(sub_text_mask>0)
+                                reg_post_num = np.sum(sub_region_mask>0)
+                                if(text_post_num>int(0.2*reg_post_num) and text_post_num<int(0.9*reg_post_num)):
+                                    box_id.append(2)
+                                else:
+                                    box_id.append(0)
+
+                            selection = cv_gen_binary_mask_by_poly(bth_boxes[i],bth_image_np.shape[-3:-1],
+                                default_value=1, default_fill=2, box_fill_value_list=box_id)
+                        else:
+                            selection = np.ones(bth_image_np.shape[-3:-1],dtype=np.uint8)
+                        bth_text_selection_list.append(selection)
+                    bth_text_selection_np = np.array(bth_text_selection_list,dtype=np.uint8)
+                else:
+                    bth_text_selection_np = np.ones(bth_image_np.shape[:-1],dtype=np.uint8)
+                bth_text_selection = torch.from_numpy(bth_text_selection_np)
+
+                loss_dict['region_text_regression']=criterion_mask(pred[:,1],bth_text_mask.float().cuda().permute(0,3,1,2)/255,bth_text_selection.cuda())
+
+            # tracking
+            tracking_loss_list = []
+            tracking_loger = []
+            for i in range(bth_image_np.shape[0]):
+                if(isinstance(bth_boxes,type(None)) or isinstance(bth_boxes[i],type(None))):
                     continue
-                sub_ch_img_np,_ = cv_crop_image_by_bbox(x,box,w_min=16*3,h_min=16*3)
-                # sub_ch_img = cv_crop_image_by_bbox(x,box,32,32)
-                # (1,3,h,w)
-                # sub_ch_img = torch.from_numpy(np.expand_dims(sub_ch_img,0)).permute(0,3,1,2).float().to(device)
-                wd_img_txt_box_dict[obj_id] = [sub_ch_img_np,wrd,box]
+                # add random affine transform
+                imgt,boxt,M = cv_random_image_process(bth_image_np[i],bth_boxes[i],crop_to_box=False)
+                rect_boxt = np_polybox_minrect(boxt,'polyxy')
+                ws = np.linalg.norm(rect_boxt[:,0]-rect_boxt[:,1],axis=-1)
+                hs = np.linalg.norm(rect_boxt[:,0]-rect_boxt[:,3],axis=-1)
+                inds = np.argsort(ws*hs)[::-1]
+                slc_recbox = rect_boxt[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
+                # torch tensor
+                track_x = torch.from_numpy(np.expand_dims(imgt,0)).float().cuda()
+                track_xnor = torch_img_normalize(track_x).permute(0,3,1,2)
+                # run
+                track_pred,track_feat = model(track_xnor)
+                # search_pred, search_feat = model(xnor[i:i+1])
+                loc_loger = []
+                for bxi,smbx_rect in enumerate(slc_recbox):
+                    try:
+                        # crop
+                        x1,y1 = smbx_rect[0].astype(np.uint8)
+                        x2,y2 = smbx_rect[2].astype(np.uint8)
+                        if(y1>y2):
+                            y1,y2=y2,y1
+                        if(x1>x2):
+                            x1,x2=x2,x1
+                        slc_feat = track_feat.upb0[:,:,y1:y2,x1:x2]
+                        score = model.match_corr(slc_feat,feat.upb0[i:i+1])
+                        score = score/torch.max(score)
+                        target_box = bth_boxes[i][inds[bxi]]
+                        target_box = np_box_resize(target_box,bth_image_np.shape[-3:-1],score.shape[2:],'polyxy')
+                        gt_score_np = cv_gen_gaussian_by_poly(target_box,score.shape[2:])
+                        gt_score = torch.from_numpy(np.expand_dims(gt_score_np,0)).float().cuda()
+                        tracking_loss_list.append(criterion(score,gt_score))
+                        loc_loger.append((boxt[inds[bxi]],gt_score_np,score.detach().cpu().numpy()))
+                    except Exception as e:
+                        log.write("Err at file: {}, box: {}, err: {}.\n".format(sample['name'][i],smbx_rect,str(e)))
+                        log.flush()
+                tracking_loger.append([imgt,loc_loger])
+            if(tracking_loss_list):
+                loss_dict['tracking']=torch.stack(tracking_loss_list).mean()
+            else:
+                loss_dict['tracking']=torch.zeros_like(loss_dict['region_mask_regression'])
 
-            # end of single frame
-            fm_cnt+=1
+            loss = 0.0
+            for keyn,value in loss_dict.items():
+                loss+=value
+            # Backward and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss_list.append(loss.item())
 
+            if(logger):
+                logger.add_scalar('Loss/total loss', loss.item(), epoch*total_step+stepi)
+                for keyn,value in loss_dict.items():
+                    logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+stepi)
+                if(args.lr_decay):
+                    logger.add_scalar('LR rate', optimizer.param_groups[0]['lr'], epoch*total_step+stepi)
+                logger.flush()
+        
+        # ==============
+        # End of epoch
+        # ==============
+
+        time_usage = datetime.now() - time_c
+        time_c = datetime.now()
+        log.write('Epoch [{}/{}], Loss: {:.4f}\n'.format(epoch + 1, args.epoch,loss.item()))
+        # if(args.eval):
+        #     log.write('\tRecall: {:.4f},Precision: {:.4f}, F-score: {:.4f}\n'.format(recall_np, precision_np,f_np))
+        try:                         
+            log.write("Time usage: {} Day {} Second.\n\n".format(time_usage.days,time_usage.seconds))
+        except:
+            log.write("Time usage: {} Day {} Second.\n\n".format(time_usage.day,time_usage.second))
+        log.flush()
+
+        if(logger and (epoch+1)%10==0):
+            org_images = bth_image_np.astype(np.uint8)
+            pred_np = pred.detach().cpu().permute(0,2,3,1).numpy()
+            for i in range(org_images.shape[0]):
+                logger.add_image('Region Prediction',concatenate_images([org_images[i],cv_heatmap(pred_np[i,0])]),org_images.shape[0]*epoch+i)
+                logger.add_image('Text Prediction',concatenate_images([org_images[i],(pred_np[i,1]>0).astype(np.uint8)*255]),org_images.shape[0]*epoch+i)
+                
+                track_img,loc_loger = tracking_loger[i]
+                for j,(boxt,gt_score_np,pred_score_np) in enumerate(loc_loger):
+                    bx_track_img = cv_draw_poly(track_img,boxt)
+                    logger.add_image('Tracking: Org_img|track_img|GT_sc|Pred_sc',
+                        concatenate_images([org_images[i],bx_track_img,cv_heatmap(gt_score_np),cv_heatmap(pred_score_np)]),
+                        DEF_MAX_TRACKING_BOX_NUMBER*org_images.shape[0]*epoch+i*DEF_MAX_TRACKING_BOX_NUMBER+j)
+            logger.flush()
     
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Config trainer')
 
-    parser.add_argument('--opt', help='PKL path or name of optimizer.',default=tcfg['OPT'])
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    # parser.add_argument('--multi_gpu', help='Set --multi_gpu to enable multi gpu training.',action="store_true")
+    parser.add_argument('--opt', help='PKL path or name of optimizer.',default='adag')
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
+    parser.add_argument('--eval', help='Set --eval to enable eval.', action="store_true")
+    parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK_CLS_BOX')
+    parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
+    parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
-    parser.add_argument('--net', help='Choose noework (craft).', default=tcfg['NET'])
     parser.add_argument('--name', help='Name of task.')
-    parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default=tcfg['DATASET'])
-    parser.add_argument('--datax', type=int, help='Dataset output width.',default=tcfg['IMG_SIZE'][0])
-    parser.add_argument('--datay', type=int, help='Dataset output height.',default=tcfg['IMG_SIZE'][1])
-    parser.add_argument('--step', type=int, help='Step size.',default=tcfg['STEP'])
-    parser.add_argument('--batch', type=int, help='Batch size.',default=tcfg['BATCH'])
-    parser.add_argument('--logstp', type=int, help='Log step size.',default=tcfg['LOGSTP'])
-    parser.add_argument('--gpu', type=int, help='Set --gpu -1 to disable gpu.',default=0)
-    parser.add_argument('--savestep', type=int, help='Save step size.',default=tcfg['SAVESTP'])
-    parser.add_argument('--learnrate', type=float, help='Learning rate.',default=tcfg['LR'])
-    parser.add_argument('--teacher', type=str, help='Set --teacher to pkl file.')
+    parser.add_argument('--dataset', help='Choose dataset: ctw/svt/ttt.', default='ttt')
+    parser.add_argument('--batch', type=int, help='Batch size.',default=4)
+    parser.add_argument('--learnrate', type=str, help='Learning rate.',default="0.001")
+    parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
+    parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
+    parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
+    parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
+    parser.add_argument('--have_fc', help='Set --have_fc to include final level.', action="store_true")
+    parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
 
     args = parser.parse_args()
-    use_net = args.net.lower()
-    use_dataset = args.dataset.lower()
-    time_start = datetime.now()
-    isdebug = args.debug
-    lod_dir = args.load
-    teacher_pkl_dir = args.teacher
-    lr = args.learnrate
-    max_step = args.step if(not isdebug)else 1000
-    use_cuda = True if(args.gpu>=0 and torch.cuda.is_available())else False
-    lr_decay_step_size = tcfg['LR_DEC_STP']
-    num_workers=4 if(platform.system().lower()[:7]!='windows')else 0
-    batch = args.batch
-    work_dir = "/BACKUP/yom_backup" if(platform.system().lower()[:7]!='windows' and os.path.exists("/BACKUP/yom_backup"))else __DEF_LOCAL_DIR
-    log_step_size = args.logstp
+    args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
+    args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
 
-    # For Debug config
-    lod_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/craft_vgg_lstm_cp.pkl"
-    teacher_pkl_dir = "/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl"
-    sav_dir = "/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft.pkl"
-    isdebug = True
-    # use_net = 'craft_mob'
-    use_dataset = 'minetto'
-    # log_step_size = 1
-    # use_cuda = False
-    # num_workers=0
-    # lr_decay_step_size = None
+    # args.debug = True
+    # args.random=True
+    # args.batch=2
+    # args.load = "/BACKUP/yom_backup/saved_model/mask_only_pxnet.pth"
+    # args.net = 'PIX_Unet_box'
+    # args.dataset = 'msra'
+    # args.eval=True
 
-    dev = 'cuda' if(use_cuda)else 'cpu'
-    # basenet = torch.load("/home/yomcoding/Pytorch/MyResearch/pre_train/craft_mlt_25k.pkl").float().to(dev)
-    # net = SiameseCRAFT(base_net=basenet,feature_chs=32)
-    # net = net.float().to(dev)
-    net = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft2.pkl').float().to(dev)
-    # if(os.path.exists(args.opt)):
-    #     opt = torch.load(args.opt)
-    # elif(args.opt.lower()=='adam'):
-    opt = optim.Adam(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    # elif(args.opt.lower() in ['adag','adagrad']):
-    #     opt = optim.Adagrad(net.parameters(), lr=lr, weight_decay=tcfg['OPT_DEC'])
-    # else:
-    # opt = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
-    # opt = torch.load('/home/yomcoding/Pytorch/MyResearch/saved_model/siam_craft.pkl_opt.pkl')
-    # opt.add_param_group(net.parameters())
-    train_dataset = Minetto(__DEF_MINE_DIR)
-    train_on_real = True
-    x_input_function = None
-    y_input_function = None
-    num_workers = 0
-    batch = 1
-
-    dataloader = DataLoader(train_dataset, batch_size=batch, shuffle=True, 
-        num_workers=num_workers,
-        pin_memory=True if(num_workers>0)else False,
-        collate_fn=train_dataset.default_collate_fn,
-        )
-
-    loss = MSE_2d_Loss()
-
-    summarize = "Start when {}.\n".format(time_start.strftime("%Y%m%d-%H%M%S")) +\
-        "Working DIR: {}\n".format(work_dir)+\
-        "Running with: \n"+\
-        "\t Step size: {},\n\t Batch size: {}.\n".format(max_step,batch)+\
-        "\t Input shape: x={},y={}.\n".format(args.datax,args.datay)+\
-        "\t Network: {}.\n".format(net.__class__.__name__)+\
-        "\t Optimizer: {}.\n".format(opt.__class__.__name__)+\
-        "\t Dataset: {}.\n".format(train_dataset.__class__.__name__)+\
-        "\t Init learning rate: {}.\n".format(lr)+\
-        "\t Learning rate decay rate: {}.\n".format(tcfg['OPT_DEC'] if(tcfg['OPT_DEC']>0)else "Disabled")+\
-        "\t Learning rate decay step: {}.\n".format(lr_decay_step_size if(lr_decay_step_size)else "Disabled")+\
-        "\t Taks name: {}.\n".format(args.name if(args.name!=None)else net.__class__.__name__)+\
-        "\t Teacher: {}.\n".format(teacher_pkl_dir)+\
-        "\t Use GPU: {}.\n".format('Yes' if(use_cuda>=0)else 'No')+\
-        "\t Load network: {}.\n".format(lod_dir if(lod_dir)else 'No')+\
-        "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-        "\t Is debug: {}.\n".format('Yes' if(isdebug)else 'No')+\
-        ""
-    print(summarize)
-    logger = SummaryWriter(os.path.join(work_dir,'log','siam'))
-    # logger = None
-
-    # try:
-    train_siam(dataloader,net,opt,loss,dev,len(train_dataset),logger)
-    # except Exception as e:
-    #     print(e)
-        
-    print("Saving model...")
-    torch.save(net,sav_dir)
-    print("Saving optimizer...")
-    torch.save(opt,sav_dir+'_opt.pkl')
-
-    time_usage = datetime.now()
-    print("End at: {}.\n".format(time_usage.strftime("%Y%m%d-%H%M%S")))
-    time_usage = time_usage - time_start
-    print("Time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
-    pass
+    gpus = torch.cuda.device_count()
+    list_opt = args.opt.split(',')
+    list_dataset = args.dataset.split(',')
+    list_epoch = list(map(int,args.epoch.split(',')))
+    list_learnrate = list(map(float,args.learnrate.split(',')))
+    total_tasks = max(len(list_opt),len(list_dataset),len(list_epoch),len(list_learnrate))
+    args_load = args.load
+    last_save = None
+    for taskid in range(total_tasks):
+        if(taskid<len(list_opt)):
+            cur_opt = list_opt[taskid]
+        if(taskid<len(list_dataset)):
+            cur_dataset = list_dataset[taskid]
+        if(taskid<len(list_epoch)):
+            cur_epoch = list_epoch[taskid]
+        if(taskid<len(list_learnrate)):
+            cur_learnrate = list_learnrate[taskid]
+        if(not args_load and last_save):
+            args.load = last_save
+        summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
+            "Task: {}/{}\n".format(taskid+1,total_tasks)+\
+            "Working DIR: {}\n".format(DEF_WORK_DIR)+\
+            "Running with: \n"+\
+            "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
+            "\t Network: {}.\n".format(args.net)+\
+            "\t Base network: {}.\n".format(args.basenet)+\
+            "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
+            "\t Optimizer: {}.\n".format(cur_opt)+\
+            "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
+            "\t Dataset: {}.\n".format(cur_dataset)+\
+            "\t Init learning rate: {}.\n".format(cur_learnrate)+\
+            "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
+            "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
+            "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
+            "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
+            "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
+            "========\n"
+            # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
+            # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\
+        print(summarize)
+        args.opt = cur_opt
+        args.dataset = cur_dataset
+        args.epoch = cur_epoch
+        args.learnrate = cur_learnrate
+        train_siam(args)
+        last_save = args.save

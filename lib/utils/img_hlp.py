@@ -503,6 +503,31 @@ def cv_gen_gaussian_by_poly(cv_box,img_size=None,centralize:bool=False,v_range:f
 
     return dst_mask
 
+def cv_gen_binary_mask_by_poly(cv_box,img_size,default_value:int=0,default_fill:int=1,box_fill_value_list:list=None):
+    """
+    Generate binary mask by polygon
+    Args:
+        cv_box: ((n),k,2) polygon box 
+        img_size: (y,x) output mask shape
+        default_value: initial mask value
+        default_fill: default fill value for each box
+        box_fill_value_list: fill value for each box, if given
+    Return:
+        mask: (y,x) array
+    """
+    if(len(cv_box.shape)==2):
+        cv_box = np.expand_dims(cv_box,0)
+    if(not box_fill_value_list):
+        box_fill_value_list = [default_fill]*cv_box.shape[0]
+    elif(len(box_fill_value_list)<cv_box.shape[0]):
+        box_fill_value_list+=[default_fill]*(cv_box.shape[0]-len(box_fill_value_list))
+    
+    blmask = Image.new('L', (img_size[1],img_size[0]), default_value)
+    draw = ImageDraw.Draw(blmask)
+    for o,v in zip(cv_box,box_fill_value_list):
+        draw.polygon(o.reshape(-1).tolist(), outline=v, fill=v)
+    return np.array(blmask)
+
 def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
     """
     Refine box by binary map, return small one in original and refined

@@ -168,6 +168,8 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
     for i in range(len(images)):
         if(images[i].shape[0]!=h or images[i].shape[1]!=w):
             images[i] = cv2.resize(images[i],(w,h))
+        if(len(images[i].shape)==2):
+            images[i] = np.stack([images[i],images[i],images[i]],-1)
         rets.append(images[i])
         rets.append(line)
     rets.pop(-1)

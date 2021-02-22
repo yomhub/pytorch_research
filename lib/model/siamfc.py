@@ -42,21 +42,21 @@ class SiameseNet(nn.Module):
     def forward(self, x):
         return self.embedding_net(x)
 
-    def forward(self, x1, x2):
-        """
-        Args:
-            x1 (torch.Tensor): The reference patch of dimensions [B, C, H, W].
-                Usually the shape is [8, 3, 127, 127].
-            x2 (torch.Tensor): The search region image of dimensions
-                [B, C, H', W']. Usually the shape is [8, 3, 255, 255].
-        Returns:
-            match_map (torch.Tensor): The score map for the pair. For the usual
-                input shapes, the output shape is [8, 1, 33, 33].
-        """
-        embedding_reference = self.embedding_net(x1)
-        embedding_search = self.embedding_net(x2)
-        match_map = self.match_corr(embedding_reference, embedding_search)
-        return match_map
+    # def forward(self, x1, x2):
+    #     """
+    #     Args:
+    #         x1 (torch.Tensor): The reference patch of dimensions [B, C, H, W].
+    #             Usually the shape is [8, 3, 127, 127].
+    #         x2 (torch.Tensor): The search region image of dimensions
+    #             [B, C, H', W']. Usually the shape is [8, 3, 255, 255].
+    #     Returns:
+    #         match_map (torch.Tensor): The score map for the pair. For the usual
+    #             input shapes, the output shape is [8, 1, 33, 33].
+    #     """
+    #     embedding_reference = self.embedding_net(x1)
+    #     embedding_search = self.embedding_net(x2)
+    #     match_map = self.match_corr(embedding_reference, embedding_search)
+    #     return match_map
 
     def get_embedding(self, x):
         return self.embedding_net(x)
