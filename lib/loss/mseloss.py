@@ -127,9 +127,7 @@ class MSE_2d_Loss(nn.Module):
 
         k = int(num_positive * self.positive_mult)
         num_all = x.shape[0]
-        if k + num_positive > num_all:
-            k = int(num_all - num_positive)
-        if k < 10:
+        if(k + num_positive >= num_all or k<=10):
             sample_loss = torch.sum(sample_loss) if(self.pixel_sum)else torch.mean(sample_loss)
         else:
             positive_loss = torch.masked_select(sample_loss, positive_mask)
@@ -175,4 +173,61 @@ class MSE_2d_Loss(nn.Module):
         for i in range(x.shape[0]):
             loss_every_sample.append(self.mse_loss_single(x[i],y[i],weight_mask[i] if(b_have_weight_mask)else None))
             
+        return torch.stack(loss_every_sample, 0).mean()
+
+class MASK_MSE_LOSS(nn.Module):
+    def __init__(self,positive_mult = 3,positive_th:float = 0.0, 
+        positive_id:int=2,negative_id:int = 1,ignore_id:int=0):
+        super(MASK_MSE_LOSS, self).__init__()
+        self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
+
+        self.positive_mult = float(positive_mult)
+        self.positive_th = positive_th
+
+        self.positive_id = int(positive_id)
+        self.negative_id = int(negative_id)
+        self.ignore_id = int(ignore_id)
+    
+    def mse_loss_single(self,x,y,idmask):
+        positive_mask = idmask == self.positive_id
+        num_positive = torch.sum(positive_mask).item()
+        negative_mask = idmask == self.negative_id
+        num_negative = torch.sum(negative_mask).item()
+
+        sample_loss = self.mse_loss(x, y)
+
+        k = int(num_positive * self.positive_mult)
+        num_all = num_positive+num_negative
+
+        if(k + num_positive >= num_all or k<=10):
+            sample_loss = torch.mean(torch.masked_select(sample_loss,idmask != self.ignore_id))
+        else:
+            positive_loss = torch.masked_select(sample_loss, positive_mask)
+            negative_loss = torch.masked_select(sample_loss, negative_mask)
+            negative_loss_topk, _ = torch.topk(negative_loss, k)
+            sample_loss = torch.mean(positive_loss) + torch.mean(negative_loss_topk)
+
+        return sample_loss
+
+    def forward(self, x, y, idmask):
+        if(len(x.shape)==3):
+            x = x.reshape((x.shape[0],1,x.shape[1],x.shape[2]))
+        if(len(y.shape)==3):
+            y = y.reshape((y.shape[0],1,y.shape[1],y.shape[2]))
+        if(len(idmask.shape)==3):
+            idmask = idmask.reshape((idmask.shape[0],1,idmask.shape[1],idmask.shape[2]))
+
+        if(y.shape[2:]!=x.shape[2:]):
+            y = F.interpolate(y,size=x.shape[2:], mode='bilinear', align_corners=False)
+        if(idmask.shape[2:]!=x.shape[2:]):
+            idmask = F.interpolate(idmask.float(),size=x.shape[2:], mode='nearest').type(torch.int)
+        
+        x = x.reshape(x.shape[0],-1)
+        y = y.reshape(y.shape[0],-1)
+        idmask = idmask.reshape(idmask.shape[0],-1)
+
+        loss_every_sample = []
+        for i in range(x.shape[0]):
+            loss_every_sample.append(self.mse_loss_single(x[i],y[i],idmask[i]))
+
         return torch.stack(loss_every_sample, 0).mean()
