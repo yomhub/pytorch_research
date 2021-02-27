@@ -4,14 +4,46 @@ import torch.nn.init as init
 import torch.nn.functional as F
 from collections import Iterable
 
-def double_conv(in_ch, mid_ch, out_ch, padding=True):
+def double_conv(in_ch, mid_ch, out_ch, kernel_size=(1,3), padding=True):
+    if(isinstance(kernel_size,Iterable) and len(kernel_size)>=2):
+        k1,k2=int(kernel_size[0]),int(kernel_size[1])
+    else:
+        k1,k2=int(kernel_size),int(kernel_size)
+    
     return nn.Sequential(
-        nn.Conv2d(in_ch, mid_ch, kernel_size=1),
+        nn.Conv2d(in_ch, mid_ch, kernel_size=k1, padding=k2//2 if(padding)else 0),
         nn.BatchNorm2d(mid_ch),
         nn.ReLU(inplace=True),
-        nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1 if(padding)else 0),
+        nn.Conv2d(mid_ch, out_ch, kernel_size=k2, padding=k2//2 if(padding)else 0),
         nn.BatchNorm2d(out_ch),
         nn.ReLU(inplace=True)
+    )
+
+def gen_convs(ch_list:list, kernel_size=3, stride_size=1, padding=True, batchnor_f=nn.BatchNorm2d,activate_f=nn.ReLU):
+    if(isinstance(kernel_size,Iterable) and len(kernel_size)<len(ch_list)-1):
+        kernel_size = list(kernel_size)+[kernel_size[-1]]*(len(ch_list)-1-len(kernel_size))
+    else:
+        kernel_size = [kernel_size]*(len(ch_list)-1)
+    if(isinstance(stride_size,Iterable) and len(stride_size)<len(ch_list)-1):
+        stride_size = list(stride_size)+[stride_size[-1]]*(len(ch_list)-1-len(stride_size))
+    else:
+        stride_size = [stride_size]*(len(ch_list)-1)
+    
+    nets = []
+    for i in range(len(ch_list)-1):
+        nets.append(nn.Conv2d(ch_list[i],ch_list[i+1], kernel_size=kernel_size[i], stride=stride_size[i], padding=kernel_size[i]//2 if(padding)else 0))
+        if(batchnor_f):
+            nets.append(batchnor_f(ch_list[i+1]))
+        if(activate_f):
+            nets.append(activate_f(inplace=True))
+
+    return nn.Sequential(*nets)
+
+def conv_bn(in_ch, out_ch, **args):
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, **args),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU6(inplace=True)
     )
         
 def init_weights(modules,method:str = 'xavier_uniform'):

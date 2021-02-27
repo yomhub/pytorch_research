@@ -6,8 +6,8 @@ import torch.nn.functional as F
 from torchvision import models
 import numpy as np
 import math
-from lib.utils.net_hlp import get_final_ch,init_weights
-from collections import namedtuple,Iterable
+from lib.utils.net_hlp import get_final_ch,init_weights,double_conv,conv_bn
+from collections import namedtuple
 
 DEF_INTERVERTED_RESIDUAL_SETTING = [
     # t, c, n, s
@@ -25,32 +25,6 @@ DEF_INTERVERTED_RESIDUAL_SETTING = [
     # 1/32
     [6, 320, 1, 1], # block_6
     ]
-
-def double_conv(in_ch, mid_ch, out_ch, padding=True):
-    return nn.Sequential(
-        nn.Conv2d(in_ch, mid_ch, kernel_size=1),
-        nn.BatchNorm2d(mid_ch),
-        nn.ReLU(inplace=True),
-        nn.Conv2d(mid_ch, out_ch, kernel_size=3, padding=1 if(padding)else 0),
-        nn.BatchNorm2d(out_ch),
-        nn.ReLU(inplace=True)
-    )
-
-def conv_bn(inp, oup, stride,padding=True):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1 if(padding)else 0, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
-    )
-
-
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True)
-    )
-
 
 def make_divisible(v, divisor=8, min_value=None):
     """
@@ -71,16 +45,6 @@ def make_divisible(v, divisor=8, min_value=None):
         new_v += divisor
     return new_v
 
-class ConvBNReLU(nn.Sequential):
-    def __init__(self, in_planes, out_planes, kernel_size=3, stride=1, groups=1, norm_layer=None):
-        padding = (kernel_size - 1) // 2
-        if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
-        super(ConvBNReLU, self).__init__(
-            nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, groups=groups, bias=False),
-            norm_layer(out_planes),
-            nn.ReLU6(inplace=True)
-        )
 class InvertedResidual(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio, padding=True):
         super(InvertedResidual, self).__init__()
@@ -134,7 +98,7 @@ class MobileNetV2(nn.Module):
 
         # input_channel = make_divisible(input_channel * width_mult)  # first channel is always 32!
         self._last_channel = make_divisible(last_channel * width_mult) if width_mult > 1.0 else last_channel
-        self.features = [conv_bn(3, input_channel, 2, padding)]
+        self.features = [conv_bn(3, input_channel, stride=2, padding=padding)]
         # building inverted residual blocks
         for t, c, n, s in interverted_residual_setting:
             output_channel = make_divisible(c * width_mult) if t > 1 else c
@@ -149,7 +113,7 @@ class MobileNetV2(nn.Module):
         self._have_fc = bool(have_fc)
         if(self._have_fc):
             # building last several layers
-            self.features.append(conv_1x1_bn(input_channel, self._last_channel))
+            self.features.append(conv_bn(input_channel, self._last_channel, kernel_size=1, stride=1))
             self.classifier = nn.Linear(self._last_channel, n_class)
         else:
             self._last_channel = output_channel
