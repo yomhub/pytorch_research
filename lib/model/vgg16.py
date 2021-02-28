@@ -53,8 +53,8 @@ class VGG(nn.Module):
         self.include_final = bool(include_final)
         if(self.include_final):
             self.b5 = torch.nn.Sequential(
-                nn.Conv2d(get_final_ch(self.b4), 1024, kernel_size=1),
-                nn.BatchNorm2d(1024),
+                nn.Conv2d(get_final_ch(self.b4), 512, kernel_size=1),
+                nn.BatchNorm2d(512),
                 nn.ReLU(inplace=True),
             )
             cnt+=1

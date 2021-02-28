@@ -197,6 +197,7 @@ class BaseDataset(Dataset):
         return self.img_names[idx]
 
     def get_by_name(self, fname):
+        fname=fname.lower()
         for i,o in enumerate(self.img_names):
             if(o[-len(fname):].lower()==fname):
                 return self[i]
