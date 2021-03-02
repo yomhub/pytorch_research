@@ -24,7 +24,6 @@ from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
-from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.synthtext import SynthText

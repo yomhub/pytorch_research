@@ -14,13 +14,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.multiprocessing import Process
 # =================Local=======================
-from lib.model.craft import *
 from lib.model.siamfc import *
 from lib.loss.mseloss import *
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
-from lib.dataloader.icdar_video import ICDARV
-from lib.dataloader.minetto import Minetto
 from lib.dataloader.base import BaseDataset
 from lib.dataloader.synthtext import SynthText
 from lib.utils.img_hlp import *

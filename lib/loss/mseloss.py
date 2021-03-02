@@ -176,13 +176,23 @@ class MSE_2d_Loss(nn.Module):
         return torch.stack(loss_every_sample, 0).mean()
 
 class MASK_MSE_LOSS(nn.Module):
-    def __init__(self,positive_mult = 3,positive_th:float = 0.0, 
+    """
+    2D MSE loss with ID selection.
+    This finction will select N positive pixels and positive_mult*N negative pixels refer to the ID mask.
+
+    Args:
+        positive_mult: default 3.
+        positive_id: positive pixel id, default 2.
+        negative_id: negative pixel id, default 1.
+        ignore_id: ignored pixel id, default 0.
+
+    """
+    def __init__(self,positive_mult = 3,
         positive_id:int=2,negative_id:int = 1,ignore_id:int=0):
         super(MASK_MSE_LOSS, self).__init__()
         self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
 
         self.positive_mult = float(positive_mult)
-        self.positive_th = positive_th
 
         self.positive_id = int(positive_id)
         self.negative_id = int(negative_id)

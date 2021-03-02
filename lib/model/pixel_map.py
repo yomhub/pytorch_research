@@ -8,6 +8,7 @@ from lib.model.mobilenet_v2 import *
 from collections import namedtuple
 from lib.model.vgg16 import VGG,VGGUnet
 from lib.model.resnet import Resnet,ResnetUnet
+from lib.model.lstm import BottleneckLSTMCell
 from lib.utils.net_hlp import get_final_ch,init_weights
 
 class PIX_TXT(nn.Module):
@@ -275,6 +276,62 @@ class PIX_Unet(nn.Module):
             preds.append(self.box(feat.upb0))
 
         return torch.cat(preds,1),feat
+class PIXLSTM(nn.Module):
+    def __init__(self,basenet:str ='mobile', min_upc_ch:int =128, mask_ch:int = 2,
+        init_method:str='xavier_uniform',
+        **args):
+        """
+        Basenet Args:
+            basenet: basenet name
+            min_upc_ch: minimum up-convolution channel num
+            init_method: weight initial method
+            mask_ch: int, enable mask prediction if given
+            min_mask_ch: optional, minimum ch in conv. group
+        """
+        super(PIXLSTM, self).__init__()
+        basenet = basenet.lower()
+        if('vgg' in basenet):
+            # set padding=True because the input feature image size of LSTM is fixed
+            self.basenet = VGGUnet(basenet=basenet,min_upc_ch=min_upc_ch,padding=True,init_method=init_method,**args)
+        elif('resnet' in basenet):
+            self.basenet = ResnetUnet(basenet=basenet,min_upc_ch=min_upc_ch,init_method=init_method,**args)
+        else:
+            self.basenet = MobUNet(basenet=basenet,min_upc_ch=min_upc_ch,init_method=init_method,**args)
+        upch = self.basenet.out_channels
+
+        min_map_ch = args['min_mask_ch'] if('min_mask_ch' in args)else upch//8
+        mask_ch = args['mask_ch']
+        self.mask_pre_filter = double_conv(
+            upch,max(upch//2,min_map_ch),max(upch//4,min_map_ch),
+            kernel_size=(3,3))
+
+        self.final_predict_ch = max(upch//4,min_map_ch)
+        self.mask_predictor = double_conv(
+            self.final_predict_ch,max(self.final_predict_ch//2,min_map_ch),mask_ch,
+            kernel_size=(3,3))
+            
+        init_weights(self.mask_pre_filter.modules(),init_method)
+        init_weights(self.mask_predictor.modules(),init_method)
+            
+        self.lstm = BottleneckLSTMCell(input_channels=self.final_predict_ch,
+            hidden_channels=self.final_predict_ch)
+        self.lstmh,self.lstmc = None,None
+
+    def init_state(self,shape=(320,320),batch_size=1):
+        for k,v in self.state_dict().items():
+            d = v
+            break
+
+        self.lstmh = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+        self.lstmc = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+
+    def forward(self,x):
+        feat=self.basenet(x)
+        f_filt = self.mask_pre_filter(feat.upb0)
+        self.lstmh,self.lstmc = self.lstm(f_filt,self.lstmh,self.lstmc)
+        pred = self.mask_predictor(f_filt)
+
+        return pred,feat
 
 class VGG_PXMASK(nn.Module):
     def __init__(self,padding:bool=True,

@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 from collections import Iterable
+from thop import profile
+from torchsummary import summary as tsummary
 
 def double_conv(in_ch, mid_ch, out_ch, kernel_size=(1,3), padding=True):
     if(isinstance(kernel_size,Iterable) and len(kernel_size)>=2):
@@ -82,6 +84,23 @@ def get_final_ch(modules):
         if('weight' in bname and len(modules.state_dict()[bname].shape)==4):
             ch = modules.state_dict()[bname].shape[0]
     return ch
+
+def get_flops(module, input_size):
+    """
+    Calculate FLOPs and parameter size for given module and input size
+    """
+    for k,v in module.state_dict().items():
+        d = v
+        break
+    x = torch.zeros(input_size,dtype=d.dtype,device=d.device)
+    flops, params = profile(module, inputs=(x,))
+    return flops, params
+
+def summary(module,input_size=(3,640,640)):
+    for k,v in module.state_dict().items():
+        d = v
+        break
+    tsummary(module,input_size,device=d.device)
 
 class Swish_act(nn.Module):
     def __init__(self):
