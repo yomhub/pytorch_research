@@ -21,6 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from lib.model.pixel_map import PIX_Unet
 from lib.model.siamfc import SiameseNet
 from lib.loss.mseloss import *
+from lib.loss.logits import FocalLoss
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
@@ -35,6 +36,7 @@ from lib.config.train_default import cfg as tcfg
 from dirs import *
 
 DEF_MAX_TRACKING_BOX_NUMBER = 2
+DEF_MIN_INPUT_SIZE = 42
 
 def train(rank, world_size, args):
 
@@ -51,6 +53,9 @@ def train(rank, world_size, args):
         logger = None
     if(rank == 0):
         log = sys.stdout
+    args.task = args.task.lower()
+    DEF_TRAIN_MASK = 'mask' in args.task
+    DEF_TRAIN_TEXT = 'text' in args.task
 
     batch_size = args.batch
     torch.manual_seed(0)
@@ -68,6 +73,7 @@ def train(rank, world_size, args):
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     criterion_mask = MASK_MSE_LOSS().cuda(rank)
+    criterion_logit = FocalLoss().cuda(rank)
     criterion = MSE_2d_Loss(pixel_sum=False).cuda(rank)
 
     if(os.path.exists(args.opt)):
@@ -253,7 +259,7 @@ def train(rank, world_size, args):
 
             loss_dict['region_mask_regression']=criterion_mask(pred[:,0],bth_region_mask.cuda(non_blocking=True),bth_region_selection.cuda(non_blocking=True))
 
-            if(b_have_mask):
+            if(DEF_TRAIN_TEXT and b_have_mask):
                 # text mask regression
                 # find non-text positive region and ignore it
                 # generate selection mask, 0 for ignored, 1 for background, 2 for positive
@@ -289,32 +295,21 @@ def train(rank, world_size, args):
             for i in range(bth_image_np.shape[0]):
                 if(isinstance(bth_boxes,type(None)) or isinstance(bth_boxes[i],type(None))):
                     continue
+                loc_loger = []
                 # add random affine transform
                 imgt,boxt,M = cv_random_image_process(bth_image_np[i],bth_boxes[i],crop_to_box=False)
                 rect_boxt = np_polybox_minrect(boxt,'polyxy')
                 ws = np.linalg.norm(rect_boxt[:,0]-rect_boxt[:,1],axis=-1)
                 hs = np.linalg.norm(rect_boxt[:,0]-rect_boxt[:,3],axis=-1)
                 inds = np.argsort(ws*hs)[::-1]
-                slc_recbox = rect_boxt[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
-                # torch tensor
-                track_x = torch.from_numpy(np.expand_dims(imgt,0)).float().cuda(non_blocking=True)
-                track_xnor = torch_img_normalize(track_x).permute(0,3,1,2)
-                # run
-                track_pred,track_feat = model(track_xnor)
-                sml_slc_recbox = np_box_resize(slc_recbox,bth_image_np.shape[-3:-1],track_pred.shape[-2:],'polyxy')
-                
-                # search_pred, search_feat = model(xnor[i:i+1])
-                loc_loger = []
-                for bxi,smbx_rect in enumerate(sml_slc_recbox):
-                    try:
-                        # crop
-                        x1,y1 = smbx_rect[0].astype(np.uint8)
-                        x2,y2 = smbx_rect[2].astype(np.uint8)
-                        if(y1>y2):
-                            y1,y2=y2,y1
-                        if(x1>x2):
-                            x1,x2=x2,x1
-                        slc_feat = track_feat.upb0[:,:,y1:y2,x1:x2]
+                if(args.crop):
+                    slc_recbox = boxt[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
+                    for bxi,curbx in enumerate(slc_recbox):
+                        simg,Mcrop = cv_crop_image_by_polygon(imgt,curbx,w_min=DEF_MIN_INPUT_SIZE,h_min=DEF_MIN_INPUT_SIZE)
+                        track_x = torch.from_numpy(np.expand_dims(simg,0)).float().cuda(non_blocking=True)
+                        track_xnor = torch_img_normalize(track_x).permute(0,3,1,2)
+                        track_pred,track_feat = model(track_xnor)
+                        slc_feat = track_feat.upb0
                         if(args.fresize):
                             slc_feat = F.interpolate(slc_feat,size=(10,10), mode='bilinear', align_corners=False)
                         if(world_size>1):
@@ -322,17 +317,68 @@ def train(rank, world_size, args):
                             score = model.module.match_corr(slc_feat,feat.upb0[i:i+1])
                         else:
                             score = model.match_corr(slc_feat,feat.upb0[i:i+1])
-                        # score = score/torch.max(score)
                         target_box = bth_boxes[i][inds[bxi]]
                         target_box = np_box_resize(target_box,bth_image_np.shape[-3:-1],score.shape[2:],'polyxy')
-                        gt_score_np = cv_gen_gaussian_by_poly(target_box,score.shape[2:])
-                        gt_score = torch.from_numpy(np.expand_dims(gt_score_np,0)).float().cuda(non_blocking=True)
-                        tracking_loss_list.append(criterion(score,gt_score))
-                        loc_loger.append((boxt[inds[bxi]],gt_score_np,score[0,0].detach().cpu().numpy()))
-                    except Exception as e:
-                        if(rank==0):
-                            log.write("Err at file: {}, box: {}, err: {}.\n".format(sample['name'][i],smbx_rect,str(e)))
-                            log.flush()
+                        if(args.logit):
+                            gt_score_np = cv_gen_center_binary_mask_by_poly(target_box,score.shape[2:])
+                            gt_score_np = gt_score_np.reshape(1,1,gt_score_np.shape[0],gt_score_np.shape[1])
+                            gt_score = torch.from_numpy(gt_score_np).float().cuda(non_blocking=True)
+                            tracking_loss_list.append(criterion_logit(score,gt_score))
+                            loc_loger.append((boxt[inds[bxi]],torch.sigmoid(score[0,0]).detach().cpu().numpy()))
+                        else:
+                            gt_score_np = cv_gen_gaussian_by_poly(target_box,score.shape[2:])
+                            gt_score = torch.from_numpy(np.expand_dims(gt_score_np,0)).float().cuda(non_blocking=True)
+                            tracking_loss_list.append(criterion(score,gt_score))
+                            loc_loger.append((boxt[inds[bxi]],gt_score_np,score[0,0].detach().cpu().numpy()))
+
+                else:
+                    slc_recbox = rect_boxt[inds[:DEF_MAX_TRACKING_BOX_NUMBER]]
+                    # torch tensor
+                    track_x = torch.from_numpy(np.expand_dims(imgt,0)).float().cuda(non_blocking=True)
+                    track_xnor = torch_img_normalize(track_x).permute(0,3,1,2)
+                    # run
+                    track_pred,track_feat = model(track_xnor)
+                    sml_slc_recbox = np_box_resize(slc_recbox,bth_image_np.shape[-3:-1],track_pred.shape[-2:],'polyxy')
+                    
+                    # search_pred, search_feat = model(xnor[i:i+1])
+                    for bxi,smbx_rect in enumerate(sml_slc_recbox):
+                        try:
+                        # if(1):
+                            # crop
+                            x1,y1 = smbx_rect[0].astype(np.uint8)
+                            x2,y2 = smbx_rect[2].astype(np.uint8)
+                            if(y1>y2):
+                                y1,y2=y2,y1
+                            if(x1>x2):
+                                x1,x2=x2,x1
+                            x1,y1=max(x1,0),max(y1,0)
+                            slc_feat = track_feat.upb0[:,:,y1:y1+abs(y2-y1),x1:x1+abs(x2-x1)]
+                            if(args.fresize):
+                                slc_feat = F.interpolate(slc_feat,size=(10,10), mode='bilinear', align_corners=False)
+                            if(world_size>1):
+                                # multi-GPU function
+                                score = model.module.match_corr(slc_feat,feat.upb0[i:i+1])
+                            else:
+                                score = model.match_corr(slc_feat,feat.upb0[i:i+1])
+                            # score = score/torch.max(score)
+                            target_box = bth_boxes[i][inds[bxi]]
+                            target_box = np_box_resize(target_box,bth_image_np.shape[-3:-1],score.shape[2:],'polyxy')
+                            if(args.logit):
+                                gt_score_np = cv_gen_center_binary_mask_by_poly(target_box,score.shape[2:])
+                                gt_score_np = gt_score_np.reshape(1,1,gt_score_np.shape[0],gt_score_np.shape[1])
+                                gt_score = torch.from_numpy(gt_score_np).float().cuda(non_blocking=True)
+                                tracking_loss_list.append(criterion_logit(score,gt_score))
+                                loc_loger.append((boxt[inds[bxi]],torch.sigmoid(score[0,0]).detach().cpu().numpy()))
+                            else:
+                                gt_score_np = cv_gen_gaussian_by_poly(target_box,score.shape[2:])
+                                gt_score = torch.from_numpy(np.expand_dims(gt_score_np,0)).float().cuda(non_blocking=True)
+                                tracking_loss_list.append(criterion(score,gt_score))
+                                loc_loger.append((boxt[inds[bxi]],gt_score_np,score[0,0].detach().cpu().numpy()))
+                            
+                        except Exception as e:
+                            if(rank==0):
+                                log.write("Err at file: {}, box: {}, err: {}.\n".format(sample['name'][i],smbx_rect,str(e)))
+                                log.flush()
                 tracking_loger.append([imgt,loc_loger])
             if(tracking_loss_list):
                 loss_dict['tracking']=torch.stack(tracking_loss_list).mean()
@@ -393,12 +439,23 @@ def train(rank, world_size, args):
                             org_images.shape[0]*epoch+i,dataformats='HWC')
                     
                     track_img,loc_loger = tracking_loger[i]
-                    for j,(boxt,gt_score_np,pred_score_np) in enumerate(loc_loger):
-                        bx_track_img = cv_draw_poly(track_img,boxt)
-                        logger.add_image('Tracking: Org_img|track_img|GT_sc|Pred_sc',
-                            concatenate_images([org_images[i],bx_track_img,cv_heatmap(gt_score_np),cv_heatmap(pred_score_np)]),
-                            DEF_MAX_TRACKING_BOX_NUMBER*org_images.shape[0]*epoch+i*DEF_MAX_TRACKING_BOX_NUMBER+j,dataformats='HWC')
+                    if(args.logit):
+                        for j,(boxt,pred_score_np) in enumerate(loc_loger):
+                            bx_track_img = cv_draw_poly(track_img,boxt)
+                            np_one_hit_mask = (pred_score_np>0.5).astype(np.uint8)*255
+                            np_one_hit_mask = np.stack([np_one_hit_mask,np_one_hit_mask,np_one_hit_mask],axis=-1)
+                            logger.add_image('Tracking: Org_img|track_img|Pred_sc',
+                                concatenate_images([org_images[i],bx_track_img,np_one_hit_mask]),
+                                DEF_MAX_TRACKING_BOX_NUMBER*org_images.shape[0]*epoch+i*DEF_MAX_TRACKING_BOX_NUMBER+j,dataformats='HWC')
+                    else:
+                        for j,(boxt,gt_score_np,pred_score_np) in enumerate(loc_loger):
+                            bx_track_img = cv_draw_poly(track_img,boxt)
+                            logger.add_image('Tracking: Org_img|track_img|GT_sc|Pred_sc',
+                                concatenate_images([org_images[i],bx_track_img,cv_heatmap(gt_score_np),cv_heatmap(pred_score_np)]),
+                                DEF_MAX_TRACKING_BOX_NUMBER*org_images.shape[0]*epoch+i*DEF_MAX_TRACKING_BOX_NUMBER+j,dataformats='HWC')
                 logger.flush()
+
+    
 def init_process(rank, world_size, fn, args):
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     print("Process id {}/{} init.".format(rank,world_size))
@@ -411,9 +468,9 @@ if __name__ == '__main__':
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default='adag')
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--eval', help='Set --eval to enable eval.', action="store_true")
-    parser.add_argument('--net', help='Choose noework.', default='PIX_Unet_MASK_CLS_BOX')
+    parser.add_argument('--task', help='Tasks, string of mask, text, cls, box.', default='mask')
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
-    parser.add_argument('--tracker', type=str,help='Choose tracker.')
+    # parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
     parser.add_argument('--name', help='Name of task.')
@@ -422,21 +479,21 @@ if __name__ == '__main__':
     parser.add_argument('--learnrate', type=str, help='Learning rate.',default="0.001")
     parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--random', type=int, help='Set 1 to enable random change.',default=0)
-    parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
-    parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
+    # parser.add_argument('--bxrefine', help='Set --bxrefine to enable box refine.', action="store_true")
+    # parser.add_argument('--genmask', help='Set --genmask to enable generated mask.', action="store_true")
     parser.add_argument('--have_fc', help='Set --have_fc to include final level.', action="store_true")
     parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
+    parser.add_argument('--logit', help='Set --logit to use logit loss function.', action="store_true")
+    parser.add_argument('--crop', help='Set --crop to use croped image as input when training.', action="store_true")
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
-    args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
+    # args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
 
     # args.debug = True
-    # args.random=True
+    # args.logit = True
     # args.batch=2
     # args.load = "/BACKUP/yom_backup/saved_model/mask_only_pxnet.pth"
-    # args.net = 'PIX_Unet_box'
-    # args.dataset = 'msra'
     # args.eval=True
 
     gpus = torch.cuda.device_count()
@@ -459,14 +516,16 @@ if __name__ == '__main__':
         if(not args_load and last_save):
             args.load = last_save
         summarize = "Start when {}.\n".format(datetime.now().strftime("%Y%m%d-%H%M%S")) +\
-            "Task: {}/{}\n".format(taskid+1,total_tasks)+\
+            "Task name: {}\n".format(args.task)+\
+            "Task number: {}/{}\n".format(taskid+1,total_tasks)+\
             "Working DIR: {}\n".format(DEF_WORK_DIR)+\
             "Running with: \n"+\
             "\t Epoch size: {},\n\t Batch size: {}.\n".format(args.epoch,args.batch)+\
-            "\t Network: {}.\n".format(args.net)+\
             "\t Base network: {}.\n".format(args.basenet)+\
             "\t Include final level: {}.\n".format('Yes' if(args.have_fc)else 'No')+\
             "\t Optimizer: {}.\n".format(cur_opt)+\
+            "\t Logit: {}.\n".format('Yes' if(args.logit)else 'No')+\
+            "\t Crop tracking: {}.\n".format('Yes' if(args.crop)else 'No')+\
             "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
             "\t Tracking feature resize: {}.\n".format('Yes' if(args.fresize)else 'No')+\
             "\t Dataset: {}.\n".format(cur_dataset)+\
@@ -474,9 +533,10 @@ if __name__ == '__main__':
             "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
             "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
             "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-            "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
-            "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
             "========\n\n"
+            # "\t Box refine: {}.\n".format('Yes' if(args.bxrefine)else 'No')+\
+            # "\t Network: {}.\n".format(args.net)+\
+            # "\t Generated mask: {}.\n".format('Yes' if(args.genmask)else 'No')+\
             # "\t Train mask: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_MASK)else 'No')+\
             # "\t Train classifier: {}.\n".format('Yes' if(DEF_BOOL_TRAIN_CE)else 'No')+\
         sys.stdout.write(summarize)

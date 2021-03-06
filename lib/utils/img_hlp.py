@@ -211,6 +211,17 @@ def np_polybox_rotate(cv_polybox,M):
     ret = np.moveaxis(ret,0,-1)
     return ret if(not len2)else ret[0]
 
+def np_polybox_linear_movement(sp,ep,mov_fact):
+    """
+    Calculate linear movement of polybox
+    Args:
+        sp,ep: coordinate of start point and end point, (k,2)
+        mov_fact: factor in [0,1]
+    Return:
+        polybox (k,2): (ep-sp)*mov_fact + sp
+    """
+    return (ep-sp)*mov_fact + sp
+
 def np_apply_matrix_to_pts(M,pts):
     """
     Apply transform matrix to points
@@ -527,6 +538,44 @@ def cv_gen_binary_mask_by_poly(cv_box,img_size,default_value:int=0,default_fill:
     for o,v in zip(cv_box,box_fill_value_list):
         draw.polygon(o.reshape(-1).tolist(), outline=v, fill=v)
     return np.array(blmask)
+
+def cv_gen_center_binary_mask_by_poly(cv_box,img_size,default_value:int=0,default_fill:int=1,box_fill_value_list:list=None,
+    center_size=2):
+    """
+    Generate binarized center mask by polygon
+    Args:
+        cv_box: ((n),k,2) polygon box 
+        img_size: (y,x) output mask shape
+        default_value: initial mask value
+        default_fill: default fill value for each box
+        box_fill_value_list: fill value for each box, if given
+        center_size: binarized center size, N or (N,N) in (y,x)
+    Return:
+        mask: (y,x) array
+    """
+    if(not isinstance(center_size,Iterable)):
+        center_size = (center_size,center_size)
+    if(len(cv_box.shape)==2):
+        cv_box = np.expand_dims(cv_box,0)
+    blmask = np.zeros(img_size,dtype=np.int16)
+    if(not box_fill_value_list or not isinstance(box_fill_value_list,Iterable)):
+        box_fill_value_list = [default_fill]*cv_box.shape[0]
+    elif(len(box_fill_value_list)<cv_box.shape[0]):
+        box_fill_value_list+=[default_fill]*(cv_box.shape[0]-len(box_fill_value_list))
+
+    for o,oid in zip(cv_box,box_fill_value_list):
+        cx,cy = np.mean(o,axis=0)
+        dwi_cx,dwi_cy = int(cx),int(cy)
+
+        if(center_size[1]//2>0):
+            dwi_cx=max(0,dwi_cx-center_size[1]//2+1)
+        upi_cx=max(1,center_size[1]-center_size[1]//2)+dwi_cx
+        if(center_size[0]//2>0):
+            dwi_cy=max(0,dwi_cy-center_size[0]//2+1)
+        upi_cy=max(1,center_size[0]-center_size[0]//2)+dwi_cy
+
+        blmask[dwi_cy:upi_cy,dwi_cx:upi_cx] = oid
+    return blmask
 
 def cv_refine_box_by_binary_map(cv_box,binary_map,points_number:int=4):
     """
@@ -960,6 +1009,12 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.3,region_mean_spl
     """
     img_h, img_w = scoremap.shape[0], scoremap.shape[1]
     scoremap = scoremap.reshape((img_h, img_w))
+    kernel = np.ones((3,3),dtype=np.uint8)
+
+    scoremap = (scoremap*255).astype(np.uint8)
+    scoremap = cv2.erode(scoremap,kernel,iterations=2)
+    scoremap = cv2.dilate(scoremap,kernel,iterations=2)
+    scoremap = scoremap.astype(np.float32)/255
 
     nLabels, label_map, states, centroids = cv2.connectedComponentsWithStats(
         (scoremap>=score_th).astype(np.uint8),
@@ -967,7 +1022,6 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.3,region_mean_spl
     
     det = []
     mapper = []
-    kernel = np.ones((3,3),dtype=np.uint8)
     for k in range(1, nLabels):
         # size filtering
         rsize = states[k, cv2.CC_STAT_AREA]

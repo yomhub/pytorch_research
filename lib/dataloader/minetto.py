@@ -47,6 +47,15 @@ def default_collate_fn(batch):
     return batch[0]
 
 class Minetto():
+    """
+    Sample dict:
+        'video': opencv video object
+        'width','height': width, height
+        'gt': dictionary, key is frame id start from 0
+            item is box array with shape (k,n) where n is (box_id,coordinates)
+        'txt': dictionary, key is frame id start from 0
+            item is k lenth list
+    """
     def __init__(self, vdo_dir, out_box_format='polyxy',include_name=True):
         self._vdo_dir = vdo_dir
         self._names = [o for o in os.listdir(self._vdo_dir) if os.path.exists(os.path.join(self._vdo_dir,o,'PNG'))]
