@@ -563,6 +563,8 @@ def train(rank, world_size, args):
         if(args.eval):
             ovlap_th = 0.5
             recall_list,precision_list = [],[]
+            recall_list_2x,precision_list_2x = [],[]
+            recall_list_4x,precision_list_4x = [],[]
             mask_loss_list = []
             mask_ce_loss_list = []
             mask_box_map_list = []
@@ -583,6 +585,21 @@ def train(rank, world_size, args):
                     eva_pred,eva_feat = model(eva_xnor)
                     eva_pred_np = eva_pred.cpu().numpy()
                     eva_small_boxes = [np_box_resize(o,eva_bth_x.shape[1:3],eva_pred.shape[2:4],'polyxy') if(not isinstance(o,type(None)) and o.shape[0]>0)else None for o in eva_boxes]
+                    # resized feature proformance 
+                    if(DEF_BOOL_TRAIN_MASK):
+                        fupb0 = eva_feat.upb0
+                        fupb0_2x = F.interpolate(fupb0, size=(fupb0.shape[-2]//2,fupb0.shape[-1]//2), mode='bilinear', align_corners=False)
+                        fupb0_2x = F.interpolate(fupb0_2x, size=fupb0.shape[-2:], mode='bilinear', align_corners=False)
+                        fupb0_4x = F.interpolate(fupb0, size=(fupb0.shape[-2]//4,fupb0.shape[-1]//4), mode='bilinear', align_corners=False)
+                        fupb0_4x = F.interpolate(fupb0_4x, size=fupb0.shape[-2:], mode='bilinear', align_corners=False)
+                        if(world_size>1):
+                            eva_pred_2x = model.module.mask(fupb0_2x)
+                            eva_pred_4x = model.module.mask(fupb0_4x)
+                        else:
+                            eva_pred_2x = model.mask(fupb0_2x)
+                            eva_pred_4x = model.mask(fupb0_4x)
+                        eva_pred_2x_np = eva_pred_2x.cpu().numpy()
+                        eva_pred_4x_np = eva_pred_4x.cpu().numpy()
                     # prepare data
                     if(DEF_BOOL_TRAIN_CE):
                         # process hold batch to speed up
@@ -594,6 +611,8 @@ def train(rank, world_size, args):
                         if(DEF_BOOL_TRAIN_MASK):
                             log_images['image']=cv2.resize(eva_bth_x[0].numpy(),(eva_pred.shape[3],eva_pred.shape[2]))
                             log_images['region_mask']=cv_heatmap(eva_pred_np[0,DEF_START_MASK_CH+2])
+                            log_images['region_mask_2x']=cv_heatmap(eva_pred_2x_np[0,DEF_START_MASK_CH+2])
+                            log_images['region_mask_4x']=cv_heatmap(eva_pred_4x_np[0,DEF_START_MASK_CH+2])
                             if(DEF_BOOL_TRAIN_TXT_MASK):
                                 tmp = (eva_pred_np[0,DEF_START_MASK_CH+0]*255).astype(np.uint8)
                                 log_images['text_mask']=np.stack([tmp,tmp,tmp],-1)
@@ -667,11 +686,7 @@ def train(rank, world_size, args):
                         if(DEF_BOOL_TRAIN_MASK):
                             eva_region_np = eva_pred_np[bthi,DEF_START_MASK_CH+2]
                             eva_region_np[eva_region_np<0.2]=0
-                            eva_region_np = (eva_region_np*255).astype(np.uint8)
-                            eva_region_np = cv2.erode(eva_region_np,kernel,iterations=2)
-                            eva_region_np = cv2.dilate(eva_region_np,kernel,iterations=2)
-                            eva_region_np = eva_region_np.astype(np.float32)/255
-
+                            # original resolution
                             det_boxes, label_mask, label_list = cv_get_box_from_mask(eva_region_np,region_mean_split=True)
                             if(det_boxes.shape[0]>0):
                                 if(log_images_max_cnt>0 and rank==0):
@@ -685,6 +700,32 @@ def train(rank, world_size, args):
                                     recall=mask_recall
                             else:
                                 mask_precision,mask_recall,mask_fscore=0.0,0.0,0.0
+
+                            # 2x resolution
+                            eva_region_2x_np = eva_pred_2x_np[bthi,DEF_START_MASK_CH+2]
+                            eva_region_2x_np[eva_region_2x_np<0.2]=0
+                            det_boxes_2x, _, _ = cv_get_box_from_mask(eva_region_2x_np,region_mean_split=True)
+                            if(det_boxes_2x.shape[0]>0):
+                                det_boxes_2x = np_box_resize(det_boxes_2x,eva_pred_2x_np.shape[-2:],eva_image.shape[:-1],'polyxy')
+                                _,precision_2x,reacll_2x = cv_box_match(det_boxes_2x,fgbxs,bgbxs,ovth=ovlap_th)
+                                recall_list_2x.append(reacll_2x)
+                                precision_list_2x.append(precision_2x)
+                            else:
+                                recall_list_2x.append(0.0)
+                                precision_list_2x.append(0.0)
+
+                            # 4x resolution
+                            eva_region_4x_np = eva_pred_4x_np[bthi,DEF_START_MASK_CH+2]
+                            eva_region_4x_np[eva_region_4x_np<0.2]=0
+                            det_boxes_4x, _, _ = cv_get_box_from_mask(eva_region_4x_np,region_mean_split=True)
+                            if(det_boxes_4x.shape[0]>0):
+                                det_boxes_4x = np_box_resize(det_boxes_4x,eva_pred_4x_np.shape[-2:],eva_image.shape[:-1],'polyxy')
+                                _,precision_4x,reacll_4x = cv_box_match(det_boxes_4x,fgbxs,bgbxs,ovth=ovlap_th)
+                                recall_list_4x.append(reacll_4x)
+                                precision_list_4x.append(precision_4x)
+                            else:
+                                recall_list_4x.append(0.0)
+                                precision_list_4x.append(0.0)
 
                         if(DEF_BOOL_TRAIN_CE):
                             ce_map = eva_bth_bin_ce_map[bthi].astype(np.float32)
@@ -792,6 +833,19 @@ def train(rank, world_size, args):
                     logger.add_scalar('Eval/recall', recall_np, epoch)
                     logger.add_scalar('Eval/precision', precision_np, epoch)
                     logger.add_scalar('Eval/F-score',f_np, epoch)
+                    if(DEF_BOOL_TRAIN_MASK):
+                        r2x = np.mean(np.array(recall_list_2x,dtype=np.float32))
+                        p2x = np.mean(np.array(precision_list_2x,dtype=np.float32))
+                        f2x = 2*r2x*p2x/(r2x+p2x) if(r2x+p2x>0)else 0.0
+                        logger.add_scalar('Eval/recall_2x', r2x, epoch)
+                        logger.add_scalar('Eval/precision_2x', p2x, epoch)
+                        logger.add_scalar('Eval/F-score_2x',f2x, epoch)
+                        r2x = np.mean(np.array(recall_list_4x,dtype=np.float32))
+                        p2x = np.mean(np.array(precision_list_4x,dtype=np.float32))
+                        f2x = 2*r2x*p2x/(r2x+p2x) if(r2x+p2x>0)else 0.0
+                        logger.add_scalar('Eval/recall_4x', r2x, epoch)
+                        logger.add_scalar('Eval/precision_4x', p2x, epoch)
+                        logger.add_scalar('Eval/F-score_4x',f2x, epoch)
                     if(mask_loss_list):
                         logger.add_scalar('Eval/global text map',np.mean(np.stack(mask_loss_list)), epoch)
                     if(mask_ce_loss_list):
