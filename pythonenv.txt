@@ -9,3 +9,5 @@ datetime
 argparse
 tqdm
 ffmpeg-python
+thop
+torchsummary
