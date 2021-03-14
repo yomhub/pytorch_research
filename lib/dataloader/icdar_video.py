@@ -83,6 +83,12 @@ class ICDARV():
     def get_name(self, index):
         return self._names[index]
 
+    def get_by_name(self, fname):
+        fname=fname.lower()
+        for i,o in enumerate(self._names):
+            if(o[-len(fname):].lower()==fname):
+                return self[i]
+        return None
 
 from lib.utils.img_hlp import cv_crop_image_by_bbox
 class FrameGen():
