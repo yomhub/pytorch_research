@@ -277,15 +277,15 @@ class PIX_Unet(nn.Module):
 
         return torch.cat(preds,1),feat
 class PIXLSTM(nn.Module):
-    def __init__(self,basenet:str ='mobile', min_upc_ch:int =128, mask_ch:int = 2,
+    def __init__(self, mask_ch:int = 2, basenet:str ='mobile', min_upc_ch:int =128,
         init_method:str='xavier_uniform',
         **args):
         """
         Basenet Args:
+            mask_ch: int, enable mask prediction if given
             basenet: basenet name
             min_upc_ch: minimum up-convolution channel num
             init_method: weight initial method
-            mask_ch: int, enable mask prediction if given
             min_mask_ch: optional, minimum ch in conv. group
         """
         super(PIXLSTM, self).__init__()
@@ -300,7 +300,7 @@ class PIXLSTM(nn.Module):
         upch = self.basenet.out_channels
 
         min_map_ch = args['min_mask_ch'] if('min_mask_ch' in args)else upch//8
-        mask_ch = args['mask_ch']
+
         self.mask_pre_filter = double_conv(
             upch,max(upch//2,min_map_ch),max(upch//4,min_map_ch),
             kernel_size=(3,3))
@@ -324,6 +324,11 @@ class PIXLSTM(nn.Module):
 
         self.lstmh = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
         self.lstmc = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
+
+        if(self.lstm.Wci is None):
+            self.lstm.Wci = nn.Parameter(torch.rand(1, self.final_predict_ch, shape[0], shape[1],dtype=d.dtype),requires_grad=True).to(d.device)
+            self.lstm.Wcf = nn.Parameter(torch.rand(1, self.final_predict_ch, shape[0], shape[1],dtype=d.dtype),requires_grad=True).to(d.device)
+            self.lstm.Wco = nn.Parameter(torch.rand(1, self.final_predict_ch, shape[0], shape[1],dtype=d.dtype),requires_grad=True).to(d.device)
 
     def forward(self,x):
         feat=self.basenet(x)

@@ -80,6 +80,7 @@ class Minetto():
             # 'fps': fps,
             'width':width,
             'height':height,
+            'name':self._names[idx],
             }
 
         if(os.path.exists(os.path.join(self._vdo_dir,self._names[idx],"groundtruth.xml"))):

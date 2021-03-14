@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,6 +9,7 @@ from datetime import datetime
 from skimage import io, transform
 from collections import OrderedDict
 import cv2
+from datetime import datetime
 
 def str2time(instr):
     ymd,hms=instr.split('-')
@@ -176,11 +178,13 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
 
     return np.concatenate(rets,ax)
 
-
-if __name__ == "__main__":
-    img = io.imread("D:\\development\\workspace\\Dataset\\ICDAR2015\\ch4_test_images\\img_2.jpg")
-    
-    mask = np.random.uniform(0.0,1.0,(640,640))
-    fig,ax = plt_3d_projection(mask,img)
-    plt.show(fig)
-    pass
+def print_epoch_log(epoch,total_epoch,loss,timeusg=None,**args):
+    sys.stdout.write('Epoch [{}/{}], Loss: {:.4f}\n'.format(epoch + 1, total_epoch,loss))
+    if(timeusg):
+        try:                         
+            sys.stdout.write("\tTime usage: {} Day {} Second.\n".format(timeusg.days,timeusg.seconds))
+        except:
+            sys.stdout.write("\tTime usage: {} Day {} Second.\n".format(timeusg.day,timeusg.second))
+    for vname,v in args.items():
+        sys.stdout.write("\t{}: {}.\n".format(vname,v))
+    sys.stdout.flush()
