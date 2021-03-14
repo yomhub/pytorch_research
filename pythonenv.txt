@@ -2,8 +2,6 @@ numpy
 scikit-image
 opencv-python
 Polygon3
-torch===1.5.1 torchvision===0.6.1 -f https://download.pytorch.org/whl/torch_stable.html
-torchutils
 shapely
 datetime
 argparse
@@ -11,3 +9,6 @@ tqdm
 ffmpeg-python
 thop
 torchsummary
+torch
+torchutils
+tensorboard

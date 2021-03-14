@@ -151,6 +151,7 @@ def train(rank, world_size, args):
         DEF_BOOL_TRACKING = True
 
     if(args.load and os.path.exists(args.load)):
+        log.write("Load parameters from {}.\n".format(args.load))
         model.load_state_dict(copyStateDict(torch.load(args.load)))
     model = model.cuda(rank)
 
