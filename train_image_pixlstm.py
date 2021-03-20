@@ -14,6 +14,7 @@ import cv2
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
+from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
@@ -25,7 +26,6 @@ from dirs import *
 
 DEF_MOD_RATE = 0.3
 DEF_WAVE_FUNC = lambda x: np.cos(2*x*np.pi)*DEF_MOD_RATE+1-DEF_MOD_RATE
-DEF_FLUSH_COUNT = -1
 DEF_LSTM_STATE_SIZE=(322,322)
 
 def train(args):
@@ -126,13 +126,17 @@ def train(args):
     
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                batch_size=1,
-                                               shuffle=False,
+                                               shuffle=True,
                                                num_workers=0,
                                                pin_memory=True,
                                                collate_fn=train_dataset.default_collate_fn,)
     for epoch in range(args.epoch):
         for stepi, sample in enumerate(train_loader):
-            vdo = sample['video']
+            x = sample['image']
+            image = x.numpy()
+            step_sample_list = []
+            for fromei in range(args.maxstep):
+                
             frame_bx_dict = sample['gt']
             p_keys = list(frame_bx_dict.keys())
             p_keys.sort()
@@ -253,13 +257,12 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
     # LSTM specific
-    parser.add_argument('--linear', help='Set --linear to enbable linearly box plugin.', action="store_true")
-    parser.add_argument('--skiprate', type=int, help='Fram skip rate.',default=3)
+    parser.add_argument('--maxstep', type=int, help='Max lenth of single image.',default=5)
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
     args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
-
+    args.maxstep = max(args.maxstep,3)
     # args.debug = True
 
     list_opt = args.opt.split(',')
@@ -289,12 +292,11 @@ if __name__ == '__main__':
             "\t Optimizer: {}.\n".format(cur_opt)+\
             "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\
             "\t Dataset: {}.\n".format(cur_dataset)+\
+            "\t Move step per-image: {}.\n".format(args.maxstep)+\
             "\t Init learning rate: {}.\n".format(cur_learnrate)+\
             "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
             "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
             "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-            "\t Skip rate: {}.\n".format(args.skiprate)+\
-            "\t State flush count: {}.\n".format(DEF_FLUSH_COUNT)+\
             "\t Linear: {}.\n".format('Yes' if(args.linear)else 'No')+\
             "========\n"
         print(summarize)

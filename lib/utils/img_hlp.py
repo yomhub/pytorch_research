@@ -2071,6 +2071,75 @@ def cv_random_image_process(image:np.ndarray,poly_xy:np.ndarray=None,
         poly_xy = None
 
     return image,poly_xy,M
+
+def cv_gen_trajectory(image:np.ndarray,total_step:int,
+    poly_xy=None,fluctuation:float=0.1,**args
+    ):
+    """
+    Generate image sequence from trajectory.
+    Args:
+        image: input image
+        total_step: number of key frame in trajectory
+        poly_xy (optional): poly xy boxes with shape ((N),k,2)
+        fluctuation: enable fluctuation when dividing trajectory
+            range in [-fluctuation,+fluctuation]+1.0
+        ==trajectory args==
+        rotate: float of final rotation angle
+        shift: (y,x) shift or single float 
+        scale: (y,x) scale or single float
+    """
+    org_image_size=image.shape[:-1]
+    Ms = [np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)]
+    image_list = [image]
+    rotate = args['rotate'] if('rotate' in args)else 0.0
+    shift = args['shift'] if('shift' in args)else (0,0)
+    scale = args['scale'] if('scale' in args)else (0,0)
+    fluctuation = min(0.3,abs(fluctuation))
+    poly_xy_list = None
+    if(not isinstance(shift,Iterable)):
+        shift = (shift,shift)
+    if(not isinstance(scale,Iterable)):
+        scale = (scale,scale)
+    if(not isinstance(poly_xy,type(None))):
+        poly_xy_list = [np.expand_dims(poly_xy,0) if(len(poly_xy.shape)==2)else poly_xy]
+    scale_det = (scale[0]-1,scale[1]-1)
+    seed = np.random
+
+    for stepi in range(total_step-1):
+        Mlst = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
+        if('rotate' in args):
+            f = (stepi+1)/(total_step-1)
+            if(fluctuation>0 and (stepi+1)!=(total_step-1)):
+                f*=((seed.random()-0.5)*2*fluctuation+1)
+            Mr = cv2.getRotationMatrix2D(((org_image_size[1]-1)/2,(org_image_size[0]-1)/2), rotate*f, 1.0)
+            Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=Mr.dtype)),0)
+            Mlst = np.dot(Mr,Mlst)
+
+        if('scale' in args):
+            fx = (stepi+1)/(total_step-1)
+            fy = fx
+            if(fluctuation>0 and (stepi+1)!=(total_step-1)):
+                fx*=((seed.random()-0.5)*2*fluctuation+1)
+                fy*=((seed.random()-0.5)*2*fluctuation+1)
+            Msc = np.array([[scale_det[1]*fx+1,0,0],[0,scale_det[0]*fy+1,0],[0,0,1]],dtype=Mlst.dtype)
+            M = np.dot(Msc,Mlst)
+
+        if('shift' in args):
+            fx = (stepi+1)/(total_step-1)
+            fy = fx
+            if(fluctuation>0 and (stepi+1)!=(total_step-1)):
+                fx*=((seed.random()-0.5)*2*fluctuation+1)
+                fy*=((seed.random()-0.5)*2*fluctuation+1)
+            Mt = np.array([[1,0,shift[1]*fx],[0,1,shift[0]*fy],[0,0,1]],dtype=Mlst.dtype)
+            Mlst = np.dot(Mt,Mlst)
+        
+        Ms.append(Mlst)
+        image_list.append(cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1]))
+        if(not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):
+            poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
+
+    return image_list,poly_xy_list,Ms
+
 # 
 # ===============================================
 # ==================== Class ====================
