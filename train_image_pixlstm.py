@@ -71,7 +71,7 @@ def train(args):
             os.path.join(DEF_TTT_DIR,'gt_pixel','train'),
             os.path.join(DEF_TTT_DIR,'gt_txt','train'),
             image_size=image_size,
-            # include_bg=True,
+            include_bg=True,
             )
         eval_dataset = Total(
             os.path.join(DEF_TTT_DIR,'images','test'),
@@ -130,97 +130,99 @@ def train(args):
                                                num_workers=0,
                                                pin_memory=True,
                                                collate_fn=train_dataset.default_collate_fn,)
+    _,d = next(iter(model.state_dict().items()))
+    model_device,model_dtype = d.device,d.dtype
+    total_step = len(train_loader)
     for epoch in range(args.epoch):
         for stepi, sample in enumerate(train_loader):
             x = sample['image']
-            image = x.numpy()
-            step_sample_list = []
-            for fromei in range(args.maxstep):
-                
-            frame_bx_dict = sample['gt']
-            p_keys = list(frame_bx_dict.keys())
-            p_keys.sort()
-            bxid_dict = defaultdict(list)
-            for fm in frame_bx_dict:
-                for bx in frame_bx_dict[fm]:
-                    bxid_dict[int(bx[0])].append((fm,bx[1:].reshape(-1,2)))
-            bxid_appear_dict = {bxid:None for bxid in bxid_dict}
+            bth_image = x.numpy()
+            bth_boxes = sample['box']
+            bth_sample = []
+            seed = np.random
+            for bthi in range(bth_image.shape[0]):
+                image,box = bth_image[bthi],bth_boxes[bthi]
+                rotate = args.maxstep * args.rotatev *(seed.random()-0.5)*2.2
+                shiftx = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
+                shifty = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
+                scalex = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
+                scaley = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
+                image_list,poly_xy_list,Ms = cv_gen_trajectory(image,args.maxstep,box,
+                    rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex))
 
-            model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
-            fm_cnt,proc_cnt = 0,0
-            try:
-            # if(1):
-                while(vdo.isOpened()):
-                    ret, x = vdo.read()
-                    if(ret==False):
-                        break
-                    if(fm_cnt<p_keys[0] or fm_cnt%args.skiprate):
-                        # skip the initial non text frams
-                        fm_cnt+=1
-                        continue
-                    
-                    x = cv2.resize(x,image_size[::-1])
-                    xnor = torch.from_numpy(np.expand_dims(x,0)).float().cuda()
-                    xnor = torch_img_normalize(xnor).permute(0,3,1,2)
+                if('text' in sample and '#' in sample['text'][bthi]):
+                    gt_list = []
+                    weight_mask_list = []
+                    txt = sample['text'][bthi]
+                    bgid = [i for i,o in enumerate(txt) if(o=='#')]
+                    for poly_xy in poly_xy_list:
+                        bgbxs = np.stack([o for i,o in enumerate(poly_xy) if(i in bgid)],axis=0)
+                        fgbxs = np.stack([o for i,o in enumerate(poly_xy) if(i not in bgid)],axis=0)
+                        weight_mask_list.append(cv_gen_binary_mask_by_poly(bgbxs,image_size,default_value=1,default_fill=0))
+                        gt_list.append(cv_gen_gaussian_by_poly(fgbxs,image_size))
+                else:
+                    gt_list = [cv_gen_gaussian_by_poly(o,image_size) for o in poly_xy_list]
+                    weight_mask_list = [np.ones(image_size,dtype=np.float32)]*len(gt_list)
+                bth_sample.append(image_list,poly_xy_list,gt_list,weight_mask_list)
+            
+            
+            dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
+            model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
+            model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
+            model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
+            bth_state = [(
+                # lstmh
+                torch.zeros(dshape,dtype = model_dtype, device=model_device),
+                # lstmc
+                torch.zeros(dshape,dtype = model_dtype, device=model_device),
+                ) for _ in raneg(len(bth_sample))]
+            
+            loss_dict = {}
+            bth_avg_loss = 0.0
+            bth_pred_region = []
+            for (lstmh,lstmc,Wci,Wcf,Wco),(image_list,poly_xy_list,gt_list,weight_mask_list) in zip(bth_state,bth_sample):
+                x_sequence = torch.tensor(image_list,dtype = model_dtype, device=model_device)
+                y = torch.tensor(gt_list,dtype = model_dtype, device=model_device)
+                y_mask = torch.tensor(weight_mask_list,dtype = model_dtype, device=model_device)
 
-                    # Gen current mask
-                    if(fm_cnt in frame_bx_dict):
-                        bxids_boxes = frame_bx_dict[fm_cnt]
-                        bxids = bxids_boxes[:,0].astype(np.uint16).tolist()
-                        boxes = bxids_boxes[:,1:].reshape(bxids_boxes.shape[0],-1,2)
-                        region_mask_np = cv_gen_gaussian_by_poly(boxes,x.shape[:-1])
+                xnor = torch_img_normalize(x_sequence)
+                xnor = xnor.permute(0,3,1,2)
+                avg_loss = 0.0
+                model.lstmh,model.lstmc=lstmh,lstmc
+                pred_region = []
+                for framei in raneg(xnor.shape[0]):
+                    pred,feat = model(xnor[framei:framei+1])
+                    avg_loss+=criterion_mask(pred[:,0:1],y[framei:framei+1],y_mask[framei:framei+1])
+                    pred_region.append(pred[0,0].to('cpu').detach().numpy())
 
-                    else:
-                        bxids = []
-                        region_mask_np = np.zeros(x.shape[:-1],dtype=np.float32)
+                bth_pred_region.append(pred_region)
+                avg_loss/=xnor.shape[0]
+                bth_avg_loss+=avg_loss
 
-                    assert isinstance(region_mask_np,np.ndarray)
+            loss_dict['region_loss']=bth_avg_loss/len(bth_sample)
 
-                    if(args.linear):
-                        # Gen previous mask nad apply weight decay
-                        rmlist = []
-                        for bxid in bxid_appear_dict:
-                            if(fm_cnt>=bxid_dict[bxid][-1][0]):
-                                rmlist.append(bxid)
-                            else:
-                                sp_box,ep_box = bxid_dict[bxid][0][1],bxid_dict[bxid][-1][1]
-                                sp_fm,ep_fm = bxid_dict[bxid][0][0],bxid_dict[bxid][-1][0]
-                                for i in range(len(bxid_dict[bxid])-1):
-                                    if(bxid_dict[bxid][i][0]<=fm_cnt and bxid_dict[bxid][i+1][0]>=fm_cnt):
-                                        sp_box,ep_box = bxid_dict[bxid][i][1],bxid_dict[bxid][i+1][1]
-                                        sp_fm,ep_fm = bxid_dict[bxid][i][0],bxid_dict[bxid][i+1][0]
-                                        break
-                                mov_fact = (fm_cnt-sp_fm)/(ep_fm-sp_fm)
-                                cur_box = (ep_box-sp_box)*mov_fact + sp_box
-                                cur_box = cur_box.reshape(-1,2)
-                                mov_mask = cv_gen_gaussian_by_poly(cur_box,x.shape[:-1])
-                                mov_mask *= DEF_WAVE_FUNC(mov_fact)
+            loss = 0.0
+            for keyn,value in loss_dict.items():
+                loss+=value
 
-                            region_mask_np+=mov_mask
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-                    pred,feat = model(xnor)
-                    loss_dict = {}
-                    region_mask = torch.from_numpy(region_mask_np.reshape(1,1,region_mask_np.shape[0],region_mask_np.shape[1])).float().cuda()
-                    loss_dict['region_loss'] = criterion_mask(pred[:,0:1],region_mask)
+            if(logger):
+                logger.add_scalar('Loss/total loss', loss.item(), epoch*total_step+stepi)
+                for keyn,value in loss_dict.items():
+                    logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+stepi)
+                if(args.lr_decay):
+                    logger.add_scalar('LR rate', optimizer.param_groups[0]['lr'], epoch*total_step+stepi)
 
-                    loss = 0.0
-                    for keyn,value in loss_dict.items():
-                        loss+=value
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                if((epoch+1)%5==0):
+                    image_list,pred_region_list,gt_list=bth_sample[0][0],bth_pred_region[0],bth_sample[0][2]
+                    for framei in range(len(bth_pred_region[0])):
+                        img = concatenate_images([image_list[i],cv_heatmap(pred_region_list[i]),cv_heatmap(gt_list[i])])
+                        logger.add_image('Region: e{}'.format(epoch),img,framei,dataformats='HWC')
+                logger.flush()
 
-                    if(DEF_FLUSH_COUNT>0 and (proc_cnt+1)%DEF_FLUSH_COUNT==0):
-                        model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
-
-                    if(logger):
-                        region_np = pred[0,0].detach().cpu().numpy()
-                        logger.add_image('Region: s{},e{}'.format(stepi,epoch),concatenate_images([x,cv_heatmap(region_np)]),fm_cnt,dataformats='HWC')
-                    fm_cnt += 1
-                    proc_cnt += 1
-            except Exception as e:
-                sys.stdout.write("Err at {}, frame {}, frame processed {}.\nErr: {}\n".format(sample['name'],fm_cnt,proc_cnt+1,str(e)))
-                sys.stdout.flush()
         time_usage = datetime.now() - time_cur
         time_cur = datetime.now()
         print_epoch_log(epoch + 1, args.epoch,loss.item(),time_usage)
@@ -247,6 +249,7 @@ if __name__ == '__main__':
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default='adag')
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--eval', help='Set --eval to enable eval.', action="store_true")
+    parser.add_argument('--batch', type=int, help='Batch size.',default=4)
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
     parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
@@ -257,7 +260,11 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
     # LSTM specific
-    parser.add_argument('--maxstep', type=int, help='Max lenth of single image.',default=5)
+    parser.add_argument('--maxstep', type=int, help='Max lenth of single image, total lenth will be batch*maxstep.',default=10)
+    parser.add_argument('--speed', type=float, help='Moving speed of synthetic image.',default=2)
+    parser.add_argument('--rotatev', type=float, help='Typical rotation speed (angle/FPS).',default=2)
+    parser.add_argument('--shiftv', type=float, help='Typical shift speed (pixel/FPS).',default=2)
+    parser.add_argument('--scalev', type=float, help='Typical scale speed (k/FPS).',default=2)
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset

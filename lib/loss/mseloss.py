@@ -146,6 +146,7 @@ class MSE_2d_Loss(nn.Module):
             x: prediction (batch,(ch),h,w)
             y: true value (batch,(ch),h,w)
             weight_mask (optical): loss weight mask in [0,1]
+            e.g. set pixel weight to 0 to ignore pixels
         """
         x,y = args[0],args[1]
 

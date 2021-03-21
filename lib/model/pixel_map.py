@@ -318,10 +318,7 @@ class PIXLSTM(nn.Module):
         self.lstmh,self.lstmc = None,None
 
     def init_state(self,shape=(320,320),batch_size=1):
-        for k,v in self.state_dict().items():
-            d = v
-            break
-
+        _,d = next(iter(self.state_dict().items()))
         self.lstmh = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
         self.lstmc = torch.zeros((batch_size,self.final_predict_ch,shape[0],shape[1]),dtype=d.dtype).to(d.device)
 
