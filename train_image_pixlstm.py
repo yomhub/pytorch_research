@@ -91,14 +91,6 @@ def train(args):
             os.path.join(DEF_MSRA_DIR,'test'),
             image_size=image_size)
     elif(args.dataset=="ic19"):
-        # train_dataset = ICDAR19(
-        #     os.path.join(DEF_IC19_DIR,'images','train'),
-        #     os.path.join(DEF_IC19_DIR,'gt_txt','train'),
-        #     image_size=image_size)
-        # eval_dataset = ICDAR19(
-        #     os.path.join(DEF_IC19_DIR,'images','test'),
-        #     os.path.join(DEF_IC19_DIR,'gt_txt','test'),
-        #     image_size=image_size,)
         train_dataset,eval_dataset = split_dataset_cls_to_train_eval(ICDAR19,0.2,
             os.path.join(DEF_IC19_DIR,'images','train'),
             os.path.join(DEF_IC19_DIR,'gt_txt','train'),
@@ -130,6 +122,13 @@ def train(args):
                                                num_workers=0,
                                                pin_memory=True,
                                                collate_fn=train_dataset.default_collate_fn,)
+    if(args.eval):
+        eval_loader = torch.utils.data.DataLoader(dataset=eval_dataset,
+                                                batch_size=args.batch,
+                                                shuffle=True,
+                                                num_workers=0,
+                                                pin_memory=True,
+                                                collate_fn=eval_dataset.default_collate_fn,)
     _,d = next(iter(model.state_dict().items()))
     model_device,model_dtype = d.device,d.dtype
     total_step = len(train_loader)
@@ -156,15 +155,14 @@ def train(args):
                     txt = sample['text'][bthi]
                     bgid = [i for i,o in enumerate(txt) if(o=='#')]
                     for poly_xy in poly_xy_list:
-                        bgbxs = np.stack([o for i,o in enumerate(poly_xy) if(i in bgid)],axis=0)
-                        fgbxs = np.stack([o for i,o in enumerate(poly_xy) if(i not in bgid)],axis=0)
+                        bgbxs = np.array([o for i,o in enumerate(poly_xy) if(i in bgid)])
+                        fgbxs = np.array([o for i,o in enumerate(poly_xy) if(i not in bgid)])
                         weight_mask_list.append(cv_gen_binary_mask_by_poly(bgbxs,image_size,default_value=1,default_fill=0))
                         gt_list.append(cv_gen_gaussian_by_poly(fgbxs,image_size))
                 else:
                     gt_list = [cv_gen_gaussian_by_poly(o,image_size) for o in poly_xy_list]
                     weight_mask_list = [np.ones(image_size,dtype=np.float32)]*len(gt_list)
-                bth_sample.append(image_list,poly_xy_list,gt_list,weight_mask_list)
-            
+                bth_sample.append((image_list,poly_xy_list,gt_list,weight_mask_list))
             
             dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
             model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
@@ -175,12 +173,12 @@ def train(args):
                 torch.zeros(dshape,dtype = model_dtype, device=model_device),
                 # lstmc
                 torch.zeros(dshape,dtype = model_dtype, device=model_device),
-                ) for _ in raneg(len(bth_sample))]
+                ) for _ in range(len(bth_sample))]
             
             loss_dict = {}
             bth_avg_loss = 0.0
             bth_pred_region = []
-            for (lstmh,lstmc,Wci,Wcf,Wco),(image_list,poly_xy_list,gt_list,weight_mask_list) in zip(bth_state,bth_sample):
+            for (lstmh,lstmc),(image_list,poly_xy_list,gt_list,weight_mask_list) in zip(bth_state,bth_sample):
                 x_sequence = torch.tensor(image_list,dtype = model_dtype, device=model_device)
                 y = torch.tensor(gt_list,dtype = model_dtype, device=model_device)
                 y_mask = torch.tensor(weight_mask_list,dtype = model_dtype, device=model_device)
@@ -190,7 +188,7 @@ def train(args):
                 avg_loss = 0.0
                 model.lstmh,model.lstmc=lstmh,lstmc
                 pred_region = []
-                for framei in raneg(xnor.shape[0]):
+                for framei in range(xnor.shape[0]):
                     pred,feat = model(xnor[framei:framei+1])
                     avg_loss+=criterion_mask(pred[:,0:1],y[framei:framei+1],y_mask[framei:framei+1])
                     pred_region.append(pred[0,0].to('cpu').detach().numpy())
@@ -215,17 +213,84 @@ def train(args):
                     logger.add_scalar('Loss/{}'.format(keyn), value.item(), epoch*total_step+stepi)
                 if(args.lr_decay):
                     logger.add_scalar('LR rate', optimizer.param_groups[0]['lr'], epoch*total_step+stepi)
+                logger.flush()
 
-                if((epoch+1)%5==0):
-                    image_list,pred_region_list,gt_list=bth_sample[0][0],bth_pred_region[0],bth_sample[0][2]
-                    for framei in range(len(bth_pred_region[0])):
-                        img = concatenate_images([image_list[i],cv_heatmap(pred_region_list[i]),cv_heatmap(gt_list[i])])
-                        logger.add_image('Region: e{}'.format(epoch),img,framei,dataformats='HWC')
+        # End of epoch
+        if(args.eval):
+            recall_list_t0,precision_list_t0 = [],[]
+            recall_list_t1,precision_list_t1 = [],[]
+            t0t1_diff = []
+            with torch.no_grad():
+                for stepi, sample in enumerate(eval_loader):
+                    dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
+
+                    x = sample['image']
+                    bth_boxes = sample['box']
+                    x_nor = torch_img_normalize(x).float().to(model_device).permute(0,3,1,2)
+                    bth_image = x.numpy()
+                    for bthi in range(bth_image.shape[0]):    
+                        if('text' in sample):
+                            txt = sample['text'][bthi]
+                            boxes = bth_boxes[bthi]
+                            bgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]!='#')])
+                            fgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]=='#')])
+                        else:
+                            fgbxs=bth_boxes[bthi]
+                            bgbxs=None
+                        model.lstmh=torch.zeros(dshape,dtype = model_dtype, device=model_device)
+                        model.lstmc=torch.zeros(dshape,dtype = model_dtype, device=model_device)
+                        pred0,_ = model(xnor[bthi:bthi+1])
+                        pred1,_ = model(xnor[bthi:bthi+1])
+                        region0_np = pred0[0,0].cpu().detach().numpy()
+                        region1_np = pred1[0,0].cpu().detach().numpy()
+                        det = torch.mean(torch.abs(pred0[0,0]-pred1[0,0])).cpu().detach().numpy()
+                        t0t1_diff.append(det)
+                        region0_np[region0_np<0.2]=0.0
+                        det_boxes, label_mask, label_list = cv_get_box_from_mask(region0_np,region_mean_split=True)
+                        if(det_boxes.shape[0]>0):
+                            det_boxes = np_box_resize(det_boxes,region0_np.shape[-2:],x.shape[-3:-1],'polyxy')
+                            ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
+                        else:
+                            mask_precision,mask_recall=0.0,0.0
+                        recall_list_t0.append(mask_recall)
+                        precision_list_t0.append(mask_precision)
+
+                        region1_np[region1_np<0.2]=0.0
+                        det_boxes, label_mask, label_list = cv_get_box_from_mask(region1_np,region_mean_split=True)
+                        if(det_boxes.shape[0]>0):
+                            det_boxes = np_box_resize(det_boxes,region1_np.shape[-2:],x.shape[-3:-1],'polyxy')
+                            ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
+                        else:
+                            mask_precision,mask_recall=0.0,0.0
+                        recall_list_t1.append(mask_recall)
+                        precision_list_t1.append(mask_precision)
+            recall_t0,precision_t0=np.mean(recall_list_t0),np.mean(precision_list_t0)
+            recall_t1,precision_t1=np.mean(recall_list_t1),np.mean(precision_list_t1)
+            fscore_t0 = 2*recall_t0*precision_t0/(precision_t0+recall_t0) if((precision_t0+recall_t0)>0)else 0
+            fscore_t1 = 2*recall_t1*precision_t1/(precision_t1+recall_t1) if((precision_t1+recall_t1)>0)else 0
+            log.write("Recall|Precision|F-score in t0: {},{},{}\n".format(recall_t0,precision_t0,fscore_t0))
+            log.write("Recall|Precision|F-score in t1: {},{},{}\n".format(recall_t1,precision_t1,fscore_t1))
+            log.write("T0 T1 difference: {}\n".format(np.mean(t0t1_diff)))
+            log.flush()
+            if(logger):
+                logger.add_scalar('Eval/Recall_t0', recall_t0, epoch)
+                logger.add_scalar('Eval/Precision_t0', precision_t0, epoch)
+                logger.add_scalar('Eval/F-score_t0', fscore_t0, epoch)
+                logger.add_scalar('Eval/Recall_t1', recall_t1, epoch)
+                logger.add_scalar('Eval/Precision_t1', precision_t1, epoch)
+                logger.add_scalar('Eval/F-score_t1', fscore_t1, epoch)
+                logger.add_scalar('Eval/t0t1_diff', np.mean(t0t1_diff), epoch)
                 logger.flush()
 
         time_usage = datetime.now() - time_cur
         time_cur = datetime.now()
-        print_epoch_log(epoch + 1, args.epoch,loss.item(),time_usage)
+        print_epoch_log(epoch, args.epoch,loss.item(),time_usage)
+        if(logger and (epoch+1)%5==0):
+            image_list,pred_region_list,gt_list=bth_sample[0][0],bth_pred_region[0],bth_sample[0][2]
+            for framei in range(len(bth_pred_region[0])):
+                img = concatenate_images([image_list[framei],cv_heatmap(pred_region_list[framei]),cv_heatmap(gt_list[framei])])
+                logger.add_image('Region: e{}'.format(epoch),img,framei,dataformats='HWC')
+            logger.flush()
 
         if(args.save):
             log.write("Saving model at {}...\n".format(args.save))
@@ -245,13 +310,11 @@ def train(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--multi_gpu', help='Set --multi_gpu to enable multi gpu training.',action="store_true")
     parser.add_argument('--opt', help='PKL path or name of optimizer.',default='adag')
     parser.add_argument('--debug', help='Set --debug if want to debug.', action="store_true")
     parser.add_argument('--eval', help='Set --eval to enable eval.', action="store_true")
     parser.add_argument('--batch', type=int, help='Batch size.',default=4)
     parser.add_argument('--basenet', help='Choose base noework.', default='mobile')
-    parser.add_argument('--tracker', type=str,help='Choose tracker.')
     parser.add_argument('--save', type=str, help='Set --save file_dir if want to save network.')
     parser.add_argument('--load', type=str, help='Set --load file_dir if want to load network.')
     parser.add_argument('--name', help='Name of task.')
@@ -268,7 +331,6 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
-    args.tracker = args.tracker.lower() if(args.tracker)else args.tracker
     args.maxstep = max(args.maxstep,3)
     # args.debug = True
 
@@ -304,7 +366,7 @@ if __name__ == '__main__':
             "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
             "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
             "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-            "\t Linear: {}.\n".format('Yes' if(args.linear)else 'No')+\
+            "\t maxstep, speed, rotatev, shiftv, scalev = {}, {}, {}, {}, {}".format(args.maxstep, args.speed, args.rotatev, args.shiftv, args.scalev)+\
             "========\n"
         print(summarize)
 
