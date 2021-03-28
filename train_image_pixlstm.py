@@ -217,18 +217,24 @@ def train(args):
 
         # End of epoch
         if(args.eval):
-            recall_list_t0,precision_list_t0 = [],[]
-            recall_list_t1,precision_list_t1 = [],[]
-            t0t1_diff = []
+            recall_list,precision_list = [],[]
+            eval_log_dict = {}
+            eval_log_szie = 10
+            eval_log_cnt = 0
             with torch.no_grad():
+                dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
+                model.lstmc=torch.zeros(dshape,dtype = model_dtype, device=model_device)
+                model.lstmh=torch.zeros(dshape,dtype = model_dtype, device=model_device)
+
                 for stepi, sample in enumerate(eval_loader):
-                    dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
 
                     x = sample['image']
+                    bth_image = x.numpy()
                     bth_boxes = sample['box']
                     x_nor = torch_img_normalize(x).float().to(model_device).permute(0,3,1,2)
-                    bth_image = x.numpy()
-                    for bthi in range(bth_image.shape[0]):    
+
+                    seed = np.random
+                    for bthi in range(bth_image.shape[0]):
                         if('text' in sample):
                             txt = sample['text'][bthi]
                             boxes = bth_boxes[bthi]
@@ -237,49 +243,73 @@ def train(args):
                         else:
                             fgbxs=bth_boxes[bthi]
                             bgbxs=None
-                        model.lstmh=torch.zeros(dshape,dtype = model_dtype, device=model_device)
-                        model.lstmc=torch.zeros(dshape,dtype = model_dtype, device=model_device)
-                        pred0,_ = model(xnor[bthi:bthi+1])
-                        pred1,_ = model(xnor[bthi:bthi+1])
-                        region0_np = pred0[0,0].cpu().detach().numpy()
-                        region1_np = pred1[0,0].cpu().detach().numpy()
-                        det = torch.mean(torch.abs(pred0[0,0]-pred1[0,0])).cpu().detach().numpy()
-                        t0t1_diff.append(det)
-                        region0_np[region0_np<0.2]=0.0
-                        det_boxes, label_mask, label_list = cv_get_box_from_mask(region0_np,region_mean_split=True)
-                        if(det_boxes.shape[0]>0):
-                            det_boxes = np_box_resize(det_boxes,region0_np.shape[-2:],x.shape[-3:-1],'polyxy')
-                            ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
-                        else:
-                            mask_precision,mask_recall=0.0,0.0
-                        recall_list_t0.append(mask_recall)
-                        precision_list_t0.append(mask_precision)
 
-                        region1_np[region1_np<0.2]=0.0
-                        det_boxes, label_mask, label_list = cv_get_box_from_mask(region1_np,region_mean_split=True)
-                        if(det_boxes.shape[0]>0):
-                            det_boxes = np_box_resize(det_boxes,region1_np.shape[-2:],x.shape[-3:-1],'polyxy')
-                            ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
-                        else:
-                            mask_precision,mask_recall=0.0,0.0
-                        recall_list_t1.append(mask_recall)
-                        precision_list_t1.append(mask_precision)
-            recall_t0,precision_t0=np.mean(recall_list_t0),np.mean(precision_list_t0)
-            recall_t1,precision_t1=np.mean(recall_list_t1),np.mean(precision_list_t1)
-            fscore_t0 = 2*recall_t0*precision_t0/(precision_t0+recall_t0) if((precision_t0+recall_t0)>0)else 0
-            fscore_t1 = 2*recall_t1*precision_t1/(precision_t1+recall_t1) if((precision_t1+recall_t1)>0)else 0
-            log.write("Recall|Precision|F-score in t0: {},{},{}\n".format(recall_t0,precision_t0,fscore_t0))
-            log.write("Recall|Precision|F-score in t1: {},{},{}\n".format(recall_t1,precision_t1,fscore_t1))
-            log.write("T0 T1 difference: {}\n".format(np.mean(t0t1_diff)))
+                        image = bth_image[bthi]
+                        rotate = args.maxstep * args.rotatev *(seed.random()-0.5)*2.2
+                        shiftx = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
+                        shifty = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
+                        scalex = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
+                        scaley = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
+                        image_list,_,Ms = cv_gen_trajectory(image,args.maxstep,
+                            rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex))
+
+                        model.lstmc.zero_()
+                        model.lstmh.zero_()
+                        image_list_torch = torch.tensor(image_list,dtype = model_dtype, device=model_device)
+                        image_list_nor = torch_img_normalize(image_list_torch)
+                        pred_np = []
+                        for imgid in range(image_list_nor.shape[0]):
+                            pred,_ = model(image_list_nor[imgid:imgid+1])
+                            pred_np.append(pred[0,0].cpu().detach().numpy())
+                        
+                        fgbxs_list = []
+                        recall_list_sg,precision_list_sg = [],[]
+                        for M,region_np in zip(Ms,pred_np):
+                            if(not isinstance(bgbxs,type(None)) and bgbxs.shape[0]>0):
+                                cur_bgbxs = np_apply_matrix_to_pts(M,bgbxs)
+                            else:
+                                cur_bgbxs = None
+                            cur_fgbxs = np_apply_matrix_to_pts(M,fgbxs)
+                            fgbxs_list.append(cur_fgbxs)
+
+                            region_np[region_np<0.2]=0.0
+                            det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np,region_mean_split=True)
+                            if(det_boxes.shape[0]>0):
+                                det_boxes = np_box_resize(det_boxes,region_np.shape[-2:],x.shape[-3:-1],'polyxy')
+                                ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
+                            else:
+                                mask_precision,mask_recall=0.0,0.0
+                            recall_list_sg.append(mask_recall)
+                            precision_list_sg.append(mask_precision)
+                        
+                        recall = np.mean(recall_list_sg)
+                        precision = np.mean(precision)
+                        recall_list.append(recall)
+                        precision_list.append(precision)
+                        fscore = 2*recall*precision/(recall+precision)
+
+                        if(fscore<0.5 and eval_log_cnt<eval_log_szie):
+                            t = []
+                            for img,bx,region_np in zip(image_list,fgbxs_list,pred_np):
+                                gt = cv_gen_gaussian_by_poly(bx,image_size)
+                                t.append(concatenate_images(img,cv_heatmap(gt),cv_heatmap(region_np)))
+                            eval_log_dict['Eval/ Epoch {}, step {}.'.format(epoch+1,stepi*bth_image.shape[0]+bthi)]=t
+                            eval_log_cnt+=1
+            
+            recall,precision=np.mean(recall_list),np.mean(precision_list)
+            fscore = 2*recall*precision/(precision+recall) if((precision+recall)>0)else 0
+            log.write("Recall|Precision|F-score in t0: {},{},{}\n".format(recall,precision,fscore))
             log.flush()
             if(logger):
-                logger.add_scalar('Eval/Recall_t0', recall_t0, epoch)
-                logger.add_scalar('Eval/Precision_t0', precision_t0, epoch)
-                logger.add_scalar('Eval/F-score_t0', fscore_t0, epoch)
-                logger.add_scalar('Eval/Recall_t1', recall_t1, epoch)
-                logger.add_scalar('Eval/Precision_t1', precision_t1, epoch)
-                logger.add_scalar('Eval/F-score_t1', fscore_t1, epoch)
-                logger.add_scalar('Eval/t0t1_diff', np.mean(t0t1_diff), epoch)
+                logger.add_scalar('Eval/recall', recall, epoch)
+                logger.add_scalar('Eval/precision', precision, epoch)
+                logger.add_scalar('Eval/F-score', fscore, epoch)
+                for key in eval_log_dict:
+                    if(isinstance(eval_log_dict[key],list)):
+                        for i, o in enumerate(eval_log_dict[key]):
+                            logger.add_image(key,o,i,dataformats='HWC')
+                    else:
+                        logger.add_image(key,eval_log_dict[key],0,dataformats='HWC')
                 logger.flush()
 
         time_usage = datetime.now() - time_cur
