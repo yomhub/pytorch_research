@@ -2088,8 +2088,9 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         shift: (y,x) shift or single float 
         scale: (y,x) scale or single float
         blur: bool, set blur=True to enable blur kernel
-            blur.ksize: int, kernel size, default is 10
-            blur.intensity: float, intensity, default is 0.1
+            blur_rate: float, blur rate, default is 0.3
+            blur_ksize: int, kernel size, default is 10
+            blur_intensity: float, intensity, default is 0.1
     """
     org_image_size=image.shape[:-1]
     Ms = [np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)]
@@ -2107,6 +2108,12 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         poly_xy_list = [np.expand_dims(poly_xy,0) if(len(poly_xy.shape)==2)else poly_xy]
     scale_det = (scale[0]-1,scale[1]-1)
     seed = np.random
+
+    if('blur' in args and args['blur']):
+        rate = min(0.7,args['blur_rate']) if('blur_rate' in args) else 0.3
+        blur_stepi = [stepi for stepi in range(total_step-2) if(seed.random()>rate)]
+    else:
+        blur_stepi = []
 
     for stepi in range(total_step-1):
         Mlst = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
@@ -2137,17 +2144,46 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             Mlst = np.dot(Mt,Mlst)
         
         Ms.append(Mlst)
-        if('blur' in args and args['blur']):
-            ksize = int(args['blur.ksize']) if('blur.ksize' in args)else 10
-            intensity = float(args['blur.intensity']) if('blur.ksize' in args)else 0.1
-            intensity = max(0.01,min(0.3,intensity))
-            blr_kernel = np.zeros((ksize,ksize))
+        img = cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1])
+        # ensure last image is no-blur
+        if(stepi in blur_stepi and 'blur' in args and args['blur']):
+            ksize = int(args['blur_ksize']) if('blur_ksize' in args)else 11
+            intensity = float(args['blur_intensity']) if('blur_intensity' in args)else 0.0
+            intensity = max(0,min(0.3,intensity))
+            kr_org = np.zeros((ksize,ksize))
+            if(ksize%2==1):
+                kr_org[ksize//2,ksize//2]=1
+            else:
+                kr_org[ksize//2-1,ksize//2-1]=1
+
+            if('shift' in args):
+                kr_shift = np.zeros((ksize,ksize))
+                fdet = 1/(total_step-1)
+                # start point in X,Y
+                sp = np.array((0,0))
+                # find end point
+                if(shift[1]!=0):
+                    k_shift = shift[0]/shift[1]
+                    k_shift += k_shift*(seed.random()-0.5)*2*intensity
+                    if(k_shift>0.05):
+                        ep = np.array((ksize,k_shift*ksize))
+                    elif(k_shift<-0.05):
+                        sp = np.array((0,ksize))
+                        ep = np.array((ksize,k_shift*ksize+ksize))
+                    else:
+                        sp = np.array((0,ksize//2))
+                        ep = np.array((ksize,ksize//2))
+                else:
+                    ep = np.array((0,ksize))
+                ep = ep.astype(np.int32)
+                kr_shift = cv2.line(kr_shift,(sp[0],sp[1]),(ep[0],ep[1]),color=1,thickness=1)
+                kr_shift /= max(1,np.sum((kr_shift>0).astype(np.uint8)))
+                img = cv2.filter2D(img,-1,kr_shift)
 
             rotate = intensity*10
             
-
-        image_list.append(cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1]))
-        if(not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):
+        image_list.append(img)
+        if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
 
     return image_list,poly_xy_list,Ms
