@@ -2087,6 +2087,9 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         rotate: float of final rotation angle
         shift: (y,x) shift or single float 
         scale: (y,x) scale or single float
+        blur: bool, set blur=True to enable blur kernel
+            blur.ksize: int, kernel size, default is 10
+            blur.intensity: float, intensity, default is 0.1
     """
     org_image_size=image.shape[:-1]
     Ms = [np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)]
@@ -2100,7 +2103,7 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         shift = (shift,shift)
     if(not isinstance(scale,Iterable)):
         scale = (scale,scale)
-    if(not isinstance(poly_xy,type(None))):
+    if(poly_xy is not None):
         poly_xy_list = [np.expand_dims(poly_xy,0) if(len(poly_xy.shape)==2)else poly_xy]
     scale_det = (scale[0]-1,scale[1]-1)
     seed = np.random
@@ -2134,6 +2137,15 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             Mlst = np.dot(Mt,Mlst)
         
         Ms.append(Mlst)
+        if('blur' in args and args['blur']):
+            ksize = int(args['blur.ksize']) if('blur.ksize' in args)else 10
+            intensity = float(args['blur.intensity']) if('blur.ksize' in args)else 0.1
+            intensity = max(0.01,min(0.3,intensity))
+            blr_kernel = np.zeros((ksize,ksize))
+
+            rotate = intensity*10
+            
+
         image_list.append(cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1]))
         if(not isinstance(poly_xy,type(None)) and poly_xy.shape[0]>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
