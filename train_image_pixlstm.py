@@ -132,6 +132,8 @@ def train(args):
     _,d = next(iter(model.state_dict().items()))
     model_device,model_dtype = d.device,d.dtype
     total_step = len(train_loader)
+    distributes = defaultdict(list)
+
     for epoch in range(args.epoch):
         for stepi, sample in enumerate(train_loader):
             x = sample['image']
@@ -141,13 +143,23 @@ def train(args):
             seed = np.random
             for bthi in range(bth_image.shape[0]):
                 image,box = bth_image[bthi],bth_boxes[bthi]
-                rotate = args.maxstep * args.rotatev *(seed.random()-0.5)*2.2
-                shiftx = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
-                shifty = args.maxstep * args.shiftv *(seed.random()-0.5)*2.2
-                scalex = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
-                scaley = args.maxstep * args.scalev *(seed.random()-0.5)*2.2
+                # rotation in [0,360] * random in [-1,+1]
+                rotate = min(360,args.maxstep * args.rotatev) *(seed.random()-0.5)*2
+                # shift in [0,200] * random in [-1,+1]
+                shiftx = min(200,args.maxstep * args.shiftv) * (seed.random()-0.5)*2
+                shifty = min(200,args.maxstep * args.shiftv) * (seed.random()-0.5)*2
+                # scale in [0.5,3] * random in [-1,+1]
+                scalex = min(3,max(0.5,args.maxstep * args.scalev)) *(seed.random()-0.5)*2
+                scaley = min(3,max(0.5,args.maxstep * args.scalev)) *(seed.random()-0.5)*2
                 image_list,poly_xy_list,Ms = cv_gen_trajectory(image,args.maxstep,box,
-                    rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex))
+                    rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex)
+                    ,blur=True,blur_rate=0.5,blur_ksize=15,blur_intensity=0.2,
+                    )
+                distributes['rotate'].append(rotate)
+                distributes['shiftx'].append(shiftx)
+                distributes['shifty'].append(shifty)
+                distributes['scalex'].append(scalex)
+                distributes['scaley'].append(scaley)
 
                 if('text' in sample and '#' in sample['text'][bthi]):
                     gt_list = []
@@ -214,6 +226,8 @@ def train(args):
                 if(args.lr_decay):
                     logger.add_scalar('LR rate', optimizer.param_groups[0]['lr'], epoch*total_step+stepi)
                 logger.flush()
+            if(args.debug):
+                break
 
         # End of epoch
         if(args.eval):
@@ -238,8 +252,10 @@ def train(args):
                         if('text' in sample):
                             txt = sample['text'][bthi]
                             boxes = bth_boxes[bthi]
-                            bgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]!='#')])
-                            fgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]=='#')])
+                            if(len(boxes.shape)==2):
+                                boxes = np.expand_dims(boxes,0)
+                            bgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]=='#')])
+                            fgbxs = np.array([boxes[i] for i in range(len(txt)) if(txt[i]!='#')])
                         else:
                             fgbxs=bth_boxes[bthi]
                             bgbxs=None
@@ -256,7 +272,7 @@ def train(args):
                         model.lstmc.zero_()
                         model.lstmh.zero_()
                         image_list_torch = torch.tensor(image_list,dtype = model_dtype, device=model_device)
-                        image_list_nor = torch_img_normalize(image_list_torch)
+                        image_list_nor = torch_img_normalize(image_list_torch).permute(0,3,1,2)
                         pred_np = []
                         for imgid in range(image_list_nor.shape[0]):
                             pred,_ = model(image_list_nor[imgid:imgid+1])
@@ -265,11 +281,10 @@ def train(args):
                         fgbxs_list = []
                         recall_list_sg,precision_list_sg = [],[]
                         for M,region_np in zip(Ms,pred_np):
-                            if(not isinstance(bgbxs,type(None)) and bgbxs.shape[0]>0):
-                                cur_bgbxs = np_apply_matrix_to_pts(M,bgbxs)
+                            if(fgbxs is not None and len(fgbxs)>0):
+                                cur_fgbxs = np_apply_matrix_to_pts(M,fgbxs)
                             else:
-                                cur_bgbxs = None
-                            cur_fgbxs = np_apply_matrix_to_pts(M,fgbxs)
+                                cur_fgbxs = None
                             fgbxs_list.append(cur_fgbxs)
 
                             region_np[region_np<0.2]=0.0
@@ -283,19 +298,20 @@ def train(args):
                             precision_list_sg.append(mask_precision)
                         
                         recall = np.mean(recall_list_sg)
-                        precision = np.mean(precision)
+                        precision = np.mean(precision_list_sg)
                         recall_list.append(recall)
                         precision_list.append(precision)
-                        fscore = 2*recall*precision/(recall+precision)
+                        fscore = 2*recall*precision/(recall+precision) if(recall+precision>0)else 0.0
 
                         if(fscore<0.5 and eval_log_cnt<eval_log_szie):
                             t = []
                             for img,bx,region_np in zip(image_list,fgbxs_list,pred_np):
                                 gt = cv_gen_gaussian_by_poly(bx,image_size)
-                                t.append(concatenate_images(img,cv_heatmap(gt),cv_heatmap(region_np)))
+                                t.append(concatenate_images([img,cv_heatmap(gt),cv_heatmap(region_np)]))
                             eval_log_dict['Eval/ Epoch {}, step {}.'.format(epoch+1,stepi*bth_image.shape[0]+bthi)]=t
                             eval_log_cnt+=1
-            
+                    if(args.debug):
+                        break
             recall,precision=np.mean(recall_list),np.mean(precision_list)
             fscore = 2*recall*precision/(precision+recall) if((precision+recall)>0)else 0
             log.write("Recall|Precision|F-score in t0: {},{},{}\n".format(recall,precision,fscore))
@@ -329,6 +345,11 @@ def train(args):
             torch.save(model.state_dict(),args.save)
         log.flush()
     
+    if(logger):
+        for k,v in distributes.items():
+            logger.add_histogram('Parameters Distribution/'+k,np.array(v))
+        logger.flush()
+
     # finish
     time_usage = datetime.now() - time_start
     try:
@@ -353,16 +374,16 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
     # LSTM specific
-    parser.add_argument('--maxstep', type=int, help='Max lenth of single image, total lenth will be batch*maxstep.',default=10)
-    parser.add_argument('--speed', type=float, help='Moving speed of synthetic image.',default=2)
-    parser.add_argument('--rotatev', type=float, help='Typical rotation speed (angle/FPS).',default=2)
-    parser.add_argument('--shiftv', type=float, help='Typical shift speed (pixel/FPS).',default=2)
-    parser.add_argument('--scalev', type=float, help='Typical scale speed (k/FPS).',default=2)
+    parser.add_argument('--maxstep', type=int, help='Max lenth of single image, total lenth will be batch*maxstep.',default=3)
+    parser.add_argument('--rotatev', type=float, help='Typical rotation speed (angle/FPS).',default=20)
+    parser.add_argument('--shiftv', type=float, help='Typical shift speed (pixel/FPS).',default=20)
+    parser.add_argument('--scalev', type=float, help='Typical scale speed (k/FPS).',default=0.3)
 
     args = parser.parse_args()
     args.dataset = args.dataset.lower() if(args.dataset)else args.dataset
     args.maxstep = max(args.maxstep,3)
     # args.debug = True
+    # args.eval = True
 
     list_opt = args.opt.split(',')
     list_dataset = args.dataset.split(',')
@@ -396,7 +417,7 @@ if __name__ == '__main__':
             "\t Taks name: {}.\n".format(args.name if(args.name)else 'None')+\
             "\t Load network: {}.\n".format(args.load if(args.load)else 'No')+\
             "\t Save network: {}.\n".format(args.save if(args.save)else 'No')+\
-            "\t maxstep, speed, rotatev, shiftv, scalev = {}, {}, {}, {}, {}".format(args.maxstep, args.speed, args.rotatev, args.shiftv, args.scalev)+\
+            "\t maxstep, rotatev, shiftv, scalev = {}, {}, {}, {}.\n".format(args.maxstep, args.rotatev, args.shiftv, args.scalev)+\
             "========\n"
         print(summarize)
 
