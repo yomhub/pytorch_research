@@ -375,6 +375,7 @@ class PIXLSTM_Residual(nn.Module):
             
         self.lstm = BottleneckLSTMCell(input_channels=self.final_predict_ch,
             hidden_channels=self.final_predict_ch)
+        self.residual_bn = nn.BatchNorm2d(self.final_predict_ch)
         self.lstmh,self.lstmc = None,None
 
     def init_state(self,shape=(320,320),batch_size=1):
@@ -391,7 +392,8 @@ class PIXLSTM_Residual(nn.Module):
         feat=self.basenet(x)
         f_filt = self.mask_pre_filter(feat.upb0)
         self.lstmh,self.lstmc = self.lstm(f_filt,self.lstmh,self.lstmc)
-        pred = self.mask_predictor(self.lstmh)
+        f_res = self.residual_bn(f_filt+self.lstmh)
+        pred = self.mask_predictor(f_res)
 
         return pred,feat
 
