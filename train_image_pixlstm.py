@@ -40,6 +40,12 @@ def train(args):
 
     model = PIXLSTM(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
+    _,d = next(iter(model.state_dict().items()))
+    model_device,model_dtype = d.device,d.dtype
+    dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
+    model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
+    model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
+    model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
 
     if(args.load and os.path.exists(args.load)):
         log.write("Load parameters from {}.\n".format(args.load))
@@ -129,8 +135,6 @@ def train(args):
                                                 num_workers=0,
                                                 pin_memory=True,
                                                 collate_fn=eval_dataset.default_collate_fn,)
-    _,d = next(iter(model.state_dict().items()))
-    model_device,model_dtype = d.device,d.dtype
     total_step = len(train_loader)
     distributes = defaultdict(list)
 
@@ -176,10 +180,6 @@ def train(args):
                     weight_mask_list = [np.ones(image_size,dtype=np.float32)]*len(gt_list)
                 bth_sample.append((image_list,poly_xy_list,gt_list,weight_mask_list))
             
-            dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
-            model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
-            model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
-            model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
             bth_state = [(
                 # lstmh
                 torch.zeros(dshape,dtype = model_dtype, device=model_device),
@@ -328,6 +328,13 @@ def train(args):
                         logger.add_image(key,eval_log_dict[key],0,dataformats='HWC')
                 logger.flush()
 
+        if(logger):
+            for k,v in distributes.items():
+                logger.add_histogram('Parameters Distribution/'+k,np.array(v),epoch)
+            distributes = defaultdict(list)
+
+            logger.flush()
+
         time_usage = datetime.now() - time_cur
         time_cur = datetime.now()
         print_epoch_log(epoch, args.epoch,loss.item(),time_usage)
@@ -345,11 +352,6 @@ def train(args):
             torch.save(model.state_dict(),args.save)
         log.flush()
     
-    if(logger):
-        for k,v in distributes.items():
-            logger.add_histogram('Parameters Distribution/'+k,np.array(v))
-        logger.flush()
-
     # finish
     time_usage = datetime.now() - time_start
     try:
