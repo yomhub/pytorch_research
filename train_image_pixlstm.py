@@ -40,18 +40,21 @@ def train(args):
 
     model = PIXLSTM(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
-    _,d = next(iter(model.state_dict().items()))
-    model_device,model_dtype = d.device,d.dtype
     dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
-    model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
-    model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
-    model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=model_dtype),requires_grad=True).to(model_device)
 
     if(args.load and os.path.exists(args.load)):
         log.write("Load parameters from {}.\n".format(args.load))
         model.load_state_dict(copyStateDict(torch.load(args.load)))
+        model = model.cuda()
+    else:
+        model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+        model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+        model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+
     model = model.cuda()
-    
+    _,d = next(iter(model.state_dict().items()))
+    model_device,model_dtype = d.device,d.dtype
+
     criterion_mask = MSE_2d_Loss(pixel_sum=False).cuda()
     if(os.path.exists(args.opt)):
         optimizer = torch.load(args.opt)
