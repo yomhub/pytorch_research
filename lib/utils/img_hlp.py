@@ -2179,9 +2179,6 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                 kr_shift = cv2.line(kr_shift,(sp[0],sp[1]),(ep[0],ep[1]),color=1,thickness=1)
                 kr_shift /= max(1,np.sum((kr_shift>0).astype(np.uint8)))
                 img = cv2.filter2D(img,-1,kr_shift)
-
-            rotate = intensity*10
-            
         image_list.append(img)
         if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
