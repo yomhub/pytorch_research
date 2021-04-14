@@ -18,7 +18,7 @@ from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
-from lib.model.pixel_map import PIXLSTM
+from lib.model.pixel_map import PIXLSTM,PIXLSTM_Residual
 from lib.loss.mseloss import *
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -38,7 +38,7 @@ def train(args):
     logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S"))) if(not args.debug)else None
     log = sys.stdout
 
-    model = PIXLSTM(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
+    model = PIXLSTM_Residual(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
     dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
 
@@ -317,7 +317,7 @@ def train(args):
                         break
             recall,precision=np.mean(recall_list),np.mean(precision_list)
             fscore = 2*recall*precision/(precision+recall) if((precision+recall)>0)else 0
-            log.write("Recall|Precision|F-score in t0: {},{},{}\n".format(recall,precision,fscore))
+            log.write("Recall|Precision|F-score in t0: {:3.2f}%|{:3.2f}%|{:3.2f}%.\n".format(recall*100,precision*100,fscore*100))
             log.flush()
             if(logger):
                 logger.add_scalar('Eval/recall', recall, epoch)
