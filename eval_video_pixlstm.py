@@ -38,7 +38,7 @@ def myeval(model,skiprate:int=30,writer:bool=True):
     model = model.cuda() 
     criterion_mask = MSE_2d_Loss(pixel_sum=False).cuda()
 
-    eval_dataset = Minetto(DEF_MINE_DIR,exclude_boxid=True)
+    eval_dataset = Minetto(DEF_MINE_DIR)
     
     all_recall = []
     all_precision = []
@@ -64,10 +64,12 @@ def myeval(model,skiprate:int=30,writer:bool=True):
                     # skip the initial non text frams
                     fm_cnt+=1
                     continue
-                fgbxs = frame_bx_dict[fm_cnt]
-                bgbxs = None
+                boxs = frame_bx_dict[fm_cnt]
+                boxs = np_box_resize(boxs,x.shape[-3:-1],image_size,'polyxy')
+                txts = sample['txt'][fm_cnt]
+                fgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts!='#')])
+                bgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts=='#')])
 
-                fgbxs = np_box_resize(fgbxs,x.shape[-3:-1],image_size,'polyxy')
                 x = cv2.resize(x,image_size[::-1])
 
                 xnor = torch.from_numpy(np.expand_dims(x,0)).float().cuda()

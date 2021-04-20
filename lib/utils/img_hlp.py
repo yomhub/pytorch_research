@@ -737,12 +737,12 @@ def cv_box_overlap(boxes1,boxes2,denominator:str='max'):
     if(len(boxes1.shape)==2):boxes1 = np.expand_dims(boxes1,0)
     if(len(boxes2.shape)==2):boxes2 = np.expand_dims(boxes2,0)
     denominator = denominator.lower()
-    if(denominator=='sum'):
-        f_denominator=sum
+    if(denominator=='max'):
+        f_denominator=lambda a1,a2,an: max(a1,a2)
     elif(denominator=='min'):
-        f_denominator=min
+        f_denominator=lambda a1,a2,an: min(a1,a2)
     else:
-        f_denominator=max
+        f_denominator=lambda a1,a2,an: a1+a2-an
     poly1 = [Polygon(o) for o in boxes1]
     poly2 = [Polygon(o) for o in boxes2]
     ans = []
@@ -756,7 +756,7 @@ def cv_box_overlap(boxes1,boxes2,denominator:str='max'):
                 tmp.append(0)
                 continue
             a = p1.intersection(p2).area
-            tmp.append(a/f_denominator(p1.area,p2.area) if(p1.intersects(p2))else 0.0)
+            tmp.append(a/f_denominator(p1.area,p2.area,a) if(p1.intersects(p2))else 0.0)
         ans.append(tmp)
     return np.array(ans,dtype=np.float32)
 
@@ -828,7 +828,7 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
 
     pred_cnt = pred.shape[0]
     # remove don't care
-    if(not isinstance(bg,type(None)) and bg.shape[0]>0):
+    if(bg is not None and bg.shape[0]>0):
         if(len(bg.shape)==2):
             bg = np.expand_dims(bg,0)
         ovs = cv_box_overlap(pred,bg,'min')
@@ -837,14 +837,13 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
         for i in range(pred.shape[0]):
             for imax in incs[i]:
                 if(ovs[i,imax]>=ovth):
-                    if(-1-int(imax) not in id_list):
-                        id_list[i] = -1-int(imax)
-                        pred_cnt-=1
-                        break
+                    id_list[i] = -1-int(imax)
+                    pred_cnt-=1
+                    break
                 else:
                     break
-    if(pred_cnt==0):
-        return id_list,1,0 if(gt.shape[0]>0)else 1
+    if(pred_cnt==0 or gt is None or gt.shape[0]==0):
+        return id_list,1,(0 if(gt is not None or gt.shape[0]>0)else 1)
     match_cnt = 0
     ovs = cv_box_overlap(pred,gt,'max')
     incs = np.argsort(ovs,axis=1)
@@ -861,7 +860,7 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
                         break
                 else:
                     break
-    precision = match_cnt/max(match_cnt,pred_cnt,1)
+    precision = match_cnt/pred_cnt if(pred_cnt>1)else 1
     recall = match_cnt/gt.shape[0]
     return id_list,precision,recall
 
