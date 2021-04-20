@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 # =====================
 from lib.utils.img_hlp import np_box_transfrom
 
-def read_xml(xml_dir,target_fmt:str = 'xywh'):
+def read_xml(xml_dir,target_fmt:str = 'xywh',exclude_boxid:bool=False):
     tree = ET.parse(xml_dir)
     root = tree.getroot()
     box_dict = {}
@@ -18,29 +18,24 @@ def read_xml(xml_dir,target_fmt:str = 'xywh'):
         box_list = []
         txt_list = []
         for box in frame[2]:
+            x,y,w,h=float(box.attrib['x']),float(box.attrib['y']),float(box.attrib['w']),float(box.attrib['h'])
             if('poly' in target_fmt.lower()):
-                box_list.append([
-                        float(box.attrib['id']),
-                        float(box.attrib['x']),float(box.attrib['y']),
-                        float(box.attrib['x'])+float(box.attrib['w']),float(box.attrib['y']),
-                        float(box.attrib['x'])+float(box.attrib['w']),float(box.attrib['y'])+float(box.attrib['h']),
-                        float(box.attrib['x']),float(box.attrib['y'])+float(box.attrib['h']),
-                    ])
+                if(exclude_boxid):
+                    box_list.append([(x,y),(x+w,y),(x+w,y+h),(x,y+h)])
+                else:
+                    box_list.append([float(box.attrib['id']),x,y,x+w,y,x+w,y+h,x,y+h])
             else:
-                box_list.append([
-                        float(box.attrib['id']),
-                        float(box.attrib['x']),
-                        float(box.attrib['y']),
-                        float(box.attrib['w']),
-                        float(box.attrib['h']),
-                    ])
+                if(exclude_boxid):
+                    box_list.append([x,y,w,h])
+                else:
+                    box_list.append([float(box.attrib['id']),x,y,w,h])
             txt_list.append(box.attrib['text'])
         box_list = np.asarray(box_list,dtype=np.float32)
         if('poly' not in target_fmt.lower()):
             box_list = np_box_transfrom(box_list,'xywh',target_fmt.lower())
-        
-        box_dict[fid] = box_list
-        txt_dict[fid] = txt_list
+        if(len(box_list)>0):
+            box_dict[fid] = box_list
+            txt_dict[fid] = txt_list
     return box_dict,txt_dict
 
 def default_collate_fn(batch):
@@ -56,12 +51,13 @@ class Minetto():
         'txt': dictionary, key is frame id start from 0
             item is k lenth list
     """
-    def __init__(self, vdo_dir, out_box_format='polyxy',include_name=True):
+    def __init__(self, vdo_dir, out_box_format='polyxy',include_name=True, exclude_boxid:bool=False):
         self._vdo_dir = vdo_dir
         self._names = [o for o in os.listdir(self._vdo_dir) if os.path.exists(os.path.join(self._vdo_dir,o,'PNG'))]
         self._include_name = bool(include_name)
         self._out_box_format = out_box_format.lower()
         self.default_collate_fn = default_collate_fn
+        self.exclude_boxid = exclude_boxid
 
     def __len__(self):
         return len(self._names)
@@ -84,15 +80,16 @@ class Minetto():
             }
 
         if(os.path.exists(os.path.join(self._vdo_dir,self._names[idx],"groundtruth.xml"))):
-            box_dict,txt_dict = read_xml(os.path.join(self._vdo_dir,self._names[idx],"groundtruth.xml"),self._out_box_format)
+            box_dict,txt_dict = read_xml(os.path.join(self._vdo_dir,self._names[idx],"groundtruth.xml"),self._out_box_format,self.exclude_boxid)
             sample['gt']=box_dict
             sample['txt']=txt_dict
+
         elif(os.path.exists(os.path.join(self._vdo_dir,self._names[idx],"XML"))):
             xml_list = os.listdir(os.path.join(self._vdo_dir,self._names[idx],"XML"))
             box_dict = {}
             txt_dict = {}
             for o in xml_list:
-                boxi,txti = read_xml(os.path.join(self._vdo_dir,self._names[idx],"XML",o),self._out_box_format)
+                boxi,txti = read_xml(os.path.join(self._vdo_dir,self._names[idx],"XML",o),self._out_box_format,self.exclude_boxid)
                 box_dict.update(boxi)
                 txt_dict.update(txti)
             sample['gt']=box_dict

@@ -11,6 +11,9 @@ from collections import OrderedDict
 import cv2
 from datetime import datetime
 
+def calculate_fscore(a,b):
+    return 2*a*b/(a+b) if(a+b>0)else 0.0
+    
 def str2time(instr):
     ymd,hms=instr.split('-')
     return datetime(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:]), int(hms[:2]), int(hms[2:4]), int(hms[4:6]))
