@@ -361,7 +361,7 @@ def train(args):
         log.write("Total time usage: {} Day {} Second.\n".format(time_usage.days,time_usage.seconds))
     except:
         log.write("Total time usage: {} Day {} Second.\n".format(time_usage.day,time_usage.second))
-    log.close()
+
     return 0
 
 if __name__ == '__main__':
@@ -412,7 +412,7 @@ if __name__ == '__main__':
             "Task: {}/{}\n".format(taskid+1,total_tasks)+\
             "Working DIR: {}\n".format(DEF_WORK_DIR)+\
             "Running with: \n"+\
-            "\t Epoch size: {}.\n".format(args.epoch)+\
+            "\t Epoch size: {}.\n".format(cur_epoch)+\
             "\t Base network: {}.\n".format(args.basenet)+\
             "\t Optimizer: {}.\n".format(cur_opt)+\
             "\t LR decay: {}.\n".format('Yes' if(args.lr_decay)else 'No')+\

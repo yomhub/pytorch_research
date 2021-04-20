@@ -179,8 +179,11 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
     return np.concatenate(rets,ax)
 
 def print_epoch_log(epoch,total_epoch,loss,timeusg=None,**args):
-    sys.stdout.write('Epoch [{}/{}], Loss: {:.4f}\n'.format(epoch + 1, total_epoch,loss))
-    if(timeusg):
+    if(epoch is not None and total_epoch is not None):
+        sys.stdout.write('Epoch [{}/{}], '.format(epoch + 1, total_epoch))
+    if(loss is not None):
+        sys.stdout.write('Loss: {:.4f}\n'.format(loss))
+    if(timeusg is not None):
         try:                         
             sys.stdout.write("\tTime usage: {} Day {} Second.\n".format(timeusg.days,timeusg.seconds))
         except:
