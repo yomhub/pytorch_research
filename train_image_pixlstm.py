@@ -18,7 +18,7 @@ from lib.dataloader.base import split_dataset_cls_to_train_eval
 from lib.dataloader.total import Total
 from lib.dataloader.icdar import *
 from lib.dataloader.msra import MSRA
-from lib.model.pixel_map import PIXLSTM,PIXLSTM_Residual
+from lib.model.pixel_map import PIXLSTM,PIXLSTM_Residual,PIXCNN
 from lib.loss.mseloss import *
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -38,18 +38,21 @@ def train(args):
     logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S"))) if(not args.debug)else None
     log = sys.stdout
 
-    model = PIXLSTM_Residual(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
+    model = PIXCNN(mask_ch=2,basenet=args.basenet,min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
     dshape = (1,model.final_predict_ch,DEF_LSTM_STATE_SIZE[0],DEF_LSTM_STATE_SIZE[1])
+
+    try:
+        model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+        model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+        model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
+    except:
+        None
 
     if(args.load and os.path.exists(args.load)):
         log.write("Load parameters from {}.\n".format(args.load))
         model.load_state_dict(copyStateDict(torch.load(args.load)))
         model = model.cuda()
-    else:
-        model.lstm.Wci = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
-        model.lstm.Wcf = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
-        model.lstm.Wco = nn.Parameter(torch.rand(dshape,dtype=torch.float32),requires_grad=True)
 
     model = model.cuda()
     _,d = next(iter(model.state_dict().items()))
@@ -201,7 +204,10 @@ def train(args):
                 xnor = torch_img_normalize(x_sequence)
                 xnor = xnor.permute(0,3,1,2)
                 avg_loss = 0.0
-                model.lstmh,model.lstmc=lstmh,lstmc
+                try:
+                    model.lstmh,model.lstmc=lstmh,lstmc
+                except:
+                    None
                 pred_region = []
                 for framei in range(xnor.shape[0]):
                     pred,feat = model(xnor[framei:framei+1])

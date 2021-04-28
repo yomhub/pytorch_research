@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
-from lib.model.pixel_map import PIXLSTM_Residual
+from lib.model.pixel_map import PIXLSTM_Residual,PIX_Unet
 from lib.loss.mseloss import *
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -28,7 +28,7 @@ DEF_FLUSH_COUNT = -1
 DEF_LSTM_STATE_SIZE=(322,322)
 
 @torch.no_grad()
-def myeval(model,skiprate:int=30,writer:bool=True):
+def myeval(model,maskch,skiprate:int=30,writer:bool=True):
     image_size=(640, 640)
     time_start = datetime.now()
     time_cur = time_start
@@ -49,9 +49,11 @@ def myeval(model,skiprate:int=30,writer:bool=True):
         frame_bx_dict = sample['gt']
         p_keys = list(frame_bx_dict.keys())
         p_keys.sort()
-
-        model.lstmc.zero_()
-        model.lstmh.zero_()
+        try:
+            model.lstmc.zero_()
+            model.lstmh.zero_()
+        except:
+            None
         recall_list,precision_list,fscore_list,loss_list = [],[],[],[]
         fm_cnt,proc_cnt = 0,0
         # try:
@@ -76,7 +78,7 @@ def myeval(model,skiprate:int=30,writer:bool=True):
                 xnor = torch_img_normalize(xnor).permute(0,3,1,2)
                 pred,feat = model(xnor)
                 proc_cnt+=1
-                region_np = pred[0,0].cpu().detach().numpy()
+                region_np = pred[0,maskch].cpu().detach().numpy()
                 region_np[region_np<0.2]=0.0
 
                 det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np,region_mean_split=True)
@@ -92,12 +94,16 @@ def myeval(model,skiprate:int=30,writer:bool=True):
 
                 region_mask_np = cv_gen_gaussian_by_poly(fgbxs,image_size)
                 region_mask = torch.from_numpy(region_mask_np.reshape(1,1,region_mask_np.shape[0],region_mask_np.shape[1])).float().cuda()
-                loss = criterion_mask(pred[:,0:1],region_mask)
+                loss = criterion_mask(pred[:,maskch:maskch+1],region_mask)
                 loss_list.append(loss.item())
 
                 if(logger):
-                    region_np = pred[0,0].detach().cpu().numpy()
-                    logger.add_image('X|GT|Pred in {}'.format(sample['name']),concatenate_images([cv_draw_poly(x,fgbxs),cv_heatmap(region_mask_np),cv_heatmap(region_np)]),fm_cnt,dataformats='HWC')
+                    region_np = pred[0,maskch].detach().cpu().numpy()
+                    img = x
+                    img = cv_draw_poly(img,fgbxs,'GT',color=(255,0,0))
+                    img = cv_draw_poly(img,det_boxes,'Pred',color=(0,255,0))
+
+                    logger.add_image('X|GT|Pred in {}'.format(sample['name']),concatenate_images([img,cv_heatmap(region_mask_np),cv_heatmap(region_np)]),fm_cnt,dataformats='HWC')
                     logger.add_scalar('Loss/ {}'.format(sample['name']),loss.item(),fm_cnt)
                     logger.add_scalar('Precision/ {}'.format(sample['name']),mask_precision,fm_cnt)
                     logger.add_scalar('Recall/ {}'.format(sample['name']),mask_recall,fm_cnt)
@@ -150,10 +156,15 @@ def myeval(model,skiprate:int=30,writer:bool=True):
     return 0
 
 if __name__ == '__main__':
-    pthdir = 'saved_model/lstm_ttt_Residual_region_pxnet.pth'
-    model = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
-        include_final=False,pretrained=True).float()
-    model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
-    model.load_state_dict(copyStateDict(torch.load(pthdir)))
+    # pthdir = 'saved_model/lstm_ttt_Residual_region_pxnet.pth'
+    # maskch=0
+    # model = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+    #     include_final=False,pretrained=True).float()
+    # model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
 
-    myeval(model)
+    pthdir = '/BACKUP/yom_backup/saved_model/max_eval_benchmark_ttt_region_only_pxnet.pth'
+    maskch=2
+    model = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet_name='mobile',min_upc_ch=128,pretrained=False).float()
+
+    model.load_state_dict(copyStateDict(torch.load(pthdir)))
+    myeval(model,maskch)

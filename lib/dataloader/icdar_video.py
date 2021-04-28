@@ -74,6 +74,7 @@ class ICDARV():
             'fps': fps,
             'width':width,
             'height':height,
+            'name':self._names[idx].split('.')[0],
             }
 
         if(os.path.exists(os.path.join(self._vdo_dir,self._names[idx].split('.')[0]+'_GT.xml'))):
