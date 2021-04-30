@@ -2088,8 +2088,11 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         scale: (y,x) scale or single float
         blur: bool, set blur=True to enable blur kernel
             blur_rate: float, blur rate, default is 0.3
+            blur_stepi: list of int, value range in [1,total_step-1], 
+                designate the index of blured image
             blur_ksize: int, kernel size, default is 10
             blur_intensity: float, intensity, default is 0.1
+            blur_return_stepi: bool, if True return blur_stepi 
     """
     org_image_size=image.shape[:-1]
     Ms = [np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)]
@@ -2110,7 +2113,10 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
 
     if('blur' in args and args['blur']):
         rate = min(0.7,args['blur_rate']) if('blur_rate' in args) else 0.3
-        blur_stepi = [stepi for stepi in range(total_step-2) if(seed.random()>rate)]
+        if('blur_stepi' in args):
+            blur_stepi = [stepi-1 for stepi in args['blur_stepi'] if(stepi<total_step)]
+        else:
+            blur_stepi = [stepi for stepi in range(total_step-2) if(seed.random()>rate)]
     else:
         blur_stepi = []
 
@@ -2181,6 +2187,10 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         image_list.append(img)
         if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
+
+    if('blur' in args and 'blur_return_stepi' in args and args['blur_return_stepi']):
+        blur_stepi = [o+1 for o in blur_stepi]
+        return image_list,poly_xy_list,Ms,blur_stepi
 
     return image_list,poly_xy_list,Ms
 
