@@ -78,12 +78,14 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
             ,blur=True,blur_rate=0.6,blur_ksize=15,blur_intensity=0.2,
             blur_return_stepi=True,
             )
+        
 
         x_sequence = torch.tensor(image_list,dtype = model_dtype, device=model_device)
         xnor = torch_img_normalize(x_sequence).permute(0,3,1,2)
 
         fgbxs_list,bgbxs_list = [],[]
         region_mask_np_list = []
+        weight_mask_list = []
         # generate fg/bg in each frame
         for framei in range(len(image_list)):
             boxes = poly_xy_list[framei]
@@ -102,6 +104,10 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
                     else:
                         continue
                 bgbxs.append(o)
+            if(bgbox):
+                weight_mask_list.append(cv_gen_binary_mask_by_poly(bgbox,image_size,default_value=1,default_fill=0))
+            else:
+                weight_mask_list.append(np.ones(image_size,dtype=np.float32))
 
             fgbxs_list.append(np.array(fgbxs))
             bgbxs_list.append(np.array(bgbxs))
@@ -112,6 +118,8 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
 
         region_mask = torch.from_numpy(np.expand_dims(np.array(region_mask_np_list),1)).float().cuda()
         eva_dict = {o:defaultdict(list) for o in model_name_list}
+
+        weight_mask = torch.from_numpy(np.expand_dims(np.array(weight_mask_list),-1),dtype = model_dtype, device=model_device).permute(0,3,1,2)
 
         for model,model_name in zip(model_list,model_name_list):
             try:
@@ -125,7 +133,7 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
             for framei in range(len(image_list)):
 
                 pred,feat = model(xnor[framei:framei+1])
-                loss = criterion_mask(pred[:,maskch:maskch+1],region_mask[framei:framei+1])
+                loss = criterion_mask(pred[:,maskch:maskch+1],region_mask[framei:framei+1],weight_mask[framei:framei+1])
 
                 region_np = pred[0,maskch].cpu().detach().numpy()
                 region_np[region_np<0.2]=0.0
@@ -256,41 +264,41 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
             # calculate performance difference
             if('recall_no_blur' in all_eva_dict[model_name] and all_eva_dict[model_name]['recall_no_blur']):
                 ax = axs[0,0]
-                x_fscore = np.array(all_eva_dict[model_name]['fscore_no_blur'])
-                x_loss = np.array(all_eva_dict[model_name]['loss_no_blur'])
-                y_rotate = np.array(all_eva_dict[model_name]['rotate_no_blur'])
-                y_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_no_blur'],all_eva_dict[model_name]['shifty_no_blur'])])
-                y_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_no_blur'],all_eva_dict[model_name]['scaley_no_blur'])])
-                y_rotate_ind = np.argsort(y_rotate)
-                y_shift_ind = np.argsort(y_shift)
-                y_scale_ind = np.argsort(y_scale)
+                y_fscore = np.array(all_eva_dict[model_name]['fscore_no_blur'])
+                y_loss = np.array(all_eva_dict[model_name]['loss_no_blur'])
+                x_rotate = np.array(all_eva_dict[model_name]['rotate_no_blur'])
+                x_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_no_blur'],all_eva_dict[model_name]['shifty_no_blur'])])
+                x_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_no_blur'],all_eva_dict[model_name]['scaley_no_blur'])])
+                x_rotate_ind = np.argsort(x_rotate)
+                x_shift_ind = np.argsort(x_shift)
+                x_scale_ind = np.argsort(x_scale)
 
-                axs[0,0].plot(np.take(x_fscore,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_no_blur')
-                axs[0,1].plot(np.take(x_fscore,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_no_blur')
-                axs[0,2].plot(np.take(x_fscore,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_no_blur')
+                axs[0,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_fscore,x_rotate_ind), label=model_name+'_no_blur')
+                axs[0,1].plot(np.take(x_shift,x_shift_ind), np.take(y_fscore,x_shift_ind), label=model_name+'_no_blur')
+                axs[0,2].plot(np.take(x_scale,x_scale_ind), np.take(y_fscore,x_scale_ind), label=model_name+'_no_blur')
 
-                axs[1,0].plot(np.take(x_loss,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_no_blur')
-                axs[1,1].plot(np.take(x_loss,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_no_blur')
-                axs[1,2].plot(np.take(x_loss,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_no_blur')
+                axs[1,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_loss,x_rotate_ind), label=model_name+'_no_blur')
+                axs[1,1].plot(np.take(x_shift,x_shift_ind), np.take(y_loss,x_shift_ind), label=model_name+'_no_blur')
+                axs[1,2].plot(np.take(x_scale,x_scale_ind), np.take(y_loss,x_scale_ind), label=model_name+'_no_blur')
 
             if('recall_blur' in all_eva_dict[model_name] and all_eva_dict[model_name]['recall_blur']):
                 ax = axs[0,0]
-                x_fscore = np.array(all_eva_dict[model_name]['fscore_blur'])
-                x_loss = np.array(all_eva_dict[model_name]['loss_blur'])
-                y_rotate = np.array(all_eva_dict[model_name]['rotate_blur'])
-                y_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_blur'],all_eva_dict[model_name]['shifty_blur'])])
-                y_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_blur'],all_eva_dict[model_name]['scaley_blur'])])
-                y_rotate_ind = np.argsort(y_rotate)
-                y_shift_ind = np.argsort(y_shift)
-                y_scale_ind = np.argsort(y_scale)
+                y_fscore = np.array(all_eva_dict[model_name]['fscore_blur'])
+                y_loss = np.array(all_eva_dict[model_name]['loss_blur'])
+                x_rotate = np.array(all_eva_dict[model_name]['rotate_blur'])
+                x_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_blur'],all_eva_dict[model_name]['shifty_blur'])])
+                x_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_blur'],all_eva_dict[model_name]['scaley_blur'])])
+                x_rotate_ind = np.argsort(x_rotate)
+                x_shift_ind = np.argsort(x_shift)
+                x_scale_ind = np.argsort(x_scale)
 
-                axs[0,0].plot(np.take(x_fscore,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_blur')
-                axs[0,1].plot(np.take(x_fscore,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_blur')
-                axs[0,2].plot(np.take(x_fscore,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_blur')
+                axs[0,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_fscore,x_rotate_ind), label=model_name+'_blur')
+                axs[0,1].plot(np.take(x_shift,x_shift_ind), np.take(y_fscore,x_shift_ind), label=model_name+'_blur')
+                axs[0,2].plot(np.take(x_scale,x_scale_ind), np.take(y_fscore,x_scale_ind), label=model_name+'_blur')
 
-                axs[1,0].plot(np.take(x_loss,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_blur')
-                axs[1,1].plot(np.take(x_loss,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_blur')
-                axs[1,2].plot(np.take(x_loss,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_blur')
+                axs[1,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_loss,x_rotate_ind), label=model_name+'_blur')
+                axs[1,1].plot(np.take(x_shift,x_shift_ind), np.take(y_loss,x_shift_ind), label=model_name+'_blur')
+                axs[1,2].plot(np.take(x_scale,x_scale_ind), np.take(y_loss,x_scale_ind), label=model_name+'_blur')
         
         for o in axs.reshape(-1):
             o.legend()
