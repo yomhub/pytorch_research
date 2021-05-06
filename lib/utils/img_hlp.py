@@ -816,17 +816,25 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
         precision_rate
         recall_rate
     """
-    id_list = [None]*pred.shape[0]
-    if(pred.shape[0]==0 and gt.shape[0]==0):
-        return id_list,1,1
-    if(pred.shape[0]==0 or gt.shape[0]==0):
-        return id_list,0,0
+    id_list = [None]*len(pred)
+    if(len(pred)==0):
+        precision = 1 if(len(gt)==0)else 0
+        recall = 1
+        return id_list,precision,recall
+    
+    if(isinstance(pred,list)):
+        pred = np.array(pred)
+    if(isinstance(gt,list)):
+        gt = np.array(gt)
+    if(bg is not None and isinstance(bg,list)):
+        bg = np.array(bg)
+
     if(len(pred.shape)==2):
         pred = np.expand_dims(pred,0)
     if(len(gt.shape)==2):
         gt = np.expand_dims(gt,0)
 
-    pred_cnt = pred.shape[0]
+    pred_cnt = len(pred)
     # remove don't care
     if(bg is not None and bg.shape[0]>0):
         if(len(bg.shape)==2):
@@ -834,7 +842,7 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
         ovs = cv_box_overlap(pred,bg,'min')
         incs = np.argsort(ovs,axis=1)
         incs = incs[:,::-1]
-        for i in range(pred.shape[0]):
+        for i in range(len(pred)):
             for imax in incs[i]:
                 if(ovs[i,imax]>=ovth):
                     id_list[i] = -1-int(imax)
@@ -849,7 +857,7 @@ def cv_box_match(pred,gt,bg=None,ovth:float=0.5):
     incs = np.argsort(ovs,axis=1)
     incs = incs[:,::-1]
     if(gt.shape[0]>0):
-        for i in range(pred.shape[0]):
+        for i in range(len(pred)):
             if(id_list[i]!=None):
                 continue
             for imax in incs[i]:
@@ -1291,22 +1299,28 @@ def cv_mask_image(image,mask,rate:float=0.7):
 
     return cv2.addWeighted(image,rate,mask,1.0-rate,0)
 
-def cv_heatmap(img,clr = cv2.COLORMAP_JET):
+def cv_heatmap(img,clr = cv2.COLORMAP_JET, resize_to=None):
     """
     Convert heatmap to RBG color map
     Args:
         img: ((batch),h,w) in [0,1]
         clr: color
+        resize_to: tuple or int, resize to (w,h)
     Return:
         colored image: ((batch),h,w,3) in RBG
     """
     # clr demo see https://docs.opencv.org/master/d3/d50/group__imgproc__colormap.html
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
     if(len(img.shape)==3 and img.shape[-1]!=1):
-        img = np.stack([cv2.applyColorMap(o, clr) for o in img],0)
+        img = np.stack([cv2.applyColorMap(o, clr, resize_to) for o in img],0)
     else:
         img = cv2.applyColorMap(img, clr)
-    return img.astype(np.uint8)
+    img = img.astype(np.uint8)
+    if(len(img.shape)==3 and resize_to is not None):
+        if(not isinstance(resize_to,Iterable)):
+            resize_to = (resize_to,resize_to)
+        img = cv2.resize(img,resize_to[::-1])
+    return img
 
 def cv_undo_heatmap(img,clr):
     """
@@ -2182,8 +2196,10 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                     ep = np.array((0,ksize))
                 ep = ep.astype(np.int32)
                 kr_shift = cv2.line(kr_shift,(sp[0],sp[1]),(ep[0],ep[1]),color=1,thickness=1)
-                kr_shift /= max(1,np.sum((kr_shift>0).astype(np.uint8)))
-                img = cv2.filter2D(img,-1,kr_shift)
+                matrix_k = np.sum(kr_shift>0)
+                if(matrix_k>1):
+                    kr_shift /= matrix_k
+                    img = cv2.filter2D(img,-1,kr_shift)
         image_list.append(img)
         if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))

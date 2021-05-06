@@ -28,7 +28,10 @@ DEF_MOD_RATE = 0.3
 DEF_WAVE_FUNC = lambda x: np.cos(2*x*np.pi)*DEF_MOD_RATE+1-DEF_MOD_RATE
 DEF_LSTM_STATE_SIZE=(322,322)
 
+max_fscore = 0.0
+
 def train(args):
+    global max_fscore
     image_size=(640, 640)
     time_start = datetime.now()
     time_cur = time_start
@@ -143,7 +146,7 @@ def train(args):
                                                 collate_fn=eval_dataset.default_collate_fn,)
     total_step = len(train_loader)
     distributes = defaultdict(list)
-
+    
     for epoch in range(args.epoch):
         for stepi, sample in enumerate(train_loader):
             x = sample['image']
@@ -161,10 +164,23 @@ def train(args):
                 # scale in [0.5,3] * random in [-1,+1]
                 scalex = min(3,max(0.5,args.maxstep * args.scalev)) *(seed.random()-0.5)*2
                 scaley = min(3,max(0.5,args.maxstep * args.scalev)) *(seed.random()-0.5)*2
-                image_list,poly_xy_list,Ms = cv_gen_trajectory(image,args.maxstep,box,
-                    rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex)
-                    ,blur=True,blur_rate=0.5,blur_ksize=15,blur_intensity=0.2,
-                    )
+                if(not args.random):
+                    image_list,poly_xy_list,Ms = cv_gen_trajectory(image,args.maxstep,box,
+                        rotate=rotate,shift=(shifty,shiftx),scale=(scaley,scalex)
+                        ,blur=True,blur_rate=0.5,blur_ksize=15,blur_intensity=0.2,
+                        )
+                else:
+                    image_list,poly_xy_list,Ms = [],[],[]
+                    for _ in range(args.maxstep):
+                        imgt,boxt,M = cv_random_image_process(image,box,False,
+                        rotate=rotate,random_90=False,
+                        shift = max(shiftx,shifty),
+                        scale_weight = max(scalex,scaley)*0.2,scale_base = max(scalex,scaley)*0.9,
+                        )
+                        image_list.append(imgt)
+                        poly_xy_list.append(boxt)
+                        Ms.append(M)
+
                 distributes['rotate'].append(rotate)
                 distributes['shiftx'].append(shiftx)
                 distributes['shifty'].append(shifty)
@@ -336,6 +352,15 @@ def train(args):
                     else:
                         logger.add_image(key,eval_log_dict[key],0,dataformats='HWC')
                 logger.flush()
+            if(fscore>max_fscore):
+                max_fscore = fscore
+                fmdir,fmname = os.path.split(args.save)
+                fmname = 'max_eval_'+fmname
+                finalname = os.path.join(fmdir,fmname)
+                log.write("Saving model at {}...\n".format(finalname))
+                if(not os.path.exists(os.path.dirname(fmdir))):
+                    os.makedirs(os.path.dirname(args.save))
+                torch.save(model.state_dict(),finalname)
 
         if(logger):
             for k,v in distributes.items():
@@ -384,7 +409,8 @@ if __name__ == '__main__':
     parser.add_argument('--learnrate', type=str, help='Learning rate.',default="0.001")
     parser.add_argument('--epoch', type=str, help='Epoch size.',default="10")
     parser.add_argument('--lr_decay', help='Set --lr_decay to enbable learning rate decay.', action="store_true")
-    # LSTM specific
+    # trajectory args
+    parser.add_argument('--random', help='Set --random to replace trajectory with fully random generation.', action="store_true")
     parser.add_argument('--maxstep', type=int, help='Max lenth of single image, total lenth will be batch*maxstep.',default=3)
     parser.add_argument('--rotatev', type=float, help='Typical rotation speed (angle/FPS).',default=20)
     parser.add_argument('--shiftv', type=float, help='Typical shift speed (pixel/FPS).',default=20)
