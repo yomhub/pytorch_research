@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.total import Total
-from lib.model.pixel_map import PIXLSTM_Residual,PIX_Unet
+from lib.model.pixel_map import PIXLSTM_Residual,PIX_Unet,PIXCNN
 from lib.loss.mseloss import *
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -30,7 +30,7 @@ DEF_LSTM_STATE_SIZE=(322,322)
 
 @torch.no_grad()
 def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=True):
-    rotatev = 20
+    rotatev = 30
     shiftv = 20
     scalev = 0.2
 
@@ -38,9 +38,11 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
     time_start = datetime.now()
     time_cur = time_start
     work_dir = os.path.join(DEF_WORK_DIR,'log','eva_on_ttt',time_start.strftime("%Y%m%d-%H%M%S"))
-    logger = SummaryWriter(work_dir) if(writer)else None
+    if(not os.path.exists(os.path.join(work_dir,'images'))):
+        os.makedirs(os.path.join(work_dir,'images'))
+    # logger = SummaryWriter(work_dir) if(writer)else None
 
-    if(not model_name_list or len(model_name_list)<model_list):
+    if(not model_name_list or len(model_name_list)<len(model_list)):
         if(not model_name_list):
             model_name_list=[]
         model_name_list += [model.__class__.__name__ for model in model_list[len(model_name_list):]]
@@ -64,7 +66,7 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
     log_name_list = ['recall_no_blur','precision_no_blur','fscore_no_blur','loss_no_blur','recall_blur','precision_blur','fscore_blur','loss_blur',]
 
     for stepi, sample in enumerate(eval_dataset):
-        txts = sample['txt']
+        txts = sample['text']
         seed = np.random
         rotate = maxstep * rotatev *(seed.random()-0.5)*2.2
         shiftx = maxstep * shiftv *(seed.random()-0.5)*2.2
@@ -131,7 +133,7 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
 
                 det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np,region_mean_split=True)
                 if(det_boxes.shape[0]>0):
-                    det_boxes = np_box_resize(det_boxes,region_np.shape[-2:],x.shape[-3:-1],'polyxy')
+                    det_boxes = np_box_resize(det_boxes,region_np.shape[-2:],x_sequence.shape[-3:-1],'polyxy')
                     ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
                 else:
                     mask_precision,mask_recall=0.0,0.0
@@ -151,32 +153,36 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
 
         if(writer):
             
-            fig,axs = plt.subplots(nrows=len(model_list)+2, ncols=6,figsize=(2*(1+len(image_list)), 2*(2+len(model_list))),sharey=True)
-
+            fig,axs = plt.subplots(
+                nrows=len(model_list)+2, 
+                ncols=1,
+                figsize=(2*len(image_list), 2*(2+len(model_list))),
+                sharey=True)
+            axs = axs.reshape(-1)
             for i in range(len(axs)):
                 axs[i].get_yaxis().set_visible(False)
                 axs[i].get_xaxis().set_visible(False)
 
-            axs[0].set_title('Images',loc='left')
+            axs[0].get_yaxis().label.set_text('Images')
             image_list_log = []
-            boundary = np.array([[0,0],[image_size[0],0],image_size,[0,image_size[1]]])
+            boundary = np.array([[1,1],[image_size[0]-1,1],[image_size[0]-1,image_size[1]-1],[1,image_size[1]-1]])
             for i in range(len(image_list)):
                 if(i in blur_stepi):
-                    image_list_log.append(cv_draw_poly(image_list[i],boundary,color=(255,0,0),thickness=3))
+                    image_list_log.append(cv_draw_poly(image_list[i],boundary,color=(255,0,0),thickness=9))
                 else:
                     image_list_log.append(image_list[i])
             axs[0].imshow(concatenate_images(image_list_log,line_wide=1))
 
-            axs[1].set_title('GT',loc='left')
+            axs[1].get_yaxis().label.set_text('GT')
             region_mask_rgb = [cv_heatmap(o) for o in region_mask_np_list]
             axs[1].imshow(concatenate_images(region_mask_rgb,line_wide=1))
 
             for modelid in range(len(model_list)):
-                axs[2+modelid].set_title(model_name_list[modelid],loc='left')
-                region_mask_rgb = [cv_heatmap(cv2.resize(o,image_size[::-1])) for o in eva_dict[model_name]['region_np']]
+                axs[2+modelid].get_yaxis().label.set_text(model_name_list[modelid])
+                region_mask_rgb = [cv_heatmap(o,resize_to = image_size) for o in eva_dict[model_name]['region_np'][0]]
                 axs[2+modelid].imshow(concatenate_images(region_mask_rgb,line_wide=1))
 
-            fig.savefig(os.path.join(work_dir,'images',sample['name'].aplit('.')[0]+'.png'))
+            fig.savefig(os.path.join(work_dir,'images','eva_{}_.png'.format(sample['name'].split('.')[0])))
         
         for model_name in model_name_list:
             recall = eva_dict[model_name]['recall']
@@ -205,24 +211,93 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
                 precision_no_blur = np.array(precision_no_blur)
                 fscore_no_blur = np.array(fscore_no_blur)
                 loss_no_blur = np.array(loss_no_blur)
-                mean_recall_no_blur = np.mean(mean_recall_no_blur)
-                mean_precision_no_blur = np.mean(mean_precision_no_blur)
-                mean_fscore_no_blur = np.mean(mean_fscore_no_blur)
-                mean_loss_no_blur = np.mean(mean_loss_no_blur)
+                mean_recall_no_blur = np.mean(recall_no_blur)
+                mean_precision_no_blur = np.mean(precision_no_blur)
+                mean_fscore_no_blur = np.mean(fscore_no_blur)
+                mean_loss_no_blur = np.mean(loss_no_blur)
     
                 all_eva_dict[model_name]['recall_no_blur'].append(mean_recall_no_blur)
                 all_eva_dict[model_name]['precision_no_blur'].append(mean_precision_no_blur)
                 all_eva_dict[model_name]['fscore_no_blur'].append(mean_fscore_no_blur)
                 all_eva_dict[model_name]['loss_no_blur'].append(mean_loss_no_blur)
-                rotate,shiftx,shifty,scalex,scaley
+                all_eva_dict[model_name]['rotate_no_blur'].append(rotate)
+                all_eva_dict[model_name]['shiftx_no_blur'].append(shiftx)
+                all_eva_dict[model_name]['shifty_no_blur'].append(shifty)
+                all_eva_dict[model_name]['scalex_no_blur'].append(scalex)
+                all_eva_dict[model_name]['scaley_no_blur'].append(scaley)
 
             if(recall_blur):
                 all_eva_dict[model_name]['recall_blur'].append(np.mean(recall_blur))
                 all_eva_dict[model_name]['precision_blur'].append(np.mean(precision_blur))
                 all_eva_dict[model_name]['fscore_blur'].append(np.mean(fscore_blur))
                 all_eva_dict[model_name]['loss_blur'].append(np.mean(loss_blur))
+                all_eva_dict[model_name]['rotate_blur'].append(rotate)
+                all_eva_dict[model_name]['shiftx_blur'].append(shiftx)
+                all_eva_dict[model_name]['shifty_blur'].append(shifty)
+                all_eva_dict[model_name]['scalex_blur'].append(scalex)
+                all_eva_dict[model_name]['scaley_blur'].append(scaley)
             
+        # end of single sample
+        # break
 
+        fig,axs = plt.subplots(nrows=2, ncols=3,figsize=(len(image_list), 2*(2+len(model_list))),sharey=True)
+        for o in axs[:,0]:
+            o.get_xaxis().label.set_text('Rotation')
+        for o in axs[:,1]:
+            o.get_xaxis().label.set_text('Shift')
+        for o in axs[:,2]:
+            o.get_xaxis().label.set_text('Scale')
+        for o in axs[0,:]:
+            o.get_yaxis().label.set_text('F-score')
+        for o in axs[1,:]:
+            o.get_yaxis().label.set_text('Loss')
+
+        for model_id,model_name in enumerate(model_name_list):
+            # calculate performance difference
+            if('recall_no_blur' in all_eva_dict[model_name] and all_eva_dict[model_name]['recall_no_blur']):
+                ax = axs[0,0]
+                x_fscore = np.array(all_eva_dict[model_name]['fscore_no_blur'])
+                x_loss = np.array(all_eva_dict[model_name]['loss_no_blur'])
+                y_rotate = np.array(all_eva_dict[model_name]['rotate_no_blur'])
+                y_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_no_blur'],all_eva_dict[model_name]['shifty_no_blur'])])
+                y_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_no_blur'],all_eva_dict[model_name]['scaley_no_blur'])])
+                y_rotate_ind = np.argsort(y_rotate)
+                y_shift_ind = np.argsort(y_shift)
+                y_scale_ind = np.argsort(y_scale)
+
+                axs[0,0].plot(np.take(x_fscore,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_no_blur')
+                axs[0,1].plot(np.take(x_fscore,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_no_blur')
+                axs[0,2].plot(np.take(x_fscore,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_no_blur')
+
+                axs[1,0].plot(np.take(x_loss,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_no_blur')
+                axs[1,1].plot(np.take(x_loss,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_no_blur')
+                axs[1,2].plot(np.take(x_loss,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_no_blur')
+
+            if('recall_blur' in all_eva_dict[model_name] and all_eva_dict[model_name]['recall_blur']):
+                ax = axs[0,0]
+                x_fscore = np.array(all_eva_dict[model_name]['fscore_blur'])
+                x_loss = np.array(all_eva_dict[model_name]['loss_blur'])
+                y_rotate = np.array(all_eva_dict[model_name]['rotate_blur'])
+                y_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_blur'],all_eva_dict[model_name]['shifty_blur'])])
+                y_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_blur'],all_eva_dict[model_name]['scaley_blur'])])
+                y_rotate_ind = np.argsort(y_rotate)
+                y_shift_ind = np.argsort(y_shift)
+                y_scale_ind = np.argsort(y_scale)
+
+                axs[0,0].plot(np.take(x_fscore,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_blur')
+                axs[0,1].plot(np.take(x_fscore,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_blur')
+                axs[0,2].plot(np.take(x_fscore,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_blur')
+
+                axs[1,0].plot(np.take(x_loss,y_rotate_ind),np.take(y_rotate,y_rotate_ind), label=model_name+'_blur')
+                axs[1,1].plot(np.take(x_loss,y_shift_ind),np.take(y_shift,y_shift_ind), label=model_name+'_blur')
+                axs[1,2].plot(np.take(x_loss,y_scale_ind),np.take(y_scale,y_scale_ind), label=model_name+'_blur')
+        
+        for o in axs.reshape(-1):
+            o.legend()
+        s = ''
+        for o in model_name_list:
+            s+='_'+o
+        fig.savefig(os.path.join(work_dir,'eva{}_.png'.format(s)))
         # if(logger):
         #     region_np = pred[0,maskch].detach().cpu().numpy()
         #     img = x
@@ -251,15 +326,17 @@ def myeval(model_list,maskch_list,model_name_list,maxstep:int=10,writer:bool=Tru
     return 0
 
 if __name__ == '__main__':
-    # pthdir = 'saved_model/lstm_ttt_Residual_region_pxnet.pth'
-    # maskch=0
-    # model = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
-    #     include_final=False,pretrained=True).float()
-    # model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
+    pthdir = '/BACKUP/yom_backup/saved_model/lstm_ttt_Residual_region_pxnet.pth'
+    maskch=0
+    model_lstm = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+        include_final=False,pretrained=True).float()
+    model_lstm.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
+    model_lstm.load_state_dict(copyStateDict(torch.load(pthdir)))
 
-    pthdir = '/BACKUP/yom_backup/saved_model/max_eval_benchmark_ttt_region_only_pxnet.pth'
-    maskch=2
-    model = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet_name='mobile',min_upc_ch=128,pretrained=False).float()
+    pthdir = '/BACKUP/yom_backup/saved_model/CNN_ttt_region_pxnet.pth'
+    maskch=0
+    model_cnn = PIXCNN(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+        include_final=False,pretrained=True).float()
+    model_cnn.load_state_dict(copyStateDict(torch.load(pthdir)))
 
-    model.load_state_dict(copyStateDict(torch.load(pthdir)))
-    myeval(model,maskch)
+    myeval([model_lstm,model_cnn],[0,0],['LSTM','CNN'],writer=False)
