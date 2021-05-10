@@ -101,6 +101,51 @@ def plt_show_images(plt_w:int,plt_h:int,image_list:list,title_list:list=None,hid
 
     return fig,ax_tup
 
+def plt_correlation(x_datas,y_datas,x_names=None,y_names=None,fig=None,axs=None,cur_label_name:str=None):
+    """
+    Correlation graph using plt.
+    Args:
+
+    """
+    if(not isinstance(x_datas,np.ndarray)):
+        x_datas = np.array(x_datas)
+    if(not isinstance(y_datas,np.ndarray)):
+        y_datas = np.array(y_datas)
+    if(len(x_datas.shape)==1):
+        x_datas = np.expand_dims(x_datas, 0)
+    if(len(y_datas.shape)==1):
+        y_datas = np.expand_dims(y_datas, 0)
+
+    assert len(x_datas.shape)==2 and len(y_datas.shape)==2
+
+    if(fig is None or axs is None):
+        fig,axs = plt.subplots(len(y_datas),len(x_datas),sharey=True)
+    else:
+        assert axs.size==(x_datas.shape[0]*y_datas.shape[0])
+        axs.reshape(y_datas.shape[0],x_datas.shape[0])
+    
+    for i,ys in enumerate(y_datas):
+        for j,xs in enumerate(x_datas):
+            min_lenth = min(len(xs),len(ys))
+            xs,ys = xs[:min_lenth],ys[:min_lenth]
+            f = np.poly1d(np.polyfit(xs, ys, 2))
+            ylinear = f(xs)
+            if(cur_label_name):
+                axs[i,j].scatter(xs,ys,label = cur_label_name)
+                axs[i,j].plot(xs, ylinear, label = cur_label_name)
+                axs[i,j].legend()
+            else:
+                axs[i,j].scatter(xs,ys)
+                axs[i,j].plot(xs, ylinear)
+            
+    if(y_names):
+        for i,n in enumerate(y_names[:axs.shape[1]]):
+            axs[i,0].get_yaxis().label.set_text(n)
+    if(x_names):
+        for j,n in enumerate(x_names[:axs.shape[0]]):
+            axs[-1,j].get_xaxis().label.set_text(n)
+    return fig,axs
+
 def save_image(f_name:str,img:np.ndarray,cmap='rbg'):
     if(os.path.dirname(f_name)==''):
         f_name = os.path.join(os.getcwd(),f_name)
@@ -194,3 +239,5 @@ def print_epoch_log(epoch,total_epoch,loss,timeusg=None,**args):
     for vname,v in args.items():
         sys.stdout.write("\t{}: {}.\n".format(vname,v))
     sys.stdout.flush()
+
+
