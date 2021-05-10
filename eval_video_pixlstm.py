@@ -16,7 +16,7 @@ from torch.utils.tensorboard import SummaryWriter
 # =================Local=======================
 from lib.dataloader.icdar_video import ICDARV
 from lib.dataloader.minetto import Minetto
-from lib.model.pixel_map import PIXLSTM_Residual,PIX_Unet
+from lib.model.pixel_map import PIXLSTM_Residual,PIX_Unet,PIXCNN
 from lib.loss.mseloss import *
 from lib.utils.img_hlp import *
 from lib.utils.log_hlp import *
@@ -28,11 +28,12 @@ DEF_FLUSH_COUNT = -1
 DEF_LSTM_STATE_SIZE=(322,322)
 
 @torch.no_grad()
-def myeval(model,maskch,skiprate:int=30,writer:bool=True):
+def myeval(model,maskch,model_name:str=None,skiprate:int=1,writer:bool=False):
     image_size=(640, 640)
     time_start = datetime.now()
     time_cur = time_start
-    work_dir = os.path.join(DEF_WORK_DIR,'log','eva_{}_on_Minetto'.format(model.__class__.__name__))
+    model_name = model_name if(model_name)else model.__class__.__name__
+    work_dir = os.path.join(DEF_WORK_DIR,'log','eva_{}_on_Minetto'.format(model_name))
     logger = SummaryWriter(os.path.join(work_dir,time_start.strftime("%Y%m%d-%H%M%S"))) if(writer)else None
 
     model = model.cuda() 
@@ -62,7 +63,7 @@ def myeval(model,maskch,skiprate:int=30,writer:bool=True):
                 ret, x = vdo.read()
                 if(ret==False):
                     break
-                if(fm_cnt<p_keys[0] or fm_cnt%skiprate or fm_cnt not in p_keys):
+                if(fm_cnt<p_keys[0] or fm_cnt%skiprate):
                     # skip the initial non text frams
                     fm_cnt+=1
                     continue
@@ -138,6 +139,7 @@ def myeval(model,maskch,skiprate:int=30,writer:bool=True):
         sys.stdout.write("\t F-score: Mean {:3.3f}%, variance {:3.3f}.\n".format(np.mean(cur_fscore)*100,np.var(cur_fscore)))
         sys.stdout.write("\t Loss: Mean {:2.5f}%, variance {:3.3f}.\n\n".format(np.mean(cur_loss),np.var(cur_loss)))
         sys.stdout.flush()
+        break
 
     recall_sum = 0.0
     for o in all_recall:
@@ -153,18 +155,37 @@ def myeval(model,maskch,skiprate:int=30,writer:bool=True):
     sys.stdout.write("Final Recall: {:3.3f}%, Precision: {:3.3f}%, F-score: {:3.3f}%.\n".format(recall_sum*100,precision_sum*100,final_fscore*100))
     sys.stdout.flush()
 
-    return 0
+    return loss_list
 
 if __name__ == '__main__':
-    # pthdir = 'saved_model/lstm_ttt_Residual_region_pxnet.pth'
-    # maskch=0
-    # model = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
-    #     include_final=False,pretrained=True).float()
-    # model.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
+    work_dir = '/home/yomcoding/Pytorch/MyResearch/saved_model/'
+    pthdir = '/BACKUP/yom_backup/saved_model/lstm_ttt_Residual_region_pxnet.pth'
+    maskch=0
+    model_lstm = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+        include_final=False,pretrained=True).float()
+    model_lstm.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
+    model_lstm.load_state_dict(copyStateDict(torch.load(pthdir)))
+    loss_lstm = myeval(model_lstm,maskch)
 
-    pthdir = '/BACKUP/yom_backup/saved_model/max_eval_benchmark_ttt_region_only_pxnet.pth'
+    pthdir = '/BACKUP/yom_backup/saved_model/CNN_ttt_region_pxnet.pth'
+    maskch=0
+    model_cnn = PIXCNN(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+        include_final=False,pretrained=True).float()
+    model_cnn.load_state_dict(copyStateDict(torch.load(pthdir)))
+    loss_cnn = myeval(model_cnn,maskch)
+
+    pthdir = '/BACKUP/yom_backup/saved_model/org_ttt_region_pxnet.pth'
     maskch=2
-    model = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet_name='mobile',min_upc_ch=128,pretrained=False).float()
+    model_cnn_random = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet='mobile',min_upc_ch=128,pretrained=False).float()
+    model_cnn_random.load_state_dict(copyStateDict(torch.load(pthdir)))
+    loss_org = myeval(model_cnn_random,maskch)
 
-    model.load_state_dict(copyStateDict(torch.load(pthdir)))
-    myeval(model,maskch)
+    fig,axs = plt.subplots(1,1)
+    xs = np.arange(len(loss_org))
+    axs.get_yaxis().label.set_text('Loss')
+    axs.get_xaxis().label.set_text('Step')
+    axs.plot(xs,loss_lstm,label = 'lstm')
+    axs.plot(xs,loss_cnn,label = 'cnn')
+    axs.plot(xs,loss_org,label = 'cnn_random')
+    axs.legend()
+    fig.savefig(os.path.join(work_dir,'loss_mintto.png'))

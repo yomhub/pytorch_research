@@ -1133,14 +1133,8 @@ def cv_get_box_from_mask(scoremap:np.ndarray, score_th:float=0.3,region_mean_spl
 
     return np.array(det), label_map, mapper
 
-def cv_get_box_from_mask_watershed(scoremap:np.ndarray,score_th:float=0.2,region_mean_split:bool=False,region_th:float=0.4):
-    if(scoremap.dtype in __DEF_NP_INT_TYPE):
-        if(len(scoremap.shape)==3):
-            gmap=scoremap[:,:,0]
-        else:
-            gmap=scoremap
-    if(scoremap.dtype in __DEF_NP_FLOAT_TYPE):
-        gmap = (scoremap*255).astype(np.uint8)
+def cv_get_box_from_mask_watershed(scoremap:np.ndarray,score_th:float=0.3,region_mean_split:bool=False,region_th:float=0.4):
+    gmap = (scoremap>=score_th).astype(np.uint8)
     img_w,img_h = scoremap.shape[0], scoremap.shape[1]
 
     kernel = np.ones((3,3),np.uint8)
@@ -1157,10 +1151,13 @@ def cv_get_box_from_mask_watershed(scoremap:np.ndarray,score_th:float=0.2,region
 
         slc_pix = scoremap[label_map == k]
         mean_v = max(region_th,np.mean(slc_pix))
+        max_v = np.max(slc_pix)
+        th = (max_v-mean_v)*0.8+mean_v
 
         f_erode_map = np.where(label_map == k, scoremap, 0.0).astype(scoremap.dtype)
-        b_erode_map = (f_erode_map>mean_v*0.8).astype(np.uint8)
-        b_erode_map = cv2.morphologyEx(b_erode_map,cv2.MORPH_OPEN,kernel, iterations = 2)
+        b_erode_map = np.where(f_erode_map>th,255,0).astype(np.uint8)
+        b_erode_map = cv2.erode(b_erode_map,kernel,iterations=1)
+        # b_erode_map = cv2.morphologyEx(b_erode_map,cv2.MORPH_OPEN,kernel, iterations = 2)
         global_erode_map += b_erode_map
     
     # Add one to all labels so that sure background is not 0, but 1
@@ -2113,6 +2110,7 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         rotate: float of final rotation angle
         shift: (y,x) shift or single float 
         scale: (y,x) scale or single float
+        return_states: bool, return parameters in each step
         blur: bool, set blur=True to enable blur kernel
             blur_rate: float, blur rate, default is 0.3
             blur_stepi: list of int, value range in [1,total_step-1], 
@@ -2120,6 +2118,8 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             blur_ksize: int, kernel size, default is 10
             blur_intensity: float, intensity, default is 0.1
             blur_return_stepi: bool, if True return blur_stepi 
+    Return:
+        image_list,poly_xy_list,Ms,(step_state_dict),(blur_stepi)
     """
     org_image_size=image.shape[:-1]
     Ms = [np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)]
@@ -2147,6 +2147,13 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
     else:
         blur_stepi = []
 
+    state_dict = {
+        'rotate':[0],
+        'shiftx':[0],
+        'shifty':[0],
+        'scalex':[1],
+        'scaley':[1],
+    }
     for stepi in range(total_step-1):
         Mlst = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
         if('rotate' in args):
@@ -2156,6 +2163,9 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             Mr = cv2.getRotationMatrix2D(((org_image_size[1]-1)/2,(org_image_size[0]-1)/2), rotate*f, 1.0)
             Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=Mr.dtype)),0)
             Mlst = np.dot(Mr,Mlst)
+            state_dict['rotate'].append(rotate*f)
+        else:
+            state_dict['rotate'].append(0)
 
         if('scale' in args):
             fx = (stepi+1)/(total_step-1)
@@ -2165,6 +2175,11 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                 fy*=((seed.random()-0.5)*2*fluctuation+1)
             Msc = np.array([[scale_det[1]*fx+1,0,0],[0,scale_det[0]*fy+1,0],[0,0,1]],dtype=Mlst.dtype)
             M = np.dot(Msc,Mlst)
+            state_dict['scalex'].append(scale_det[1]*fx)
+            state_dict['scaley'].append(scale_det[0]*fy)
+        else:
+            state_dict['scalex'].append(1)
+            state_dict['scaley'].append(1)
 
         if('shift' in args):
             fx = (stepi+1)/(total_step-1)
@@ -2174,7 +2189,12 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                 fy*=((seed.random()-0.5)*2*fluctuation+1)
             Mt = np.array([[1,0,shift[1]*fx],[0,1,shift[0]*fy],[0,0,1]],dtype=Mlst.dtype)
             Mlst = np.dot(Mt,Mlst)
-        
+            state_dict['shiftx'].append(shift[1]*fx)
+            state_dict['shifty'].append(shift[0]*fy)
+        else:
+            state_dict['shiftx'].append(0)
+            state_dict['shifty'].append(0)
+
         Ms.append(Mlst)
         img = cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1])
         # ensure last image is no-blur
@@ -2217,11 +2237,14 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
 
+    ans = [image_list,poly_xy_list,Ms]
+    if('return_states' in args and args['return_states']):
+        ans.append(state_dict)
     if('blur' in args and 'blur_return_stepi' in args and args['blur_return_stepi']):
         blur_stepi = [o+1 for o in blur_stepi]
-        return image_list,poly_xy_list,Ms,blur_stepi
+        ans.append(blur_stepi)
 
-    return image_list,poly_xy_list,Ms
+    return ans
 
 # 
 # ===============================================
