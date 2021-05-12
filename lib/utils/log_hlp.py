@@ -209,10 +209,12 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
             images[i] = np.concatenate((images[i],images[i],images[i]),-1)
         h,w = min(h,images[i].shape[0]),min(w,images[i].shape[1])
     if('h' in direction.lower()):
-        line = np.ones((h,line_wide,3),dtype=np.uint8)*255
+        if(line_wide>0):
+            line = np.ones((h,line_wide,3),dtype=np.uint8)*255
         ax = 1
     else:
-        line = np.ones((line_wide,w,3),dtype=np.uint8)*255
+        if(line_wide>0):
+            line = np.ones((line_wide,w,3),dtype=np.uint8)*255
         ax = 0
     rets = []
     for i in range(len(images)):
@@ -221,7 +223,8 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
         if(len(images[i].shape)==2):
             images[i] = np.stack([images[i],images[i],images[i]],-1)
         rets.append(images[i])
-        rets.append(line)
+        if(line_wide>0):
+            rets.append(line)
     rets.pop(-1)
 
     return np.concatenate(rets,ax)

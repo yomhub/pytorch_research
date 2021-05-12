@@ -2181,7 +2181,7 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                 fx*=((seed.random()-0.5)*2*fluctuation+1)
                 fy*=((seed.random()-0.5)*2*fluctuation+1)
             Msc = np.array([[scale_det[1]*fx+1,0,0],[0,scale_det[0]*fy+1,0],[0,0,1]],dtype=Mlst.dtype)
-            M = np.dot(Msc,Mlst)
+            Mlst = np.dot(Msc,Mlst)
             state_dict['scalex'].append(scale_det[1]*fx)
             state_dict['scaley'].append(scale_det[0]*fy)
             cur+=[scale_det[1]*fx+1,scale_det[0]*fy+1]
