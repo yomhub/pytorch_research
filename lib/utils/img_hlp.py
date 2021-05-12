@@ -2106,18 +2106,20 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         poly_xy (optional): poly xy boxes with shape ((N),k,2)
         fluctuation: enable fluctuation when dividing trajectory
             range in [-fluctuation,+fluctuation]+1.0
-        ==trajectory args==
+        ==trajectory args, optional==
         rotate: float of final rotation angle
         shift: (y,x) shift or single float 
         scale: (y,x) scale or single float
         return_states: bool, return parameters in each step
-        blur: bool, set blur=True to enable blur kernel
+        blur: bool, set True to enable blur kernel
             blur_rate: float, blur rate, default is 0.3
             blur_stepi: list of int, value range in [1,total_step-1], 
                 designate the index of blured image
             blur_ksize: int, kernel size, default is 10
             blur_intensity: float, intensity, default is 0.1
             blur_return_stepi: bool, if True return blur_stepi 
+            blur_motion: bool, set True to enable motion blur calculate from coordinate
+            [Caution] set blur_motion will cause huge calculation
     Return:
         image_list,poly_xy_list,Ms,(step_state_dict),(blur_stepi)
     """
@@ -2154,8 +2156,11 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
         'scalex':[1],
         'scaley':[1],
     }
+    # rotate,scale_xy,shift_xy
+    last = [0,1,1,0,0]
     for stepi in range(total_step-1):
         Mlst = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
+        cur = []
         if('rotate' in args):
             f = (stepi+1)/(total_step-1)
             if(fluctuation>0 and (stepi+1)!=(total_step-1)):
@@ -2164,8 +2169,10 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             Mr = np.concatenate((Mr,np.array([[0,0,1]],dtype=Mr.dtype)),0)
             Mlst = np.dot(Mr,Mlst)
             state_dict['rotate'].append(rotate*f)
+            cur.append(rotate*f)
         else:
             state_dict['rotate'].append(0)
+            cur.append(0)
 
         if('scale' in args):
             fx = (stepi+1)/(total_step-1)
@@ -2177,9 +2184,11 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             M = np.dot(Msc,Mlst)
             state_dict['scalex'].append(scale_det[1]*fx)
             state_dict['scaley'].append(scale_det[0]*fy)
+            cur+=[scale_det[1]*fx+1,scale_det[0]*fy+1]
         else:
             state_dict['scalex'].append(1)
             state_dict['scaley'].append(1)
+            cur+=[1,1]
 
         if('shift' in args):
             fx = (stepi+1)/(total_step-1)
@@ -2191,9 +2200,11 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             Mlst = np.dot(Mt,Mlst)
             state_dict['shiftx'].append(shift[1]*fx)
             state_dict['shifty'].append(shift[0]*fy)
+            cur+=[shift[1]*fx,shift[0]*fy]
         else:
             state_dict['shiftx'].append(0)
             state_dict['shifty'].append(0)
+            cur+=[0,0]
 
         Ms.append(Mlst)
         img = cv2.warpAffine(image_list[0], Mlst[:-1], org_image_size[::-1])
@@ -2202,13 +2213,73 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
             ksize = int(args['blur_ksize']) if('blur_ksize' in args)else 11
             intensity = float(args['blur_intensity']) if('blur_intensity' in args)else 0.0
             intensity = max(0,min(0.3,intensity))
-            kr_org = np.zeros((ksize,ksize))
-            if(ksize%2==1):
-                kr_org[ksize//2,ksize//2]=1
-            else:
-                kr_org[ksize//2-1,ksize//2-1]=1
 
-            if('shift' in args):
+            if('blur_motion' in args and args['blur_motion']):
+                # orginal coordinate -> M dot -> new coordinate
+                # difference === O[t]-O[t-1] so new coordinate is difference
+                blur_M = np.array([[1,0,0],[0,1,0],[0,0,1]],dtype=np.float32)
+                blur_Mr = cv2.getRotationMatrix2D(((org_image_size[1]-1)/2,(org_image_size[0]-1)/2), cur[0]-last[0], 1.0)
+                blur_Mr = np.concatenate((blur_Mr,np.array([[0,0,1]],dtype=blur_Mr.dtype)),0)
+                blur_M = np.dot(blur_Mr,blur_M)
+                blur_Msc = np.array([[cur[1]/last[1],0,0],[0,cur[2]/last[2],0],[0,0,1]],dtype=blur_M.dtype)
+                blur_M = np.dot(blur_Msc,blur_M)
+                blur_Mt = np.array([[1,0,cur[3]-last[3]],[0,1,cur[4]-last[4]],[0,0,1]],dtype=blur_M.dtype)
+                blur_M = np.dot(blur_Mt,blur_M)
+                cox,coy = np.arange(org_image_size[1]),np.arange(org_image_size[0])
+                cox,coy = np.meshgrid(cox,coy)
+                # shape (H,W,3) with (x,y,1)
+                co_org = np.stack([cox,coy,np.ones(cox.shape,dtype=cox.dtype)],-1)
+                co_new = np_apply_matrix_to_pts(blur_M,co_org)
+                # draw line on each point, slow
+                def kernel_helper(dx,dy,ksize):
+                    # draw line function
+                    sp = np.array((0,0))
+                    if(dy!=0):
+                        k_shift = dx/dy
+                        if(k_shift>0.05):
+                            ep = np.array((ksize,k_shift*ksize))
+                        elif(k_shift<-0.05):
+                            sp = np.array((0,ksize))
+                            ep = np.array((ksize,k_shift*ksize+ksize))
+                        else:
+                            sp = np.array((0,ksize//2))
+                            ep = np.array((ksize,ksize//2))
+                    else:
+                        ep = np.array((0,ksize))
+                    
+                    sp = sp.astype(np.int32)
+                    ep = ep.astype(np.int32)
+                    kernel = np.zeros((ksize,ksize),dtype=np.uint8)
+                    kernel = cv2.line(kernel,(sp[0],sp[1]),(ep[0],ep[1]),color=1,thickness=1)
+                    matrix_k = np.sum(kernel>0)
+                    if(matrix_k>1):
+                        kernel = np.divide(kernel,matrix_k)
+                    else:
+                        if(ksize%2==1):
+                            kernel[ksize//2,ksize//2]=1
+                        else:
+                            kernel[ksize//2-1,ksize//2-1]=1
+                    return kernel
+                f_helper = lambda o:kernel_helper(o[0],o[1],ksize)
+                # H,W,ksize,ksize array
+                kernel_map = np.apply_along_axis(f_helper,-1,co_new.reshape(-1,3)).reshape(co_new.shape[0],co_new.shape[1],ksize,ksize)
+                new_img = np.zeros(img.shape,dtype = image.dtype)
+                # apply convolution
+                hksize = ksize//2
+                lksize = hksize - (1 if(ksize%2==0)else 0)
+                for di in range(img.shape[0]):
+                    for dj in range(img.shape[1]):
+                        spi,spj = max(0,di - lksize),max(0,dj-lksize)
+                        patch = img[
+                            spi:min(img.shape[0]-1,di+hksize),
+                            spj:min(img.shape[1]-1,dj+hksize),
+                            ]
+                        kspi,kspj = lksize-(di-spi),lksize-(dj-spj)
+                        kr = kernel_map[di,dj,kspi:kspi+patch.shape[0],kspj:kspj+patch.shape[1]]
+                        new_img[di,dj] = np.sum(patch*np.stack([kr,kr,kr],-1),axis=(0,1))
+                img = new_img
+
+            elif('shift' in args):
                 kr_shift = np.zeros((ksize,ksize))
                 fdet = 1/(total_step-1)
                 # start point in X,Y
@@ -2227,15 +2298,19 @@ def cv_gen_trajectory(image:np.ndarray,total_step:int,
                         ep = np.array((ksize,ksize//2))
                 else:
                     ep = np.array((0,ksize))
+                sp = sp.astype(np.int32)
                 ep = ep.astype(np.int32)
                 kr_shift = cv2.line(kr_shift,(sp[0],sp[1]),(ep[0],ep[1]),color=1,thickness=1)
                 matrix_k = np.sum(kr_shift>0)
                 if(matrix_k>1):
                     kr_shift /= matrix_k
                     img = cv2.filter2D(img,-1,kr_shift)
+            if('gaussian' in args):
+                blur = cv2.GaussianBlur(img,(ksize,ksize),0)
         image_list.append(img)
         if(poly_xy is not None and len(poly_xy)>0):
             poly_xy_list.append(np_apply_matrix_to_pts(Mlst,poly_xy))
+        last = cur
 
     ans = [image_list,poly_xy_list,Ms]
     if('return_states' in args and args['return_states']):
