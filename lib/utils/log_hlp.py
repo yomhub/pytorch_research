@@ -225,8 +225,10 @@ def concatenate_images(images:list,direction:str='h',line_wide:int=3):
         rets.append(images[i])
         if(line_wide>0):
             rets.append(line)
-    rets.pop(-1)
 
+    if(line_wide>0):
+        rets.pop(-1)
+        
     return np.concatenate(rets,ax)
 
 def print_epoch_log(epoch,total_epoch,loss,timeusg=None,**args):
