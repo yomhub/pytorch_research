@@ -72,8 +72,11 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
     all_eva_dict_blur = {o:defaultdict(list) for o in model_name_list}
     all_score_dict = defaultdict(list)
     seed = np.random
-
+    total_cnt = 0
     for stepi, sample in enumerate(eval_dataset):
+        # if(total_cnt>10):
+        #     break
+        total_cnt+=1
         txts = sample['text']
         if(var):
             args={}
@@ -141,7 +144,7 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
 
         weight_mask = torch.from_numpy(np.expand_dims(np.array(weight_mask_list),-1)).to(model_dtype).to(model_device).permute(0,3,1,2)
 
-        for model,model_name in zip(model_list,model_name_list):
+        for model,model_name,maskch in zip(model_list,model_name_list,maskch_list):
             try:
                 model.lstmc.zero_()
                 model.lstmh.zero_()
@@ -173,19 +176,15 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
                 fscore_list.append(mask_fscore)
                 loss_list.append(loss.item())
 
-            eva_dict[model_name]['recall'].append(np.array(recall_list))
-            eva_dict[model_name]['precision'].append(np.array(precision_list))
-            eva_dict[model_name]['fscore'].append(np.array(fscore_list))
-            eva_dict[model_name]['loss'].append(np.array(loss_list))
-            eva_dict[model_name]['region_np'].append(region_np_list)
+            eva_dict[model_name]['region_np']=region_np_list
 
-            for i in range(len(recall_list)):
-                all_eva_dict[model_name]['recall'].append(recall_list[i])
-                all_eva_dict[model_name]['precision'].append(precision_list[i])
-                all_eva_dict[model_name]['fscore'].append(fscore_list[i])
-                all_eva_dict[model_name]['loss'].append(loss_list[i])
-                for k,v in step_state_dict.items():
-                    all_eva_dict[model_name][k].append(v[i])
+            all_eva_dict[model_name]['recall'].append(recall_list)
+            all_eva_dict[model_name]['precision'].append(precision_list)
+            all_eva_dict[model_name]['fscore'].append(fscore_list)
+            all_eva_dict[model_name]['loss'].append(loss_list)
+            for k,v in step_state_dict.items():
+                all_eva_dict[model_name][k].append(v)
+            for i in range(len(image_list)):
                 if(i in blur_stepi):
                     all_eva_dict_blur[model_name]['recall'].append(recall_list[i])
                     all_eva_dict_blur[model_name]['precision'].append(precision_list[i])
@@ -200,187 +199,64 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
                     all_eva_dict_no_blur[model_name]['loss'].append(loss_list[i])
                     for k,v in step_state_dict.items():
                         all_eva_dict_no_blur[model_name][k].append(v[i])
+
         if(work_dir):
             fig,axs = plt.subplots(
                 nrows=len(model_list)+2, 
                 ncols=1,
-                # figsize=(2*len(image_list), 2*(2+len(model_list))),
+                figsize=(1.2*len(image_list), 2*(2+len(model_list))),
                 sharey=True)
             axs = axs.reshape(-1)
             for i in range(len(axs)):
                 axs[i].get_yaxis().set_visible(False)
                 axs[i].get_xaxis().set_visible(False)
-
+            axs[0].set_title('Images',loc='left')
             axs[0].get_yaxis().label.set_text('Images')
             image_list_log = []
             boundary = np.array([[1,1],[image_size[0]-1,1],[image_size[0]-1,image_size[1]-1],[1,image_size[1]-1]])
             for i in range(len(image_list)):
                 if(i in blur_stepi):
-                    image_list_log.append(cv_draw_poly(image_list[i],boundary,color=(255,0,0),thickness=9))
+                    image_list_log.append(cv_draw_poly(image_list[i],boundary,color=(255,0,0),thickness=20))
                 else:
                     image_list_log.append(image_list[i])
             axs[0].imshow(concatenate_images(image_list_log,line_wide=1))
 
+            axs[1].set_title('GT',loc='left')
             axs[1].get_yaxis().label.set_text('GT')
             region_mask_rgb = [cv_heatmap(o) for o in region_mask_np_list]
             axs[1].imshow(concatenate_images(region_mask_rgb,line_wide=1))
 
-            for modelid in range(len(model_list)):
-                axs[2+modelid].get_yaxis().label.set_text(model_name_list[modelid])
+            for modelid,model_name in enumerate(model_name_list):
+                axs[2+modelid].get_yaxis().label.set_text(model_name)
+                axs[2+modelid].set_title(model_name,loc='left')
                 region_mask_rgb = [cv_heatmap(o,resize_to = image_size) for o in eva_dict[model_name]['region_np'][0]]
                 axs[2+modelid].imshow(concatenate_images(region_mask_rgb,line_wide=1))
 
-            fig.savefig(os.path.join(work_dir,'images','eva_{}_.png'.format(sample['name'].split('.')[0])))
+            fig.savefig(os.path.join(work_dir,'images','eva_{}.png'.format(sample['name'].split('.')[0])))
         
                        
         # end of single sample
         # break
+    log_y = [
+        'recall',
+        'precision',
+        'fscore',
+    ]
+    for model_name, all_score_dict in all_eva_dict.items():
+        sys.stdout.write('====={}=====\n'.format(model_name))
+        for k in log_y:
+            v=np.mean(all_score_dict[k])
+            sys.stdout.write('\t{}:{:4.3f}%\n'.format(k,v*100))
+        sys.stdout.write('\n')
+        sys.stdout.flush()
 
     return all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur
 
-def log_plt(all_eva_dict,work_dir):
-    log_name_list = ['recall_no_blur','precision_no_blur','fscore_no_blur','loss_no_blur','recall_blur','precision_blur','fscore_blur','loss_blur',]
-    y_name = ['recall','fscore','loss']
-    for model_name,eva_dict in all_eva_dict.items():
-        # calculate performance difference
-        all_ys_dict = defaultdict(list)
-        all_xs_dict = defaultdict(list)
-        y_fscore_all = []
-        y_loss_all = []
-        x_rotate_all = []
-        x_shift_all = []
-        x_scale_all = []
-        if(y_name[0]+'_no_blur' in eva_dict and len(eva_dict[y_name[0]+'_no_blur'])>0):
-            ys,ys_name = [],[]
-            xs,xs_name = [],[]
-            for log_name,log_v_list in eva_dict.items():
-                itm_name = log_name.split('_')[0]
-                if(itm_name in y_name):
-                    all_ys_dict[itm_name]+=log_v_list
-                    ys.append(np.array(log_v_list))
-                else:
-                    all_xs_dict[itm_name]+=log_v_list
-            
-            y_fscore_all+=all_eva_dict[model_name]['fscore_no_blur']
-            y_loss_all+=all_eva_dict[model_name]['loss_no_blur']
-            
-            x_rotate_all+=all_eva_dict[model_name]['rotate_no_blur']
-            x_shift_all+=[max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_no_blur'],all_eva_dict[model_name]['shifty_no_blur'])]
-            x_scale_all+=[max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_no_blur'],all_eva_dict[model_name]['scaley_no_blur'])]
-
-            y_fscore = np.array(all_eva_dict[model_name]['fscore_no_blur'])
-            y_loss = np.array(all_eva_dict[model_name]['loss_no_blur'])
-            x_rotate = np.array(all_eva_dict[model_name]['rotate_no_blur'])
-            x_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_no_blur'],all_eva_dict[model_name]['shifty_no_blur'])])
-            x_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_no_blur'],all_eva_dict[model_name]['scaley_no_blur'])])
-            x_rotate_ind = np.argsort(x_rotate)
-            x_shift_ind = np.argsort(x_shift)
-            x_scale_ind = np.argsort(x_scale)
-            fig,axs = plt.subplots(nrows=2, ncols=3,figsize=(2*2, 2*3),sharey=True)
-            for o in axs[:,0]:
-                o.get_xaxis().label.set_text('Rotation')
-            for o in axs[:,1]:
-                o.get_xaxis().label.set_text('Shift')
-            for o in axs[:,2]:
-                o.get_xaxis().label.set_text('Scale')
-            for o in axs[0,:]:
-                o.get_yaxis().label.set_text('F-score')
-            for o in axs[1,:]:
-                o.get_yaxis().label.set_text('Loss')
-
-            axs[0,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_fscore,x_rotate_ind), label=model_name)
-            axs[0,1].plot(np.take(x_shift,x_shift_ind), np.take(y_fscore,x_shift_ind), label=model_name)
-            axs[0,2].plot(np.take(x_scale,x_scale_ind), np.take(y_fscore,x_scale_ind), label=model_name)
-
-            axs[1,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_loss,x_rotate_ind), label=model_name)
-            axs[1,1].plot(np.take(x_shift,x_shift_ind), np.take(y_loss,x_shift_ind), label=model_name)
-            axs[1,2].plot(np.take(x_scale,x_scale_ind), np.take(y_loss,x_scale_ind), label=model_name)
-            for o in axs.reshape(-1):
-                o.legend()
-            fig.savefig(os.path.join(work_dir,'eva_no_blur.png'))
-
-        if('recall_blur' in all_eva_dict[model_name] and all_eva_dict[model_name]['recall_blur']):
-            y_fscore_all+=all_eva_dict[model_name]['fscore_blur']
-            y_loss_all+=all_eva_dict[model_name]['loss_blur']
-            x_rotate_all+=all_eva_dict[model_name]['rotate_blur']
-            x_shift_all+=[max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_blur'],all_eva_dict[model_name]['shifty_blur'])]
-            x_scale_all+=[max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_blur'],all_eva_dict[model_name]['scaley_blur'])]
-            y_fscore = np.array(all_eva_dict[model_name]['fscore_blur'])
-            y_loss = np.array(all_eva_dict[model_name]['loss_blur'])
-            x_rotate = np.array(all_eva_dict[model_name]['rotate_blur'])
-            x_shift = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['shiftx_blur'],all_eva_dict[model_name]['shifty_blur'])])
-            x_scale = np.array([max(x,y) for x,y in zip(all_eva_dict[model_name]['scalex_blur'],all_eva_dict[model_name]['scaley_blur'])])
-            x_rotate_ind = np.argsort(x_rotate)
-            x_shift_ind = np.argsort(x_shift)
-            x_scale_ind = np.argsort(x_scale)
-
-            fig,axs = plt.subplots(nrows=2, ncols=3,figsize=(2*2, 2*3),sharey=True)
-            for o in axs[:,0]:
-                o.get_xaxis().label.set_text('Rotation')
-            for o in axs[:,1]:
-                o.get_xaxis().label.set_text('Shift')
-            for o in axs[:,2]:
-                o.get_xaxis().label.set_text('Scale')
-            for o in axs[0,:]:
-                o.get_yaxis().label.set_text('F-score')
-            for o in axs[1,:]:
-                o.get_yaxis().label.set_text('Loss')
-
-            axs[0,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_fscore,x_rotate_ind), label=model_name)
-            axs[0,1].plot(np.take(x_shift,x_shift_ind), np.take(y_fscore,x_shift_ind), label=model_name)
-            axs[0,2].plot(np.take(x_scale,x_scale_ind), np.take(y_fscore,x_scale_ind), label=model_name)
-            axs[1,0].plot(np.take(x_rotate,x_rotate_ind), np.take(y_loss,x_rotate_ind), label=model_name)
-            axs[1,1].plot(np.take(x_shift,x_shift_ind), np.take(y_loss,x_shift_ind), label=model_name)
-            axs[1,2].plot(np.take(x_scale,x_scale_ind), np.take(y_loss,x_scale_ind), label=model_name)
-
-            for o in axs.reshape(-1):
-                o.legend()
-            fig.savefig(os.path.join(work_dir,'eva_blur.png'))
-
-        x_rotate_ind = np.argsort(x_rotate_all)
-        x_shift_ind = np.argsort(x_shift_all)
-        x_scale_ind = np.argsort(x_scale_all)
-
-        fig,axs = plt.subplots(nrows=2, ncols=3,figsize=(2*2, 2*3),sharey=True)
-        for o in axs[:,0]:
-            o.get_xaxis().label.set_text('Rotation')
-        for o in axs[:,1]:
-            o.get_xaxis().label.set_text('Shift')
-        for o in axs[:,2]:
-            o.get_xaxis().label.set_text('Scale')
-        for o in axs[0,:]:
-            o.get_yaxis().label.set_text('F-score')
-        for o in axs[1,:]:
-            o.get_yaxis().label.set_text('Loss')
-        axs[0,0].plot(np.take(x_rotate_all,x_rotate_ind), np.take(y_fscore_all,x_rotate_ind), label=model_name)
-        axs[0,1].plot(np.take(x_shift_all,x_shift_ind), np.take(y_fscore_all,x_shift_ind), label=model_name)
-        axs[0,2].plot(np.take(x_scale_all,x_scale_ind), np.take(y_fscore_all,x_scale_ind), label=model_name)
-        axs[1,0].plot(np.take(x_rotate_all,x_rotate_ind), np.take(y_loss_all,x_rotate_ind), label=model_name)
-        axs[1,1].plot(np.take(x_shift_all,x_shift_ind), np.take(y_loss_all,x_shift_ind), label=model_name)
-        axs[1,2].plot(np.take(x_scale_all,x_scale_ind), np.take(y_loss_all,x_scale_ind), label=model_name)
-
-        for o in axs.reshape(-1):
-            o.legend()
-        fig.savefig(os.path.join(work_dir,'eva_all.png'))
-
-
-    for model_name, all_score_dict in all_eva_dict.items():
-        sys.stdout.write("============================\n")
-        sys.stdout.write("Model: {}\n".format(model_name))
-        for k in log_name_list:
-            if(k in all_score_dict):
-                v = all_score_dict[k]
-                sys.stdout.write("\t {}: Mean {:3.3f}%, variance {:3.3f}.\n".format(k,np.mean(v)*100,np.var(v)))
-        sys.stdout.write("\n")
-
-    sys.stdout.flush()
-
-    return 0
-
 if __name__ == '__main__':
+    eva_distribute = True
+    eva_glob = False
     models,names,chs = [],[],[]
     pthdir = '/BACKUP/yom_backup/saved_model/lstm_ttt_Residual_region_pxnet.pth'
-    maskch=0
     model_lstm = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
     model_lstm.init_state(shape=DEF_LSTM_STATE_SIZE,batch_size=1)
@@ -390,7 +266,6 @@ if __name__ == '__main__':
     chs.append(0)
 
     pthdir = '/BACKUP/yom_backup/saved_model/CNN_ttt_region_pxnet.pth'
-    maskch=0
     model_cnn = PIXCNN(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
         include_final=False,pretrained=True).float()
     model_cnn.load_state_dict(copyStateDict(torch.load(pthdir)))
@@ -399,157 +274,180 @@ if __name__ == '__main__':
     chs.append(0)
 
     pthdir = '/BACKUP/yom_backup/saved_model/org_ttt_region_pxnet.pth'
-    maskch=0
     model_cnn_random = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet='mobile',min_upc_ch=128,pretrained=False).float()
     model_cnn_random.load_state_dict(copyStateDict(torch.load(pthdir)))
     models.append(model_cnn_random)
-    names.append('CNN')
+    names.append('CNN_random')
     chs.append(2)
 
     # work_dir = os.path.join(DEF_WORK_DIR,'log','eva_on_ttt',datetime.now().strftime("%Y%m%d-%H%M%S"))
     work_dir = '/home/yomcoding/Pytorch/MyResearch/saved_model/'
     y_vars=[
-        # "fscore", 
+        "fscore", 
         "loss",
         ]
     x_vars = ['rotate','shiftx','shifty','scalex','scaley']
+    if(eva_distribute):
+        fig,axs = plt.subplots(len(y_vars),len(x_vars),figsize=(4.2*len(x_vars),2.2*len(y_vars)),sharey=True)
+        axs = axs.reshape(-1,len(x_vars))
 
-    fig,axs = plt.subplots(len(y_vars),len(x_vars),figsize=(4.2*len(x_vars),2.2*len(y_vars)),sharey=True)
-    axs = axs.reshape(-1,len(x_vars))
+        var = {'shift':300}
+        x_vars_l = ['shiftx','shifty']
+        # all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+        #     models,chs,names,var = var)
 
-    var = {'shift':300}
-    x_vars_l = ['shiftx','shifty']
-    all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
-        [model_lstm,model_cnn,model_cnn_random],[0,0,0],['LSTM','CNN','CNN_random'],var = var)
+        # with open(os.path.join(work_dir,'all_eva_shift.pkl'), 'wb') as pfile:
+        #     pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-    with open(os.path.join(work_dir,'all_eva_shift.pkl'), 'wb') as pfile:
-        pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
-        
-    for model_name, all_score_dict in all_eva_dict.items():
-        plt_correlation(
-            [all_score_dict[o] for o in x_vars_l],[all_score_dict[o] for o in y_vars],
-            x_names=x_vars_l,y_names=y_vars,
-            fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-            cur_label_name=model_name
-            )
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     plt_correlation(
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+        #         x_names=x_vars_l,y_names=y_vars,
+        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+        #         cur_label_name=model_name
+        #         )
 
-    all_eva_dict_df = defaultdict(list)
-    for model_name, all_score_dict in all_eva_dict.items():
-        _,single_list = next(iter(all_score_dict.items()))
-        all_eva_dict_df['model_name'] += [model_name]*len(single_list)
-        for k,vs in all_score_dict.items():
-            all_eva_dict_df[k]+=vs
+        # all_eva_dict_df = {}
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     _,single_list = next(iter(all_score_dict.items()))
+        #     single_list = single_list[0]
+        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+        #     for k,vs in all_score_dict.items():
+        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-    all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-    sns_plot = sns.pairplot(
-        all_eva_dict_df,
-        hue='model_name',
-        x_vars=x_vars_l,
-        y_vars=y_vars,
-        plot_kws={
-            'marker':"+", 
-            'linewidth':1,
-            'alpha':0.8,
-        },
-    )
-    sns_plot.savefig(os.path.join(work_dir,'all_eva_shift.png'))
+        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        # sns_plot = sns.pairplot(
+        #     all_eva_dict_df,
+        #     hue='model_name',
+        #     x_vars=x_vars_l,
+        #     y_vars=y_vars,
+        #     plot_kws={
+        #         'marker':"+", 
+        #         'linewidth':1,
+        #         'alpha':0.8,
+        #     },
+        # )
+        # sns_plot.savefig(os.path.join(work_dir,'all_eva_shift.png'))
 
-    var = {'rotate':290}
-    x_vars_l = ['rotate']
-    all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
-        [model_lstm,model_cnn,model_cnn_random],[0,0,0],['LSTM','CNN','CNN_random'],var = var)
+        var = {'rotate':290}
+        x_vars_l = ['rotate']
+        all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+            models,chs,names,var = var)
 
-    with open(os.path.join(work_dir,'all_eva_rotate.pkl'), 'wb') as pfile:
-        pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(os.path.join(work_dir,'all_eva_rotate.pkl'), 'wb') as pfile:
+            pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-    for model_name, all_score_dict in all_eva_dict.items():
-        plt_correlation(
-            [all_score_dict[o] for o in x_vars_l],[all_score_dict[o] for o in y_vars],
-            x_names=x_vars_l,y_names=y_vars,
-            fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-            cur_label_name=model_name
-            )
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     plt_correlation(
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+        #         x_names=x_vars_l,y_names=y_vars,
+        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+        #         cur_label_name=model_name
+        #         )
 
-    all_eva_dict_df = defaultdict(list)
-    for model_name, all_score_dict in all_eva_dict.items():
-        _,single_list = next(iter(all_score_dict.items()))
-        all_eva_dict_df['model_name'] += [model_name]*len(single_list)
-        for k,vs in all_score_dict.items():
-            all_eva_dict_df[k]+=vs
+        # all_eva_dict_df = {}
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     _,single_list = next(iter(all_score_dict.items()))
+        #     single_list = single_list[0]
+        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+        #     for k,vs in all_score_dict.items():
+        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-    all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-    sns_plot = sns.pairplot(
-        all_eva_dict_df,
-        hue='model_name',
-        x_vars=x_vars_l,
-        y_vars=y_vars,
-        plot_kws={
-            'marker':"+", 
-            'linewidth':1,
-            'alpha':0.8,
-        },
-    )
-    sns_plot.savefig(os.path.join(work_dir,'all_eva_rotate.png'))
+        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        # sns_plot = sns.pairplot(
+        #     all_eva_dict_df,
+        #     hue='model_name',
+        #     x_vars=x_vars_l,
+        #     y_vars=y_vars,
+        #     plot_kws={
+        #         'marker':"+", 
+        #         'linewidth':1,
+        #         'alpha':0.8,
+        #     },
+        # )
+        # sns_plot.savefig(os.path.join(work_dir,'all_eva_rotate.png'))
 
-    var = {'scale':2}
-    x_vars_l = ['scalex','scaley']
-    all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
-        [model_lstm,model_cnn,model_cnn_random],[0,0,0],['LSTM','CNN','CNN_random'],var = var)
+        var = {'scale':2}
+        x_vars_l = ['scalex','scaley']
+        all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+            models,chs,names,var = var)
 
-    with open(os.path.join(work_dir,'all_eva_scale.pkl'), 'wb') as pfile:
-        pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(os.path.join(work_dir,'all_eva_scale.pkl'), 'wb') as pfile:
+            pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-    for model_name, all_score_dict in all_eva_dict.items():
-        plt_correlation(
-            [all_score_dict[o] for o in x_vars_l],[all_score_dict[o] for o in y_vars],
-            x_names=x_vars_l,y_names=y_vars,
-            fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-            cur_label_name=model_name
-            )
-    fig.savefig(os.path.join(work_dir,'all_eva_distributed.png'))
-    all_eva_dict_df = defaultdict(list)
-    for model_name, all_score_dict in all_eva_dict.items():
-        _,single_list = next(iter(all_score_dict.items()))
-        all_eva_dict_df['model_name'] += [model_name]*len(single_list)
-        for k,vs in all_score_dict.items():
-            all_eva_dict_df[k]+=vs
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     plt_correlation(
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+        #         x_names=x_vars_l,y_names=y_vars,
+        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+        #         cur_label_name=model_name
+        #         )
 
-    all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-    sns_plot = sns.pairplot(
-        all_eva_dict_df,
-        hue='model_name',
-        x_vars=x_vars_l,
-        y_vars=y_vars,
-        plot_kws={
-            'marker':"+", 
-            'linewidth':1,
-            'alpha':0.8,
-        },
-    )
-    sns_plot.savefig(os.path.join(work_dir,'all_eva_scale.png'))
+        # all_eva_dict_df = {}
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     _,single_list = next(iter(all_score_dict.items()))
+        #     single_list = single_list[0]
+        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+        #     for k,vs in all_score_dict.items():
+        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-    # all_eva_dict_df = defaultdict(list)
-    # all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
-    #     [model_lstm,model_cnn,model_cnn_random],[0,0,0],['LSTM','CNN','CNN_random'])
+        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        # sns_plot = sns.pairplot(
+        #     all_eva_dict_df,
+        #     hue='model_name',
+        #     x_vars=x_vars_l,
+        #     y_vars=y_vars,
+        #     plot_kws={
+        #         'marker':"+", 
+        #         'linewidth':1,
+        #         'alpha':0.8,
+        #     },
+        # )
+        # sns_plot.savefig(os.path.join(work_dir,'all_eva_scale.png'))
+        # fig.savefig(os.path.join(work_dir,'all_eva_distributed.png'))
 
-    # for model_name, all_score_dict in all_eva_dict.items():
-    #     _,single_list = next(iter(all_score_dict.items()))
-    #     all_eva_dict_df['model_name'] += [model_name]*len(single_list)
-    #     for k,vs in all_score_dict.items():
-    #         all_eva_dict_df[k]+=vs
+    if(eva_glob):
+        y_vars=[
+            "fscore", 
+            "loss",
+            ]
+        x_vars = ['rotate','shiftx','shifty','scalex','scaley']
+        all_eva_dict_df = defaultdict(list)
+        all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+            models,chs,names,work_dir=work_dir)
 
-    # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-    # sns_plot = sns.pairplot(
-    #     all_eva_dict_df,
-    #     hue='model_name',
-    #     x_vars=x_vars,
-    #     y_vars=y_vars,
-    #     plot_kws={
-    #         # 'marker':"+", 
-    #         'linewidth':1,
-    #         'alpha':0.8,
-    #     },
-    # )
-    # sns_plot.savefig(os.path.join(work_dir,'all_eva.png'))
-    # log_plt(ret,work_dir)
+        with open(os.path.join(work_dir,'all_eva_global.pkl'), 'wb') as pfile:
+            pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # for model_name, all_score_dict in all_eva_dict.items():
+        #     plt_correlation(
+        #         [all_score_dict[o] for o in x_vars],[all_score_dict[o] for o in y_vars],
+        #         x_names=x_vars,y_names=y_vars,
+        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars)],axis=-1),
+        #         cur_label_name=model_name
+        #         )
+
+        for model_name, all_score_dict in all_eva_dict.items():
+            _,single_list = next(iter(all_score_dict.items()))
+            all_eva_dict_df['model_name'] += [model_name]*len(single_list)
+            for k,vs in all_score_dict.items():
+                all_eva_dict_df[k]+=vs
+
+        all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        sns_plot = sns.pairplot(
+            all_eva_dict_df,
+            hue='model_name',
+            x_vars=x_vars,
+            y_vars=y_vars,
+            plot_kws={
+                # 'marker':"+", 
+                'linewidth':1,
+                'alpha':0.8,
+            },
+        )
+        sns_plot.savefig(os.path.join(work_dir,'all_eva.png'))
+
     print('end')
