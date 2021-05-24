@@ -29,9 +29,6 @@ from dirs import *
 import warnings
 warnings.filterwarnings('ignore')
 
-DEF_MOD_RATE = 0.3
-DEF_WAVE_FUNC = lambda x: np.cos(2*x*np.pi)*DEF_MOD_RATE+1-DEF_MOD_RATE
-DEF_FLUSH_COUNT = -1
 DEF_LSTM_STATE_SIZE=(322,322)
 
 @torch.no_grad()
@@ -80,16 +77,29 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
         txts = sample['text']
         if(var):
             args={}
+            total_step = var['total_step'] if('total_step' in var)else 10
+            fluctuation = var['fluctuation'] if('fluctuation' in var)else 0.1
             if('rotate' in var):
-                args['rotate']=var['rotate']*(seed.random()-0.5)*2.2
+                args['rotate']=var['rotate']
+                if(fluctuation>0):
+                    args['rotate'] *= (seed.random()-0.5)*(1+fluctuation)*2
             if('shift' in var):
-                args['shift']=(var['shift']*(seed.random()-0.5)*2.2,var['shift']*(seed.random()-0.5)*2.2)
+                args['shift']=(var['shift'],var['shift'])
+                if(fluctuation>0):
+                    args['shift'] = (args['shift'][0]*(seed.random()-0.5)*(1+fluctuation)*2,args['shift'][1]*(seed.random()-0.5)*(1+fluctuation)*2)
             if('scale' in var):
-                args['scale']=(var['scale']*((seed.random()-0.5)*0.4+1),var['scale']*((seed.random()-0.5)*0.4+1))
+                args['scale']=(var['scale'],var['scale']*((seed.random()-0.5)*0.4+1))
+                if(fluctuation>0):
+                    args['scale']=(args['scale'][0]*((seed.random()-0.5)*fluctuation*2+1),args['scale'][1]*((seed.random()-0.5)*fluctuation*2+1))
+            if('blur_ksize' in var):
+                args['blur_ksize'] = var['blur_ksize']
+            if('blur_motion' in var):
+                args['blur_motion'] = var['blur_motion']
+            if('blur_stepi' in var):
+                args['blur_stepi'] = var['blur_stepi']
 
-            image_list,poly_xy_list,Ms,step_state_dict = cv_gen_trajectory(sample['image'],maxstep,sample['box'],
-                fluctuation=0,return_states=True,**args)
-            blur_stepi = []
+            image_list,poly_xy_list,Ms,step_state_dict,blur_stepi = cv_gen_trajectory(sample['image'],total_step,sample['box'],
+                fluctuation=0,blur_return_stepi=True,return_states=True,**args)
 
         else:
             rotate = maxstep * rotatev *(seed.random()-0.5)*2.2
@@ -253,8 +263,9 @@ def global_eval(model_list,maskch_list,model_name_list,maxstep:int=10,var=None,w
     return all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur
 
 if __name__ == '__main__':
-    eva_distribute = True
+    eva_distribute = False
     eva_glob = False
+    eva_blur = True
     models,names,chs = [],[],[]
     pthdir = '/BACKUP/yom_backup/saved_model/lstm_ttt_Residual_region_pxnet.pth'
     model_lstm = PIXLSTM_Residual(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
@@ -293,42 +304,42 @@ if __name__ == '__main__':
 
         var = {'shift':300}
         x_vars_l = ['shiftx','shifty']
-        # all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
-        #     models,chs,names,var = var)
+        all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+            models,chs,names,var = var)
 
-        # with open(os.path.join(work_dir,'all_eva_shift.pkl'), 'wb') as pfile:
-        #     pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(os.path.join(work_dir,'all_eva_shift.pkl'), 'wb') as pfile:
+            pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     plt_correlation(
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
-        #         x_names=x_vars_l,y_names=y_vars,
-        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-        #         cur_label_name=model_name
-        #         )
+        for model_name, all_score_dict in all_eva_dict.items():
+            plt_correlation(
+                [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+                [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+                x_names=x_vars_l,y_names=y_vars,
+                fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+                cur_label_name=model_name
+                )
 
-        # all_eva_dict_df = {}
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     _,single_list = next(iter(all_score_dict.items()))
-        #     single_list = single_list[0]
-        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
-        #     for k,vs in all_score_dict.items():
-        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
+        all_eva_dict_df = {}
+        for model_name, all_score_dict in all_eva_dict.items():
+            _,single_list = next(iter(all_score_dict.items()))
+            single_list = single_list[0]
+            all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+            for k,vs in all_score_dict.items():
+                all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-        # sns_plot = sns.pairplot(
-        #     all_eva_dict_df,
-        #     hue='model_name',
-        #     x_vars=x_vars_l,
-        #     y_vars=y_vars,
-        #     plot_kws={
-        #         'marker':"+", 
-        #         'linewidth':1,
-        #         'alpha':0.8,
-        #     },
-        # )
-        # sns_plot.savefig(os.path.join(work_dir,'all_eva_shift.png'))
+        all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        sns_plot = sns.pairplot(
+            all_eva_dict_df,
+            hue='model_name',
+            x_vars=x_vars_l,
+            y_vars=y_vars,
+            plot_kws={
+                'marker':"+", 
+                'linewidth':1,
+                'alpha':0.8,
+            },
+        )
+        sns_plot.savefig(os.path.join(work_dir,'all_eva_shift.png'))
 
         var = {'rotate':290}
         x_vars_l = ['rotate']
@@ -338,36 +349,36 @@ if __name__ == '__main__':
         with open(os.path.join(work_dir,'all_eva_rotate.pkl'), 'wb') as pfile:
             pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     plt_correlation(
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
-        #         x_names=x_vars_l,y_names=y_vars,
-        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-        #         cur_label_name=model_name
-        #         )
+        for model_name, all_score_dict in all_eva_dict.items():
+            plt_correlation(
+                [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+                [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+                x_names=x_vars_l,y_names=y_vars,
+                fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+                cur_label_name=model_name
+                )
 
-        # all_eva_dict_df = {}
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     _,single_list = next(iter(all_score_dict.items()))
-        #     single_list = single_list[0]
-        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
-        #     for k,vs in all_score_dict.items():
-        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
+        all_eva_dict_df = {}
+        for model_name, all_score_dict in all_eva_dict.items():
+            _,single_list = next(iter(all_score_dict.items()))
+            single_list = single_list[0]
+            all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+            for k,vs in all_score_dict.items():
+                all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-        # sns_plot = sns.pairplot(
-        #     all_eva_dict_df,
-        #     hue='model_name',
-        #     x_vars=x_vars_l,
-        #     y_vars=y_vars,
-        #     plot_kws={
-        #         'marker':"+", 
-        #         'linewidth':1,
-        #         'alpha':0.8,
-        #     },
-        # )
-        # sns_plot.savefig(os.path.join(work_dir,'all_eva_rotate.png'))
+        all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        sns_plot = sns.pairplot(
+            all_eva_dict_df,
+            hue='model_name',
+            x_vars=x_vars_l,
+            y_vars=y_vars,
+            plot_kws={
+                'marker':"+", 
+                'linewidth':1,
+                'alpha':0.8,
+            },
+        )
+        sns_plot.savefig(os.path.join(work_dir,'all_eva_rotate.png'))
 
         var = {'scale':2}
         x_vars_l = ['scalex','scaley']
@@ -377,37 +388,37 @@ if __name__ == '__main__':
         with open(os.path.join(work_dir,'all_eva_scale.pkl'), 'wb') as pfile:
             pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     plt_correlation(
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
-        #         [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
-        #         x_names=x_vars_l,y_names=y_vars,
-        #         fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
-        #         cur_label_name=model_name
-        #         )
+        for model_name, all_score_dict in all_eva_dict.items():
+            plt_correlation(
+                [np.array(all_score_dict[o]).reshape(-1) for o in x_vars_l],
+                [np.array(all_score_dict[o]).reshape(-1) for o in y_vars],
+                x_names=x_vars_l,y_names=y_vars,
+                fig=fig,axs=np.stack([axs[:,i] for i,o in enumerate(x_vars) if(o in x_vars_l)],axis=-1),
+                cur_label_name=model_name
+                )
 
-        # all_eva_dict_df = {}
-        # for model_name, all_score_dict in all_eva_dict.items():
-        #     _,single_list = next(iter(all_score_dict.items()))
-        #     single_list = single_list[0]
-        #     all_eva_dict_df['model_name'] = [model_name]*len(single_list)
-        #     for k,vs in all_score_dict.items():
-        #         all_eva_dict_df[k]=np.array(single).reshape(-1)
+        all_eva_dict_df = {}
+        for model_name, all_score_dict in all_eva_dict.items():
+            _,single_list = next(iter(all_score_dict.items()))
+            single_list = single_list[0]
+            all_eva_dict_df['model_name'] = [model_name]*len(single_list)
+            for k,vs in all_score_dict.items():
+                all_eva_dict_df[k]=np.array(single).reshape(-1)
 
-        # all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
-        # sns_plot = sns.pairplot(
-        #     all_eva_dict_df,
-        #     hue='model_name',
-        #     x_vars=x_vars_l,
-        #     y_vars=y_vars,
-        #     plot_kws={
-        #         'marker':"+", 
-        #         'linewidth':1,
-        #         'alpha':0.8,
-        #     },
-        # )
-        # sns_plot.savefig(os.path.join(work_dir,'all_eva_scale.png'))
-        # fig.savefig(os.path.join(work_dir,'all_eva_distributed.png'))
+        all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+        sns_plot = sns.pairplot(
+            all_eva_dict_df,
+            hue='model_name',
+            x_vars=x_vars_l,
+            y_vars=y_vars,
+            plot_kws={
+                'marker':"+", 
+                'linewidth':1,
+                'alpha':0.8,
+            },
+        )
+        sns_plot.savefig(os.path.join(work_dir,'all_eva_scale.png'))
+        fig.savefig(os.path.join(work_dir,'all_eva_distributed.png'))
 
     if(eva_glob):
         y_vars=[
@@ -450,4 +461,53 @@ if __name__ == '__main__':
         )
         sns_plot.savefig(os.path.join(work_dir,'all_eva.png'))
 
+    if(eva_blur):
+        base_rotate = 15
+        total_step = 5
+        y_vars=["loss"]
+        x_vars=['rotate']
+        blur_ksize_list = [15,25,35]
+        all_eva_dict_list,all_eva_dict_no_blur_list,all_eva_dict_blur_list = [],[],[]
+        for blur_ksize in blur_ksize_list:
+            var = {
+                'rotate':base_rotate*total_step,
+                'blur_motion':True,
+                'blur_ksize':blur_ksize,
+                'blur_stepi':[1,3]
+                }
+            all_eva_dict,all_eva_dict_no_blur,all_eva_dict_blur = global_eval(
+                models,chs,names,work_dir=None)
+
+            with open(os.path.join(work_dir,'all_eva_dict_k{}.pkl'.format(blur_ksize)), 'wb') as pfile:
+                pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+            with open(os.path.join(work_dir,'all_eva_dict_no_blur_k{}.pkl'.format(blur_ksize)), 'wb') as pfile:
+                pickle.dump(all_eva_dict_no_blur, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+            with open(os.path.join(work_dir,'all_eva_dict_blur_k{}.pkl'.format(blur_ksize)), 'wb') as pfile:
+                pickle.dump(all_eva_dict_blur, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+
+        for model_name in names:
+            all_eva_dict_df = defaultdict(list)
+            for blur_ksize,all_eva_dict_blur in zip(blur_ksize_list,all_eva_dict_blur_list):
+                all_score_dict = all_eva_dict_blur['model_name']
+                len_single_list = 0
+                for k,vs in all_score_dict.items():
+                    if(k in y_vars or k in x_vars):
+                        o = np.array(vs).reshape(-1).tolist()
+                        all_eva_dict_df[k]+=o
+                        len_single_list = len(o)
+                all_eva_dict_df['blur_ksize'] += ['k:{}'.format(blur_ksize)]*len_single_list
+            all_eva_dict_df = pd.DataFrame.from_dict(all_eva_dict_df)
+
+            sns_plot = sns.pairplot(
+                all_eva_dict_df,
+                hue='blur_ksize',
+                x_vars=x_vars,
+                y_vars=y_vars,
+                plot_kws={
+                    # 'marker':"+", 
+                    'linewidth':1,
+                    'alpha':0.8,
+                },
+            )
+            sns_plot.savefig(os.path.join(work_dir,'{}_blur.png'.format(model_name)))
     print('end')

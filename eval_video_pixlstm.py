@@ -75,7 +75,7 @@ def myeval(model_list,maskch_list,model_name_list,skiprate:int=1,writer:bool=Tru
             ret, x = vdo.read()
             if(ret==False):
                 break
-            if(fm_cnt<p_keys[0] or fm_cnt%skiprate or fm_cnt not in frame_bx_dict):
+            if(fm_cnt<p_keys[0] or fm_cnt%skiprate):
                 # skip the initial non text frams
                 fm_cnt+=1
                 continue
@@ -84,12 +84,16 @@ def myeval(model_list,maskch_list,model_name_list,skiprate:int=1,writer:bool=Tru
             x = cv2.resize(x,image_size[::-1])
             xnor = torch.from_numpy(np.expand_dims(x,0)).float().cuda()
             xnor = torch_img_normalize(xnor).permute(0,3,1,2)
-                                
-            boxs = frame_bx_dict[fm_cnt]
-            boxs = np_box_resize(boxs,org_size,image_size,'polyxy')
-            txts = sample['txt'][fm_cnt]
-            fgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts!='#')])
-            bgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts=='#')])
+            
+            if(fm_cnt in frame_bx_dict):
+                boxs = frame_bx_dict[fm_cnt]
+                boxs = np_box_resize(boxs,org_size,image_size,'polyxy')
+                txts = sample['txt'][fm_cnt]
+                fgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts!='#')])
+                bgbxs = np.array([bx for bx,tx in zip(boxs,txts) if(txts=='#')])
+            else:
+                fgbxs = np.array([])
+                bgbxs = np.array([])
 
             proc_cnt+=1
             for model,model_name,maskch,logger in zip(model_list,model_name_list,maskch_list,loggers):
@@ -104,18 +108,27 @@ def myeval(model_list,maskch_list,model_name_list,skiprate:int=1,writer:bool=Tru
                 region_np[region_np<0.2]=0.0
 
                 det_boxes, label_mask, label_list = cv_get_box_from_mask(region_np,region_mean_split=True)
-                if(det_boxes.shape[0]>0):
+
+                if(fgbxs.size==0):
+                    mask_precision=1
+                    mask_recall = 1 if(det_boxes.size==0)else 0
+                elif(det_boxes.shape[0]>0):
                     det_boxes = np_box_resize(det_boxes,region_np.shape[-2:],x.shape[-3:-1],'polyxy')
                     ids,mask_precision,mask_recall = cv_box_match(det_boxes,fgbxs,bgbxs,ovth=0.5)
                 else:
-                    mask_precision,mask_recall=0.0,0.0
+                    mask_precision,mask_recall=0.0,1
             
                 mask_fscore = calculate_fscore(mask_precision,mask_recall)
                 eva_dict[model_name]['recall'].append(mask_recall)
                 eva_dict[model_name]['precision'].append(mask_precision)
                 eva_dict[model_name]['fscore'].append(mask_fscore)
+                eva_dict[model_name]['step'].append(fm_cnt)
 
-                region_mask_np = cv_gen_gaussian_by_poly(fgbxs,image_size)
+                if(fgbxs.size>0):
+                    region_mask_np = cv_gen_gaussian_by_poly(fgbxs,image_size)
+                else:
+                    region_mask_np = np.zeros(image_size,np.float32)
+                    
                 region_mask = torch.from_numpy(region_mask_np.reshape(1,1,region_mask_np.shape[0],region_mask_np.shape[1])).float().cuda()
                 loss = criterion_mask(pred[:,maskch:maskch+1],region_mask)
                 eva_dict[model_name]['loss'].append(loss.item())
@@ -141,11 +154,13 @@ def myeval(model_list,maskch_list,model_name_list,skiprate:int=1,writer:bool=Tru
             cur_precision = np.array(eva_dict[model_name]['precision'])
             cur_fscore = np.array(eva_dict[model_name]['fscore'])
             cur_loss = np.array(eva_dict[model_name]['loss'])
+            cur_step = np.array(eva_dict[model_name]['step'])
 
             all_eva_dict[model_name]['recall'].append(cur_recall)
             all_eva_dict[model_name]['precision'].append(cur_precision)
             all_eva_dict[model_name]['fscore'].append(cur_fscore)
             all_eva_dict[model_name]['loss'].append(cur_loss)
+            all_eva_dict[model_name]['step'].append(cur_step)
 
             sys.stdout.write(
                 '======================' + \
@@ -200,33 +215,45 @@ if __name__ == '__main__':
     maskch_list.append(0)
     model_name_list.append('LSTM')
 
-    pthdir = '/BACKUP/yom_backup/saved_model/CNN_ttt_region_pxnet.pth'
-    model_cnn = PIXCNN(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
-        include_final=False,pretrained=True).float()
-    model_cnn.load_state_dict(copyStateDict(torch.load(pthdir)))
-    model_list.append(model_cnn)
-    maskch_list.append(0)
-    model_name_list.append('CNN')
+    # pthdir = '/BACKUP/yom_backup/saved_model/CNN_ttt_region_pxnet.pth'
+    # model_cnn = PIXCNN(mask_ch=2,basenet='mobile',min_upc_ch=128,min_map_ch=32,
+    #     include_final=False,pretrained=True).float()
+    # model_cnn.load_state_dict(copyStateDict(torch.load(pthdir)))
+    # model_list.append(model_cnn)
+    # maskch_list.append(0)
+    # model_name_list.append('CNN')
 
-    pthdir = '/BACKUP/yom_backup/saved_model/org_ttt_region_pxnet.pth'
-    model_cnn_random = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet='mobile',min_upc_ch=128,pretrained=False).float()
-    model_cnn_random.load_state_dict(copyStateDict(torch.load(pthdir)))
-    model_list.append(model_cnn_random)
-    maskch_list.append(2)
-    model_name_list.append('CNN_random')
+    # pthdir = '/BACKUP/yom_backup/saved_model/org_ttt_region_pxnet.pth'
+    # model_cnn_random = PIX_Unet(mask_ch=4,min_mask_ch=32,include_final=False,basenet='mobile',min_upc_ch=128,pretrained=False).float()
+    # model_cnn_random.load_state_dict(copyStateDict(torch.load(pthdir)))
+    # model_list.append(model_cnn_random)
+    # maskch_list.append(2)
+    # model_name_list.append('CNN_random')
 
-    all_eva_dict = myeval(model_list,maskch_list,model_name_list)
-
-    with open(os.path.join(work_dir,'all_eva_mintto.pkl'), 'wb') as pfile:
-        pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
+    all_eva_dict_k1 = myeval(model_list,maskch_list,model_name_list,skiprate=1)
+    all_eva_dict_k10 = myeval(model_list,maskch_list,model_name_list,skiprate=10)
+    all_eva_dict_k20 = myeval(model_list,maskch_list,model_name_list,skiprate=20)
+    all_eva_dict_k30 = myeval(model_list,maskch_list,model_name_list,skiprate=30)
+    kdicts = [all_eva_dict_k1,all_eva_dict_k10,all_eva_dict_k20,all_eva_dict_k30]
+    ks = [1,10,20,30]
+    # with open(os.path.join(work_dir,'all_eva_mintto.pkl'), 'wb') as pfile:
+    #     pickle.dump(all_eva_dict, pfile, protocol=pickle.HIGHEST_PROTOCOL)
     
-    # for i in range(len(loss_lstm)):
-    #     fig,axs = plt.subplots(1,1)
-    #     xs = np.arange(len(loss_org[i]))
-    #     axs.get_yaxis().label.set_text('Loss')
-    #     axs.get_xaxis().label.set_text('Frame Step')
-    #     axs.plot(xs,loss_lstm[i],label = 'lstm')
-    #     axs.plot(xs,loss_cnn[i],label = 'cnn')
-    #     axs.plot(xs,loss_org[i],label = 'cnn_random')
-    #     axs.legend()
-    #     fig.savefig(os.path.join(work_dir,'loss_mintto_{}.png'.format(i)))
+    total_nums = len(all_eva_dict_k1['LSTM']['loss'])
+    all_val_list = [[] for _ in range(total_nums)]
+    for all_eva_dict,ksize in zip(kdicts,ks):
+        xs_list = all_eva_dict['LSTM']['step']
+        loss_list = all_eva_dict['LSTM']['loss']
+        for i,(xs,loss) in enumerate(zip(xs_list,loss_list)):
+            all_val_list[i].append(
+                (xs,loss,ksize)
+            )
+
+    for i,val_list in enumerate(all_val_list):
+        fig,axs = plt.subplots(1,1)
+        axs.get_yaxis().label.set_text('Loss')
+        axs.get_xaxis().label.set_text('Frame Step')
+        for xs,loss,ksize in val_list:
+            axs.plot(xs,loss,label = 'Frame step {}'.format(ksize))
+        axs.legend()
+        fig.savefig(os.path.join(work_dir,'loss_mintto_{}.png'.format(i)))

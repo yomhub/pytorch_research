@@ -1224,7 +1224,8 @@ def cv_draw_poly(image,boxes,text=None,color = (0,255,0),thickness:int=2, point_
     Return image
     """
     image = image.astype(np.uint8)
-
+    if(boxes.size==0):
+        return image
     if(not isinstance(boxes,np.ndarray)):boxes = np.array(boxes)
     if(len(boxes.shape)==2):
         boxes=boxes.reshape((1,-1,2))
