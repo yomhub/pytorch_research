@@ -58,31 +58,31 @@ def default_x_input_function(sample,th_device):
     
 class BaseDataset(Dataset):
     """
+    The basic class of dataset.
     Args:
         img_dir: str or list, image folder
-        'box_format': string in ['yxyx','xyxy','xywh','cxywh']
+        'box_format': string in ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
             'yxyx': box_cord = [y1,x1,y2,x2]
             'xyxy': box_cord = [x1,y1,x2,y2]
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
+            'polyxy': box_cord = [xi,yi]
+            'polyyx': box_cord = [yi,xi]
         normalized: True to normalize coordinate
         max_image_size/image_size: (y,x),int or float for both (y,x)
     Outs:
         {
-            'image': (h,w,1 or 3) np array.
-            'video': cv <VideoCapture object>
-
-            If have gt_txt_dir,
-            'box': (k,4 or 5) np array, where 4 or 5 is (1 or 0)+(box_cord,4)
-            'box_format': string in ['yxyx','xyxy','xywh','cxywh']
-                'yxyx': box_cord = [y1,x1,y2,x2]
-                'xyxy': box_cord = [x1,y1,x2,y2]
-                'xywh': box_cord = [x,y,w,h]
-                'cxywh': box_cord = [cx,cy,w,h]
-            'text': list of texts
+            'image': (h,w,ch) np array.
+            'video': OpenCV <VideoCapture object>
             'name': file name
-            If have gt_mask_dir,
-            'mask': (h,w,1) np array.
+
+            If gt_txt_dir is given and existed,
+                'box': (N,k,ch) np.array if box_format isnot poly, [(k,ch)]*N np.object if box_format is poly
+                'box_format': same with box_format in Args
+                'text': list of texts
+
+            If gt_mask_dir is given and existed,
+                'mask': (h,w,1) np array.
         }
     """
 

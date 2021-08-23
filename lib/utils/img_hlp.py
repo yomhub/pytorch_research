@@ -24,20 +24,22 @@ def to_torch(img,th_device):
     return img.type(torch.FloatTensor).to(th_device)
 
 """
-The single sample of dataset should include:
+    A sample should include:
     {
-        'image': (h,w,1 or 3) or (N,h,w,1 or 3) np array.
-        'box': (k,4 or 5) np array or [(k,4 or 5)]*N list of np array.
-            where 4 or 5 is (1 or 0)+(box_cord,4)
-        'box_format': string in ['yxyx','xyxy','xywh','cxywh']
+        'image': image data, a ((N),h,w,ch) np array.
+        'box': boxes data, can be a ((N),k,ch) np array or [(k,ch)]*N list of np array.
+        'box_format': string in ['cxywh','yxyx','xyxy','xywh','polyxy','polyyx']
             'yxyx': box_cord = [y1,x1,y2,x2]
             'xyxy': box_cord = [x1,y1,x2,y2]
             'xywh': box_cord = [x,y,w,h]
             'cxywh': box_cord = [cx,cy,w,h]
-        'gtmask': (h,w,1 or 3) or (N,h,w,1 or 3) np array.
+            'polyxy': box_cord = [xi,yi]
+            'polyyx': box_cord = [yi,xi]
+        'gtmask' (optional): mask data, a ((N),h,w,ch) np array.
     }
-    CV image: ndarray with (h,w,c)
-    CV format 4 points: (x,y) in 
+    The coordinate system in OpenCV is shown as below
+
+    (0,0)
     +------------> x
     | 
     | p0------p1
@@ -45,6 +47,8 @@ The single sample of dataset should include:
     | |        |
     | p3------p2
     y
+
+    Vertexs of a polygon should align in a clockwise direction.
 """
 
 # default is __DEF_FORMATS[0]

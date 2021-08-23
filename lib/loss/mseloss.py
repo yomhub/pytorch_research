@@ -111,6 +111,18 @@ class MSE_OHEM_Loss(nn.Module):
         
 
 class MSE_2d_Loss(nn.Module):
+    """
+    Weighted Mean Squared Error (L2) loss for regression task.
+    The loss value will be first calculated on each pixel than sampled.
+    Pixels in regression target with value higher then positive_th will be considered as positive
+    other case negative. The sample proportion will be P:N = 1 : positive_mult.
+    
+    Args:
+        positive_mult: proportion of positive and negative pixels.
+        positive_th: threshold of positive value
+        pixel_sum: whether to integrate all loss value in a single target.
+    
+    """
     def __init__(self,positive_mult = 3,positive_th:float = 0.0,pixel_sum:bool=False):
         super(MSE_2d_Loss, self).__init__()
         self.mse_loss = nn.MSELoss(reduction="none", size_average=False,reduce=False)
@@ -145,7 +157,7 @@ class MSE_2d_Loss(nn.Module):
         Args:
             x: prediction (batch,(ch),h,w)
             y: true value (batch,(ch),h,w)
-            weight_mask (optical): loss weight mask in [0,1]
+            weight_mask (optional): loss weight mask in [0,1]
             e.g. set pixel weight to 0 to ignore pixels
         """
         x,y = args[0],args[1]
